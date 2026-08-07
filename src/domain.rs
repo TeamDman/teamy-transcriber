@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub const EVENT_SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, Facet, Hash, Ord, PartialEq, PartialOrd)]
+#[facet(transparent)]
+#[repr(transparent)]
 pub struct RecordingId(Uuid);
 
 impl RecordingId {
@@ -36,6 +38,8 @@ impl std::fmt::Display for RecordingId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Facet, Hash, Ord, PartialEq, PartialOrd)]
+#[facet(transparent)]
+#[repr(transparent)]
 pub struct ClipId(Uuid);
 
 impl ClipId {
@@ -58,6 +62,8 @@ impl std::fmt::Display for ClipId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Facet, Hash, Ord, PartialEq, PartialOrd)]
+#[facet(transparent)]
+#[repr(transparent)]
 pub struct TranscriptId(Uuid);
 
 impl TranscriptId {
