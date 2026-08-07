@@ -4,6 +4,7 @@ use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
 use crate::domain::TimeRange;
+use crate::domain::TranscriptId;
 use crate::domain::TranscriptProvenance;
 use facet::Facet;
 
@@ -148,7 +149,7 @@ pub struct ClipProjection {
 
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
 pub struct TranscriptProjection {
-    pub id: String,
+    pub id: TranscriptId,
     pub clip_id: ClipId,
     pub provenance: TranscriptProvenance,
     pub text: String,
@@ -202,7 +203,7 @@ impl PresentationState {
                 .rev()
                 .find(|transcript| transcript.clip_id == clip_id)
                 .map(|transcript| TranscriptProjection {
-                    id: transcript.id.to_string(),
+                    id: transcript.id,
                     clip_id: transcript.clip_id,
                     provenance: transcript.provenance,
                     text: transcript.text.clone(),
