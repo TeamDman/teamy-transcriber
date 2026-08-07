@@ -1,0 +1,50 @@
+use crate::cli::output::CliOutput;
+use crate::domain::RecordingId;
+use crate::storage::RecordingStore;
+use arbitrary::Arbitrary;
+use eyre::Context;
+use eyre::Result;
+use facet::Facet;
+use figue as args;
+
+#[derive(Facet, Debug)]
+struct RecordingShowReport {
+    recording_id: String,
+    source_path: String,
+    clip_count: usize,
+    transcript_count: usize,
+}
+
+/// Show one persisted recording manifest.
+#[derive(Facet, Arbitrary, Debug, PartialEq)]
+pub struct RecordingShowArgs {
+    /// Recording UUID returned by recording create.
+    #[facet(args::positional)]
+    pub recording_id: String,
+}
+
+impl RecordingShowArgs {
+    /// # Errors
+    ///
+    /// Returns an error when the recording ID is invalid or its manifest cannot be loaded.
+    #[expect(
+        clippy::unused_async,
+        reason = "command invoke methods share the async CLI dispatch shape"
+    )]
+    pub async fn invoke(self) -> Result<CliOutput> {
+        let recording_id =
+            RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
+        let app_home = crate::paths::AppHome::resolve()?;
+        let store = RecordingStore::new(app_home.0);
+        let recording = store
+            .load_recording(recording_id)
+            .wrap_err("failed to load recording manifest")?;
+
+        Ok(CliOutput::facet(RecordingShowReport {
+            recording_id: recording.id.to_string(),
+            source_path: recording.source.path,
+            clip_count: recording.clips.len(),
+            transcript_count: recording.transcripts.len(),
+        }))
+    }
+}

@@ -2,8 +2,11 @@
 #![deny(clippy::disallowed_macros)]
 
 pub mod cli;
+pub mod domain;
 pub mod logging_init;
 pub mod paths;
+pub mod storage;
+pub mod transcription;
 #[cfg(windows)]
 mod windows_startup;
 

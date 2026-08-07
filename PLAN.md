@@ -15,6 +15,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-06: Created the public GitHub repository TeamDman/teamy-transcriber and pushed baseline commit 3f5bb81 to main. GitHub reports the repository as public and MPL-2.0.
 
+2026-08-06: Implemented typed domain state, replayable event records, manifest/NDJSON persistence, local model inventory, a deterministic fake transcription backend, and the doctor/model/recording CLI surfaces. The current model policy assumes locally supplied files and defers CDN acquisition.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -57,6 +59,7 @@ This file is the living work contract. A fresh agent should be able to resume fr
 | U25 | Separate domain state, commands/events, projection, renderer, and transport. | Transfer requirement | Architecture, W2, W7, W14, W18 |
 | U26 | Use typed boundaries, replayable events, machine-readable receipts, and explicit stop conditions where practical. | Transfer requirement | W4, W7, W21, W22 |
 | U27 | Distinguish proven facts, hypotheses, deferred decisions, and non-claims. | Transfer requirement | Gates, risks, W22, acceptance matrix |
+| U28 | For the current implementation, assume model files are already available locally; defer CDN acquisition and distribution. | Confirmed | G5, W8, W9, W23 |
 
 ## Source and implementation evidence
 
@@ -211,7 +214,7 @@ These are decisions or evidence gates, not implementation chores. A gate may be 
 | G2 | Recording/data home | App-owned deterministic home with configurable root. | Manifest round-trip and recovery test on a fresh directory. |
 | G3 | LLM role | Optional post-ASR/local transformation, never the authoritative ASR and never a silent overwrite. | Typed command/result contract and a raw-vs-derived transcript example. |
 | G4 | WhisperX capability set | Start with local ASR for imported/recorded normalized audio; alignment/diarization are later capabilities. | Capability descriptor and one successful local transcription. |
-| G5 | Runtime/model bootstrap | Managed runtime and model cache, doctor, prepare, version/checksum reporting, clean-machine rehearsal. | Offline/online policy decision plus reproducible setup receipt. |
+| G5 | Runtime/model bootstrap | Current slice assumes local model files and only inspects their directory; no downloader or CDN path yet. Runtime validation and future acquisition remain separate. | Local model inventory, runtime readiness contract, and later clean-machine policy. |
 | G6 | Media decoding | Use a replaceable adapter; likely ffmpeg/ffprobe or a documented library path. | Supported-format matrix, fixture corpus, and failure diagnostics. |
 | G7 | Microphone contract | Rust owns capture and buffering; explicit sample format, device identity, permission/failure states. | Device list and saved recording fixture, with no implicit external output. |
 | G8 | Clip semantics and processing | Immutable source plus derived clips; operations are reversible or replayable. | Boundary/ordering tests and before/after artifact receipts. |
@@ -288,15 +291,15 @@ Completion: The app can run a fully observable transcription job without real in
 
 #### W8 [ ] Build model and runtime preparation
 
-Work: Separate executable/runtime cache from model cache. Define versioned manifests, checksums, device selection, CUDA/CPU policy, prepare progress, offline behavior, and clean-machine diagnostics.
+Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. Do not add a downloader or CDN dependency.
 
 Validation: Doctor reports missing runtime, missing model, incompatible model, unavailable accelerator, and permission failures without guessing. Re-running prepare is idempotent.
 
-Completion: A documented new-device setup creates or explains every required local asset, and no installed executable requires the source checkout.
+Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
 #### W9 [ ] Integrate local WhisperX
 
-Work: Implement the first Python WhisperX worker behind the backend protocol. Start with normalized 16 kHz mono input and raw/staged transcript output; add VAD/alignment only behind capability flags.
+Work: Implement the first Python WhisperX worker behind the backend protocol, consuming model files supplied in the configured local model directory. Start with normalized 16 kHz mono input and raw/staged transcript output; add VAD/alignment only behind capability flags.
 
 Validation: Run a real local fixture, record model/runtime versions, device, timings, chunk count, and output checksum. Test long input ordering, bounded work, cancellation, and failure.
 
@@ -420,7 +423,7 @@ Completion: A release review can answer what is proven, sampled, empirical, expe
 
 #### W23 [ ] Rehearse clean-device packaging
 
-Work: Package the executable, runtime bootstrap, model preparation, licenses, config migration, logs, and uninstall/retention behavior.
+Work: Package the executable, local runtime/model readiness diagnostics, licenses, config migration, logs, and uninstall/retention behavior. CDN acquisition is a later project.
 
 Validation: Rehearse on a clean Windows environment with no checkout, pre-existing model cache, or hidden developer dependency. Record all failures.
 
@@ -471,7 +474,7 @@ Completion: The repository tells a user how to use the product and an agent how 
 
 ### Pass 1: extraction
 
-Completed 2026-08-06. Re-read the original request and both supplied transfer briefs. U1-U27 were extracted into the ledger. The audit specifically checked for audio, video, microphone, local WhisperX, local LLM, model bootstrap, saved recordings, clips, noise reduction, equalization, movement, GUI, skeuomorphic microphone, tray/hotkeys, Ash/Vulkan, cursor-latency, fontdue/Slug, Teamy Studio, Teamy Terminal, Burn, Poche, action-first UI, typed state/events, renderer/transport separation, diagnostics, evidence language, and stop conditions.
+Completed 2026-08-06. Re-read the original request and both supplied transfer briefs. U1-U28 were extracted into the ledger. The audit specifically checked for audio, video, microphone, local WhisperX, local LLM, model bootstrap, saved recordings, clips, noise reduction, equalization, movement, GUI, skeuomorphic microphone, tray/hotkeys, Ash/Vulkan, cursor-latency, fontdue/Slug, Teamy Studio, Teamy Terminal, Burn, Poche, action-first UI, typed state/events, renderer/transport separation, diagnostics, evidence language, and stop conditions.
 
 ### Pass 2: traceability
 
@@ -485,7 +488,7 @@ Completed 2026-08-06. Checked the likely failure modes:
 - ASR, LLM cleanup, user edits, and export could have been conflated: they have separate provenance and commands.
 - Microphone capture could have become blind external typing: that is an explicit non-goal and acceptance condition.
 - GUI ambitions could have hidden missing persistence: storage and recovery precede the GUI.
-- WhisperX could have been treated as a single binary: runtime/model/doctor/prepare are separate work.
+- WhisperX could have been treated as a single binary: runtime/model/doctor/prepare are separate work, and the current phase assumes local model files without adding a downloader.
 - Renderer work could have swallowed the product: CPU reference and an allowed non-GPU first slice are explicit.
 - Poche evidence could have been overstated: bounded scope, tool versions, limits, and non-claims are required.
 - “General and easy to use” could have become DAW/NLE scope: non-goals and R11 constrain it.
@@ -503,12 +506,12 @@ Remaining open gates are intentional decisions, not omitted requirements.
 
 ## Next safe implementation slice
 
-The next implementation turn should close W1 and begin W2:
+The next implementation turn should continue W2 and begin W3/W6:
 
-1. Record decisions for G1-G14, marking unresolved items [!] rather than guessing.
-2. Create the minimal Rust workspace and pure domain types.
-3. Add a fake transcription backend and a tiny fixture-driven headless flow.
-4. Add manifest/event round-trip tests before microphone or GUI work.
+1. Add a small checked-in fixture corpus and deterministic media metadata fixtures.
+2. Define the media adapter boundary and source-time to normalized-time mapping.
+3. Add clip creation and fake-backend transcript commands on top of the persisted recording.
+4. Keep local model inventory and runtime validation separate from any future CDN acquisition.
 
 Do not begin by copying WhisperX, building the skeuomorphic microphone, adding tray hotkeys, or writing the Slug renderer. Those are downstream of the semantic and storage contract.
 

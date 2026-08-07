@@ -3,13 +3,17 @@ pub mod doctor;
 pub mod facet_shape;
 pub mod global_args;
 pub mod home;
+pub mod model;
 pub mod output;
+pub mod recording;
 
 use crate::cli::cache::CacheArgs;
 use crate::cli::doctor::DoctorArgs;
 use crate::cli::global_args::GlobalArgs;
 use crate::cli::home::HomeArgs;
+use crate::cli::model::ModelArgs;
 use crate::cli::output::CliOutput;
+use crate::cli::recording::RecordingArgs;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use facet::Facet;
@@ -69,6 +73,10 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Home-related commands.
     Home(HomeArgs),
+    /// Local model inspection commands.
+    Model(ModelArgs),
+    /// Recording and clip commands.
+    Recording(RecordingArgs),
 }
 
 impl Command {
@@ -81,6 +89,8 @@ impl Command {
             Command::Cache(args) => args.invoke().await,
             Command::Doctor(args) => args.invoke().await,
             Command::Home(args) => args.invoke().await,
+            Command::Model(args) => args.invoke().await,
+            Command::Recording(args) => args.invoke().await,
         }
     }
 }

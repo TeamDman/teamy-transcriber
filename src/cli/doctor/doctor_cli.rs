@@ -1,4 +1,5 @@
 use crate::cli::output::CliOutput;
+use crate::transcription::LocalModelInventory;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -9,6 +10,9 @@ struct DoctorReport {
     app_home_exists: bool,
     cache_home: String,
     cache_home_exists: bool,
+    model_home: String,
+    model_home_exists: bool,
+    model_file_count: usize,
     whisperx: String,
 }
 
@@ -27,13 +31,19 @@ impl DoctorArgs {
     pub async fn invoke(self) -> Result<CliOutput> {
         let app_home = crate::paths::AppHome::resolve()?;
         let cache_home = crate::paths::CacheHome::resolve()?;
+        let model_home = crate::paths::ModelHome::resolve()?;
+        let model_inventory = LocalModelInventory::inspect(model_home.0.clone())?;
 
         Ok(CliOutput::facet(DoctorReport {
             app_home: app_home.display().to_string(),
             app_home_exists: app_home.exists(),
             cache_home: cache_home.display().to_string(),
             cache_home_exists: cache_home.exists(),
-            whisperx: "not configured yet; runtime preparation is planned in W8-W9".to_string(),
+            model_home: model_home.display().to_string(),
+            model_home_exists: model_inventory.exists,
+            model_file_count: model_inventory.file_count,
+            whisperx: "local model files are assumed; runtime integration is planned in W9"
+                .to_string(),
         }))
     }
 }

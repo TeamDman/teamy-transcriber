@@ -21,13 +21,15 @@ The initial repository baseline is a template-backed diagnostic CLI:
 
 ~~~powershell
 cargo run -- doctor
+cargo run -- model show
 cargo run -- home show
 cargo run -- cache show
+cargo run -- recording create example.wav
 ~~~
 
-The doctor command reports the resolved application and cache paths and makes
-the pending WhisperX runtime work visible. It does not claim that transcription
-is configured yet.
+The doctor command reports the resolved application, cache, and local model
+paths. The recording command creates a durable manifest and event receipt; it
+does not decode or transcribe the source yet.
 
 ## Development
 
@@ -45,6 +47,7 @@ The path environment overrides are:
 
 - TEAMY_TRANSCRIBER_HOME_DIR
 - TEAMY_TRANSCRIBER_CACHE_DIR
+- TEAMY_TRANSCRIBER_MODEL_DIR
 - RUST_LOG
 
 ## License
