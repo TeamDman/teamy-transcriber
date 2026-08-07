@@ -1,5 +1,6 @@
 use crate::cli::output::CliOutput;
 use crate::domain::RecordingId;
+use crate::domain::RecordingStatus;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
 use eyre::Context;
@@ -11,6 +12,8 @@ use figue as args;
 struct RecordingShowReport {
     recording_id: String,
     source_path: String,
+    status: RecordingStatus,
+    failure: Option<String>,
     clip_count: usize,
     transcript_count: usize,
 }
@@ -43,6 +46,8 @@ impl RecordingShowArgs {
         Ok(CliOutput::facet(RecordingShowReport {
             recording_id: recording.id.to_string(),
             source_path: recording.source.path,
+            status: recording.status,
+            failure: recording.failure,
             clip_count: recording.clips.len(),
             transcript_count: recording.transcripts.len(),
         }))
