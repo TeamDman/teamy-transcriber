@@ -1,0 +1,514 @@
+# teamy-transcriber implementation plan
+
+Status: active implementation baseline; domain/storage work is next.
+Plan owner: Teamy
+Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
+Last updated: 2026-08-06
+Current focus: [~] W2: establish the typed domain/storage contract on the template-backed application shell
+
+This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
+
+## Progress log
+
+2026-08-06: Initialized the repository from G:\Programming\Repos\teamy-rust-cli using its own init command. Adapted package metadata, MPL-2.0 identity, Teamy-specific path overrides, logging target, profiler target, and CLI documentation. Removed the template-only init command, added the app-specific doctor command, and verified the full check-all.ps1 gate.
+
+## Plan operating rules
+
+1. Keep the requirements ledger and traceability current as decisions change.
+2. Use [ ] pending, [~] in progress, [x] complete, and [!] blocked or needing an explicit decision.
+3. Maintain at most one current focus.
+4. Record evidence strength honestly: exhaustive, bounded, symbolic, queried, sampled, empirical, experimental, research-only, or unverified.
+5. Treat local-first as a product boundary: no audio, transcript, or prompt is sent to a hosted service by default.
+6. Prefer a narrow end-to-end vertical slice over broad scaffolding.
+7. Do not claim real-time quality, GPU speed, formal coverage, or clean-machine installability until the corresponding evidence exists.
+8. When a plan item changes, update its validation and completion criteria at the same time.
+
+## User guidance ledger
+
+| ID | Guidance or constraint | Status | Traceability |
+|---|---|---|---|
+| U1 | Build teamy-transcriber in G:\Programming\Repos\teamy-transcriber. | Confirmed | Scope, W1 |
+| U2 | Transcribe imported audio files. | Confirmed | Scope, W3, W6, W9 |
+| U3 | Transcribe imported video files. | Confirmed | Scope, W3, W6, W9 |
+| U4 | Support microphone recording. | Confirmed | Scope, W5, W10 |
+| U5 | Keep the product general and easy to use, but narrow enough to be coherent. | Confirmed | Product boundary, W1, W6 |
+| U6 | Run WhisperX locally and account for model/runtime files on a new device. | Confirmed | G4, G5, W6, W9 |
+| U7 | Use a local large language model, with teamy-llm-service as relevant prior art. | Confirmed, role open | G3, W20 |
+| U8 | Learn from previous Rust and Burn work without assuming a Burn rewrite is the first milestone. | Confirmed | W1, W6, R2 |
+| U9 | Provide a GUI centered on a skeuomorphic microphone and visible transcription text. | Confirmed | G1, W15 |
+| U10 | Save recordings somewhere predictable and recoverable. | Confirmed | G2, W2, W5 |
+| U11 | Emit clips of audio predictably. | Confirmed | G8, W2, W3, W5 |
+| U12 | Include convenience operations such as noise reduction and equalization. | Confirmed, scope to gate | G8, W19 |
+| U13 | Support moving or reordering chunks without pretending to be an NLE. | Confirmed | Scope, W4, W19 |
+| U14 | Focus the project on a coherent transcription utility, not a DAW or nonlinear editor. | Confirmed | Non-goals |
+| U15 | Reuse lessons from Ash/Vulkan window work and cursor-latency measurement. | Confirmed | G1, W11, W18 |
+| U16 | Reuse system-tray lessons from piing, tb, and related Windows projects. | Confirmed | G1, W16 |
+| U17 | Make text rendering correctness a first-class concern. | Confirmed | G10, W17, W18 |
+| U18 | Compare CPU fontdue rendering with GPU Slug rendering and investigate artifacts. | Confirmed | G10, W17, W18 |
+| U19 | Use Teamy Studio and Teamy Terminal as implementation evidence and prior art. | Confirmed | Foundation, W1, W2, W18 |
+| U20 | Use the formal-methods lessons from Poche. | Confirmed | W4, W21, W22, evidence policy |
+| U21 | Use the supplied planning skill and keep a resumable implementation plan. | Confirmed | This document |
+| U22 | Keep microphone, transcript, and external-app output boundaries explicit. | Confirmed | W2, W5, W7 |
+| U23 | Preserve diagnostics, progress, cancellation, and timing evidence for long-running work. | Confirmed from prior work | W7, W9, W12, W22 |
+| U24 | Use action-first UI semantics, contextual keyboard bindings, stable IDs, and action-backed widgets. | Transfer requirement | W14, W16 |
+| U25 | Separate domain state, commands/events, projection, renderer, and transport. | Transfer requirement | Architecture, W2, W7, W14, W18 |
+| U26 | Use typed boundaries, replayable events, machine-readable receipts, and explicit stop conditions where practical. | Transfer requirement | W4, W7, W21, W22 |
+| U27 | Distinguish proven facts, hypotheses, deferred decisions, and non-claims. | Transfer requirement | Gates, risks, W22, acceptance matrix |
+
+## Source and implementation evidence
+
+### Local verified foundation
+
+| Area | Evidence | Transferable lesson |
+|---|---|---|
+| Teamy Studio | G:\Programming\Repos\Teamy-Studio\docs\spec\product\audio-input.md and G:\Programming\Repos\Teamy-Studio\docs\notes\audio-input-inbox-plan.md | Rust should own capture, normalization, buffering, feature preparation, result staging, and explicit output routing; Python should initially own WhisperX inference. |
+| Teamy Studio Whisper work | G:\Programming\Repos\Teamy-Studio\docs\notes\whisperx-optimization-plan.md | Long inputs need bounded chunking, ordered assembly, progress, timing, and resource-aware worker selection. |
+| Teamy Studio architecture | G:\Programming\Repos\Teamy-Studio\Cargo.toml and AGENTS.md | Crate boundaries and preservation-first refactors are useful, but this project must avoid inheriting Teamy Studio's experimental breadth. |
+| whisper-burn | G:\Programming\Repos\whisper-burn\README.md | A Rust/Burn path is valuable as a future backend or verification experiment; it has nontrivial model conversion and model-file assumptions. |
+| whisperX | G:\Programming\Repos\whisperX\README.md and pyproject.toml | WhisperX is a multi-component runtime involving faster-whisper, VAD, alignment, optional diarization, CUDA/CPU choices, and model downloads/cache state. |
+| teamy-llm-service | G:\Programming\Repos\teamy-llm-service\README.md | Persistent local model service, model registry/cache, cancellation, and per-model scheduling are useful patterns; current GPU-only behavior is not a product guarantee. |
+| Teamy Terminal | G:\Programming\Repos\teamy-terminal\README.md and renderer/font crates | Vulkan, Ash, offscreen rendering, CPU references, Slug contracts, and renderer/transport separation are relevant to the text surface. |
+| Teamy Terminal SFM brief | C:\Users\Teamy\.codex\attachments\d462b59d-93a4-48ab-a74d-f014951f7340\pasted-text.txt | Use action-first semantics, stable IDs, contextual bindings, typed addresses, complete renderer/transport tuples, push-based delivery, and machine-readable visual evidence. |
+| Poche | GitHub repository TeamDman/Poche, including PLAN.md and docs/explicit-checker.md | Use typed transitions, explicit finite scopes, replay, deterministic checking, honest evidence labels, acceptance matrices, and non-claims. |
+| Poche transfer brief | C:\Users\Teamy\.codex\attachments\011d4bad-66d6-4a69-a446-fe957b4a38c6\pasted-text.txt | Freeze vocabulary first; build a pure kernel and one human-observable slice; keep session/identity/authority/transport/projection/rendering separate. |
+| voice2text | GitHub repository TeamDman/voice2text | Existing push-to-talk typing proves the use case, but blind typing into a focused external app is too risky as the default output behavior. |
+| piing and tb | G:\Programming\Repos\piing and G:\Programming\Repos\tb | Tray lifecycle, hidden console behavior, global hotkey, logs, config, and taskbar affordance patterns are available prior art. |
+| teamy-subs | G:\Programming\Repos\teamy-subs | Keep pure media/subtitle domain logic separate from subprocess adapters; use fixtures, golden tests, and explicit unsupported syntax decisions. |
+| cursor-latency | G:\Programming\Repos\cursor-latency | User-perceived latency should be measured end to end rather than inferred from renderer timing. |
+
+### Source limitations
+
+- Poche was inspected through its GitHub repository because no local Poche checkout was found.
+- tv.exe was not found on PATH with Get-Command tv.exe. Its origin is therefore unverified and is not a dependency assumption.
+- Repository contents and prior plans describe intent and experiments. They are not proof that every behavior is production-ready.
+
+## Product definition
+
+### Purpose
+
+teamy-transcriber captures or imports speech, creates durable audio clips, runs local transcription, and lets a person inspect, edit, reorder, and export the resulting text with clear provenance.
+
+### First-release scope
+
+1. Windows desktop GUI with a microphone-centered recording surface.
+2. File import for common audio and video formats through a replaceable media adapter.
+3. Microphone capture with an explicit armed/recording/stopped state.
+4. Authoritative recording and clip manifests stored under an app-owned data directory.
+5. Local WhisperX backend with model/runtime doctor, preparation, progress, cancellation, and staged results.
+6. Transcript presentation with source/clip provenance and explicit commit/export actions.
+7. Predictable clip split, move, append, and delete operations with undo or replayable history.
+8. Small, reversible audio preparation profiles: gain, noise reduction, equalization, and resampling where required by the backend.
+9. Optional local LLM actions that are visibly separate from transcription, such as cleanup or summarization; no silent overwrite of the raw transcript.
+10. Tray presence and hotkeys only after the core action model and privacy boundaries are stable.
+
+### Explicit non-goals
+
+- A digital audio workstation.
+- A nonlinear video editor.
+- Cloud transcription or cloud LLM inference in the default product path.
+- Blind typing into whichever external window currently has focus.
+- A requirement that Rust/Burn reproduce WhisperX before a usable local backend exists.
+- Diarization, translation, speaker labeling, or word-level alignment as first-slice blockers. They may be capabilities added behind explicit gates.
+- A claim that Vulkan/Slug is required for the first usable transcription flow.
+
+## Architecture contract
+
+The design separates semantic truth from presentation and device-specific mechanisms.
+
+~~~mermaid
+flowchart LR
+    A[Audio or video file] --> M[Media adapter]
+    B[Microphone] --> C[Capture adapter]
+    M --> N[Normalize and prepare]
+    C --> N
+    N --> S[Immutable source and clip store]
+    S --> T[WhisperX backend]
+    T --> R[Typed transcript results]
+    R --> P[Transcript projection]
+    R --> L[Optional local LLM action]
+    P --> V[GUI, tray, CLI, export]
+    E[Typed commands and events] --> K[Domain kernel]
+    K --> S
+    K --> P
+    K --> D[Diagnostics and receipts]
+~~~
+
+### Domain vocabulary
+
+The initial kernel should define explicit types for:
+
+- AssetId, RecordingId, ClipId, TranscriptId, JobId, ModelId, SessionId, and ActionId.
+- TimeRange in source time and SampleRange in normalized audio time.
+- AssetKind: audio file, video file, microphone recording.
+- RecordingState: idle, armed, recording, stopping, saved, failed.
+- ClipState: pending, ready, processing, transcribed, edited, deleted.
+- JobState: queued, preparing, running, cancelling, completed, failed, cancelled.
+- Transcript provenance: raw ASR, aligned ASR, user edit, local LLM derivative, imported text.
+- Runtime state: unavailable, checking, ready, preparing, degraded, failed.
+
+No subsystem should exchange unvalidated path strings, floating-point time ranges, or untyped status strings when a domain type can express the contract.
+
+### Commands, events, and projections
+
+Commands represent requested intent: import asset, arm microphone, start recording, stop recording, split clip, move clip, prepare model, transcribe clip, cancel job, edit transcript, run local transform, export transcript, and reveal recording.
+
+Events represent accepted state changes. They must carry stable IDs, monotonic sequence numbers, schema version, timestamp, and enough data to replay the semantic state. Canonical NDJSON is the initial receipt format.
+
+The GUI, CLI, tray, and future automation entry points must converge on the same action executor. Presentation code may propose an action but may not mutate the domain directly.
+
+### Storage layout proposal
+
+The default app home should be configurable but deterministic:
+
+~~~text
+app-home/
+  recordings/
+    <recording-id>/
+      manifest.json
+      source/
+      audio/
+      transcripts/
+      events.ndjson
+      receipts/
+  models/
+  runtimes/
+  logs/
+  cache/
+~~~
+
+The manifest records source provenance, normalization, clip boundaries, checksums, model/runtime identifiers, transcript versions, and derived-file relationships. Raw recordings and raw ASR output are retained when the user has not explicitly removed them.
+
+### Backend boundary
+
+The first backend contract should expose:
+
+1. doctor: report runtime, model, device, and dependency readiness;
+2. describe: report capabilities, expected sample format, model identity, and limits;
+3. prepare: acquire or validate runtime/model assets with progress;
+4. submit: accept an immutable clip or prepared feature payload;
+5. stream: emit ordered partial/staged results and diagnostics;
+6. cancel: stop work without corrupting the source or committed transcript;
+7. shutdown: release resources and report final metrics.
+
+Python WhisperX is the first implementation candidate. A Rust/Burn adapter is a later candidate and must conform to the same typed contract rather than silently becoming a second product architecture.
+
+### Rendering and transport boundary
+
+The semantic transcript projection must be renderer-neutral. The first visual backend may use native controls or a simple renderer if that closes the end-to-end slice sooner.
+
+If Ash/Vulkan/Slug is used, renderer and transport are separate axes. A complete render tuple includes renderer, transport, dimensions, generation, and payload format; switching any member creates a fresh generation and a full resync. GPU output must be compared with a CPU fontdue reference and validated with fixtures before performance claims are made.
+
+## Design gates
+
+These are decisions or evidence gates, not implementation chores. A gate may be closed by a documented decision with rationale, or by evidence where the question is empirical.
+
+| ID | Gate | Current position | Exit evidence |
+|---|---|---|---|
+| G1 | GUI/window technology | Ash/Vulkan is a candidate; native/simple presentation is allowed for the first slice. | One documented choice with a visible window, close behavior, and input routing. |
+| G2 | Recording/data home | App-owned deterministic home with configurable root. | Manifest round-trip and recovery test on a fresh directory. |
+| G3 | LLM role | Optional post-ASR/local transformation, never the authoritative ASR and never a silent overwrite. | Typed command/result contract and a raw-vs-derived transcript example. |
+| G4 | WhisperX capability set | Start with local ASR for imported/recorded normalized audio; alignment/diarization are later capabilities. | Capability descriptor and one successful local transcription. |
+| G5 | Runtime/model bootstrap | Managed runtime and model cache, doctor, prepare, version/checksum reporting, clean-machine rehearsal. | Offline/online policy decision plus reproducible setup receipt. |
+| G6 | Media decoding | Use a replaceable adapter; likely ffmpeg/ffprobe or a documented library path. | Supported-format matrix, fixture corpus, and failure diagnostics. |
+| G7 | Microphone contract | Rust owns capture and buffering; explicit sample format, device identity, permission/failure states. | Device list and saved recording fixture, with no implicit external output. |
+| G8 | Clip semantics and processing | Immutable source plus derived clips; operations are reversible or replayable. | Boundary/ordering tests and before/after artifact receipts. |
+| G9 | Authoritative audio format | Choose source preservation plus normalized transcription format. | Chosen format, sample-rate/downmix policy, and checksums. |
+| G10 | Text rendering acceptance | CPU fontdue reference first; Slug GPU path only after artifact fixtures and bounds are stable. | Pixel/contract tests with known artifact cases and explicit tolerance. |
+| G11 | CLI and diagnostics surface | CLI is a diagnostic/control surface, not a separate semantic implementation. | doctor, model, recording, and transcribe commands backed by same actions. |
+| G12 | Formal scope | Bounded checker for the domain kernel, not a claim about model quality or all UI behavior. | Named finite scope, state/edge counts, limits, and shortest counterexample. |
+| G13 | Distribution and licenses | Verify WhisperX, model, ffmpeg, CUDA, and font/runtime licensing before packaging. | Recorded license inventory and redistribution decision. |
+| G14 | Quality corpus | Small checked-in fixtures plus user-owned local corpus policy. | Golden transcripts, timing expectations, and known non-claims. |
+
+## Work breakdown
+
+### Phase 1: contract and workspace
+
+#### W1 [~] Freeze the product contract
+
+Work: Close or explicitly defer G1-G14. Write the first capability matrix, vocabulary, privacy boundary, supported formats, and first-slice definition.
+
+Validation: A second reader can map every U-row and transfer lesson to a scope item, gate, work item, or non-goal.
+
+Completion: This plan contains the decision, rationale, evidence strength, owner, and next review date for every gate.
+
+#### W2 [~] Scaffold the semantic workspace
+
+Work: Extend the template-backed Rust application shell into a small workspace with domain, storage, media, transcription-client, application, and UI-facing crates only when each boundary is justified. Preserve the template's CLI, path, logging, cancellation, lint, test, and profiling conventions.
+
+Validation: cargo check, unit tests, and a crate-dependency review show no UI-to-model or renderer-to-storage shortcuts.
+
+Completion: A pure domain crate can load a manifest, apply valid commands, reject invalid transitions, and emit replayable events. The current template-backed shell is complete; the domain/storage extension remains.
+
+#### W3 [ ] Establish a fixture corpus
+
+Work: Add short licensed or generated audio fixtures, at least one video fixture, silence/noise/speech cases, and expected normalized metadata. Keep large/private recordings out of Git.
+
+Validation: Fixture checksums and provenance are recorded; tests run without a microphone, GPU, hosted service, or user profile.
+
+Completion: A fresh checkout can exercise import, normalization metadata, clip boundaries, and a fake transcription backend.
+
+### Phase 2: domain, storage, and media
+
+#### W4 [ ] Implement typed recording and clip state
+
+Work: Implement IDs, time/sample ranges, recording/job/clip state machines, commands, events, validation, replay, and deterministic serialization.
+
+Validation: Unit tests cover invalid transitions, overlap/boundary rules, ordering, cancellation, duplicate IDs, and replay equivalence.
+
+Completion: A complete headless session can import an asset, create clips, move them, and recover from its event receipt.
+
+#### W5 [ ] Implement the recording manifest and artifact store
+
+Work: Write atomic manifests, immutable source references, derived clip records, transcript versions, checksums, and receipts. Define retention and deletion behavior.
+
+Validation: Round-trip tests cover interrupted writes, missing derived files, path relocation, duplicate preparation, and recovery after restart.
+
+Completion: The application can show exactly which source and clip produced a transcript and where the recording is stored.
+
+#### W6 [ ] Add media import and normalization
+
+Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping.
+
+Validation: Run audio/video fixtures through the adapter; compare duration, channels, sample count, and failure diagnostics. Preserve offsets.
+
+Completion: Imported audio and video produce normalized clips with deterministic metadata and no model dependency.
+
+### Phase 3: local runtime and capture
+
+#### W7 [ ] Define the transcription backend protocol
+
+Work: Implement a fake backend first, capability descriptors, doctor/describe/prepare/submit/stream/cancel/shutdown messages, schema versions, and bounded progress events.
+
+Validation: Fake backend tests cover ordering, cancellation, stale results, retries, partial results, and resource failure.
+
+Completion: The app can run a fully observable transcription job without real inference and can replay its receipt.
+
+#### W8 [ ] Build model and runtime preparation
+
+Work: Separate executable/runtime cache from model cache. Define versioned manifests, checksums, device selection, CUDA/CPU policy, prepare progress, offline behavior, and clean-machine diagnostics.
+
+Validation: Doctor reports missing runtime, missing model, incompatible model, unavailable accelerator, and permission failures without guessing. Re-running prepare is idempotent.
+
+Completion: A documented new-device setup creates or explains every required local asset, and no installed executable requires the source checkout.
+
+#### W9 [ ] Integrate local WhisperX
+
+Work: Implement the first Python WhisperX worker behind the backend protocol. Start with normalized 16 kHz mono input and raw/staged transcript output; add VAD/alignment only behind capability flags.
+
+Validation: Run a real local fixture, record model/runtime versions, device, timings, chunk count, and output checksum. Test long input ordering, bounded work, cancellation, and failure.
+
+Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
+
+#### W10 [ ] Add microphone capture
+
+Work: Enumerate devices, show stable endpoint identity, capture to the chosen authoritative format, detect start/stop/failure states, and route captured audio into the same artifact path as imports.
+
+Validation: Device list works without capture; a real recording can be saved and replayed; device disconnect and permission errors are diagnosable; no external focused-window typing occurs.
+
+Completion: Microphone recording is a normal source kind in the domain model and can be transcribed by the same backend.
+
+### Phase 4: headless transcription workflow
+
+#### W11 [ ] Complete one file-to-transcript vertical slice
+
+Work: Connect import, normalization, model doctor, preparation, local WhisperX, ordered result staging, manifest update, and text export through the same semantic actions.
+
+Validation: Run without the GUI, capture structured receipts, show progress and stage timings, and verify that raw ASR survives derived edits.
+
+Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
+
+#### W12 [ ] Add long-input chunking and quality controls
+
+Work: Implement bounded chunking, speech-aware boundaries where available, ordered assembly, partial results, retry/cancel semantics, and quality metadata. Preserve source-to-chunk offsets.
+
+Validation: Synthetic and real long fixtures verify no dropped/duplicated chunks, deterministic ordering, bounded worker use, and timing evidence.
+
+Completion: Long files yield a coherent transcript with a machine-readable chunk map and no unreported approximation.
+
+#### W13 [ ] Add explicit transcript editing and output routing
+
+Work: Add staged versus committed transcript versions, user edits, local derivative actions, copy/export/save, and an explicit future integration boundary for external apps.
+
+Validation: Raw ASR, user edits, and LLM derivatives remain distinguishable; an external focused window cannot receive text accidentally.
+
+Completion: A user can review and export a transcript without losing the source or raw result.
+
+### Phase 5: GUI, actions, and tray
+
+#### W14 [ ] Build renderer-neutral presentation state
+
+Work: Define stable UI IDs, action IDs, focus/context state, narration/diagnostics, waveform/transcript projections, and contextual keyboard precedence.
+
+Validation: Pointer, keyboard, palette, and future tray invocations produce the same domain command. Conflicting chords resolve deterministically and are logged.
+
+Completion: A headless presentation test can drive the first slice without depending on a window or renderer.
+
+#### W15 [ ] Build the microphone-centered window
+
+Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions.
+
+Validation: Window lifecycle, focus, keyboard, error, cancellation, and accessibility/narration paths are tested. The view shows provenance and does not imply uncommitted text is final.
+
+Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
+
+#### W16 [ ] Add tray and hotkey behavior
+
+Work: Add tray presence, explicit global hotkey registration, notification policy, and a compact action menu only after W14/W15 are stable.
+
+Validation: Hotkeys respect app state and context, can be disabled, do not capture unexpectedly, and survive restart without losing recording state.
+
+Completion: Tray and hotkeys are convenience projections of the same action model, not a second control path.
+
+### Phase 6: text rendering correctness
+
+#### W17 [ ] Define text rendering contracts and evidence
+
+Work: Specify glyph origin, atlas/texture layout, band/glyph metadata, clipping, baseline, generation, transport, pixel format, and bounds. Add known artifact fixtures.
+
+Validation: CPU fontdue output is the reference for selected cases; renderer tests can run offscreen and emit manifests plus images.
+
+Completion: A failing render can be classified as semantic, transport, rasterization, or presentation error.
+
+#### W18 [ ] Integrate CPU reference and optional Slug GPU path
+
+Work: Implement the CPU reference and then the Ash/Vulkan/Slug path if G1 selects it. Use complete renderer/transport tuples, fresh generations, full resync, and bounded push-based delivery.
+
+Validation: Compare fixtures at multiple sizes, scripts, clipping cases, and stale-generation transitions. Measure end-to-end latency before any speed claim.
+
+Completion: Text artifacts are below the documented tolerance or the affected path remains explicitly experimental and is not the default.
+
+### Phase 7: convenience processing and local LLM
+
+#### W19 [ ] Add reversible audio preparation profiles
+
+Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append as derived operations. Preserve original source and parameter receipts.
+
+Validation: Golden audio metadata and transcript comparisons cover each profile; processing failure leaves the prior artifact usable.
+
+Completion: Convenience processing is predictable, inspectable, and never changes the authoritative source silently.
+
+#### W20 [ ] Add optional local LLM actions
+
+Work: Reuse the teamy-llm-service lessons for model registry, readiness, cancellation, and per-model scheduling. Define cleanup, formatting, and summary as derived transcript actions.
+
+Validation: The LLM path is unavailable without blocking ASR; prompts and outputs stay local; raw transcript is immutable; model identity and prompt/action receipts are saved.
+
+Completion: A user can invoke a visible local transformation and compare raw, edited, and derived text.
+
+### Phase 8: formal and empirical evidence
+
+#### W21 [ ] Add property, replay, and bounded-checker coverage
+
+Work: Test typed state transitions, clip ordering, event replay, stale jobs, cancellation, manifest recovery, and action routing. Add a deterministic explicit checker over a named finite scope.
+
+Validation: Report scope identifiers, assumptions, state/edge counts, exhaustion or limit status, shortest counterexamples, tool versions, and non-claims.
+
+Completion: The checker demonstrates the stated bounded properties without being described as proof of model accuracy, UI correctness, or all runtime behavior.
+
+#### W22 [ ] Add acceptance matrix and diagnostics
+
+Work: Track feature, tool/runtime/model version, evidence type, confidence, support fixture, known limits, and next action. Emit structured diagnostics beside visual evidence.
+
+Validation: Every overall criterion below has a row with evidence or an explicit gap. Screenshots are never the only evidence for a semantic claim.
+
+Completion: A release review can answer what is proven, sampled, empirical, experimental, deferred, and unverified.
+
+### Phase 9: packaging and handoff
+
+#### W23 [ ] Rehearse clean-device packaging
+
+Work: Package the executable, runtime bootstrap, model preparation, licenses, config migration, logs, and uninstall/retention behavior.
+
+Validation: Rehearse on a clean Windows environment with no checkout, pre-existing model cache, or hidden developer dependency. Record all failures.
+
+Completion: A new user can install, run doctor, prepare the selected local model, record/import, transcribe, and locate outputs.
+
+#### W24 [ ] Maintain operator and developer documentation
+
+Work: Document privacy, storage, supported formats, model licenses, troubleshooting, keyboard/tray behavior, evidence limits, and a fresh-agent continuation section.
+
+Validation: Follow the docs from a clean checkout and update the plan when actual behavior diverges.
+
+Completion: The repository tells a user how to use the product and an agent how to continue the next safe slice.
+
+## Overall acceptance criteria
+
+| ID | Criterion | Required evidence |
+|---|---|---|
+| A1 | Audio file import works locally. | Fixture receipt, transcript provenance, timing, and failure case. |
+| A2 | Video file import works locally. | Fixture receipt showing extracted/normalized audio and source-time mapping. |
+| A3 | Microphone recording works. | Device identity, saved artifact, replayable manifest, disconnect/permission diagnostics. |
+| A4 | WhisperX runs locally. | Runtime/model/device receipt and raw transcript from at least one fixture. |
+| A5 | New-device model/runtime setup is understandable and repeatable. | Doctor/prepare output and clean-machine rehearsal. |
+| A6 | GUI is coherent and microphone-centered. | Human-observable vertical slice plus action/presentation tests. |
+| A7 | Clips and transcript versions are predictable. | Boundary, ordering, replay, and provenance tests. |
+| A8 | Noise reduction, equalization, and movement are safe. | Derived artifacts, parameter receipts, and no source mutation. |
+| A9 | Local LLM actions are explicit and optional. | Raw/derived comparison, local-only receipt, unavailable-service behavior. |
+| A10 | Text rendering is correct enough for the chosen default. | CPU reference plus GPU artifact evidence if GPU is enabled. |
+| A11 | Reliability claims are bounded. | Chunking, cancellation, recovery, latency, and structured diagnostics. |
+| A12 | Formal-methods claims are scoped. | Named finite checker scope, counts, limits, counterexamples, and non-claims. |
+
+## Risk register
+
+| ID | Risk | Mitigation and stop condition |
+|---|---|---|
+| R1 | WhisperX setup requires several model/runtime assets or gated downloads. | Build doctor/prepare first; stop packaging claims until clean-machine rehearsal passes. |
+| R2 | Burn rewrite expands scope and delays user value. | Keep Burn behind the backend contract; stop if it blocks the first local WhisperX slice. |
+| R3 | WhisperX quality or latency is insufficient on the target device. | Measure fixture quality and end-to-end latency; report capability limits rather than hiding them. |
+| R4 | Media preprocessing shifts timestamps. | Preserve mappings and test source-time/normalized-time conversions. |
+| R5 | GPU text artifacts consume the project. | CPU fontdue reference is the acceptance baseline; pause GPU defaulting when artifact fixtures fail. |
+| R6 | GUI and tray paths diverge semantically. | One typed action executor, stable IDs, and replay tests. |
+| R7 | Microphone capture leaks to an external app or records unexpectedly. | Explicit armed state, visible indicator, no blind typing, disable-able hotkeys, diagnostics. |
+| R8 | LLM transforms overwrite authoritative text. | Immutable raw transcript, derived versions, explicit action and provenance. |
+| R9 | Formal checker creates false confidence. | Named bounded scope and evidence labels on every claim. |
+| R10 | Packaging relies on the developer checkout or hidden PATH tools. | Clean-device rehearsal and doctor diagnostics; tv.exe is not assumed. |
+| R11 | Feature breadth turns the utility into a DAW/NLE. | Keep the scope centered on capture, clips, transcription, review, and export; defer editing features that do not serve that loop. |
+
+## Intent audit
+
+### Pass 1: extraction
+
+Completed 2026-08-06. Re-read the original request and both supplied transfer briefs. U1-U27 were extracted into the ledger. The audit specifically checked for audio, video, microphone, local WhisperX, local LLM, model bootstrap, saved recordings, clips, noise reduction, equalization, movement, GUI, skeuomorphic microphone, tray/hotkeys, Ash/Vulkan, cursor-latency, fontdue/Slug, Teamy Studio, Teamy Terminal, Burn, Poche, action-first UI, typed state/events, renderer/transport separation, diagnostics, evidence language, and stop conditions.
+
+### Pass 2: traceability
+
+Completed 2026-08-06. Every ledger item maps to at least one product-boundary statement, gate, work item, acceptance criterion, risk, or explicit non-goal. The transfer lessons are represented in W4, W7, W14, W17, W21, W22, and the architecture contract.
+
+### Pass 3: adversarial omission review
+
+Completed 2026-08-06. Checked the likely failure modes:
+
+- Local-only could have been weakened by the LLM or model bootstrap: it is an explicit default boundary and receipt requirement.
+- ASR, LLM cleanup, user edits, and export could have been conflated: they have separate provenance and commands.
+- Microphone capture could have become blind external typing: that is an explicit non-goal and acceptance condition.
+- GUI ambitions could have hidden missing persistence: storage and recovery precede the GUI.
+- WhisperX could have been treated as a single binary: runtime/model/doctor/prepare are separate work.
+- Renderer work could have swallowed the product: CPU reference and an allowed non-GPU first slice are explicit.
+- Poche evidence could have been overstated: bounded scope, tool versions, limits, and non-claims are required.
+- “General and easy to use” could have become DAW/NLE scope: non-goals and R11 constrain it.
+
+Remaining open gates are intentional decisions, not omitted requirements.
+
+## Decision log
+
+| Date | Decision | Reason | Revisit trigger |
+|---|---|---|---|
+| 2026-08-06 | Start with a typed Rust domain/storage/backend contract and a fake backend. | Produces a testable vertical slice before device/model/rendering complexity. | Revisit if the chosen GUI framework forces a different boundary. |
+| 2026-08-06 | Treat Python WhisperX as first local backend and Burn as a later adapter. | Existing WhisperX is the closest path to user value; Burn conversion is a separate research problem. | Revisit after capability/quality measurements. |
+| 2026-08-06 | Keep raw ASR immutable and LLM output derived. | Protects trust and makes local transformations auditable. | Revisit only with an explicit versioning design. |
+| 2026-08-06 | CPU fontdue is the text-rendering reference. | Prior Slug artifacts require a stable comparator and honest GPU evidence. | Revisit after artifact fixtures pass. |
+
+## Next safe implementation slice
+
+The next implementation turn should close W1 and begin W2:
+
+1. Record decisions for G1-G14, marking unresolved items [!] rather than guessing.
+2. Create the minimal Rust workspace and pure domain types.
+3. Add a fake transcription backend and a tiny fixture-driven headless flow.
+4. Add manifest/event round-trip tests before microphone or GUI work.
+
+Do not begin by copying WhisperX, building the skeuomorphic microphone, adding tray hotkeys, or writing the Slug renderer. Those are downstream of the semantic and storage contract.
+
+## Plan completion rule
+
+This planning phase is complete when the gates have explicit owners/decisions, the first vertical slice is executable, and the acceptance matrix has no unowned ambiguity. Implementation is complete only when the acceptance criteria and documented evidence support a release decision.

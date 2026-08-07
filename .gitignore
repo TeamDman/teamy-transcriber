@@ -1,0 +1,13 @@
+/target
+/tracy/
+*.tracy
+/recordings/
+/models/
+/runtimes/
+/cache/
+/artifacts/
+*.wav
+*.flac
+*.mp3
+*.mp4
+*.mkv
