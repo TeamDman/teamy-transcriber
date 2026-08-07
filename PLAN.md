@@ -3,6 +3,7 @@
 Status: active implementation baseline; domain/storage work is next.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
+Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
 Current focus: [~] W2: establish the typed domain/storage contract on the template-backed application shell
 
@@ -11,6 +12,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 ## Progress log
 
 2026-08-06: Initialized the repository from G:\Programming\Repos\teamy-rust-cli using its own init command. Adapted package metadata, MPL-2.0 identity, Teamy-specific path overrides, logging target, profiler target, and CLI documentation. Removed the template-only init command, added the app-specific doctor command, and verified the full check-all.ps1 gate.
+
+2026-08-06: Created the public GitHub repository TeamDman/teamy-transcriber and pushed baseline commit 3f5bb81 to main. GitHub reports the repository as public and MPL-2.0.
 
 ## Plan operating rules
 
