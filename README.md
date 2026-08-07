@@ -21,6 +21,9 @@ The initial repository baseline is a template-backed diagnostic CLI:
 
 ~~~powershell
 cargo run -- doctor
+cargo run -- microphone list
+# Capture one explicit microphone interval (Windows):
+cargo run -- microphone record --duration-ms 5000
 cargo run -- model show
 cargo run -- home show
 cargo run -- cache show

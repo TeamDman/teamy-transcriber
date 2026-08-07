@@ -1,6 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 #![deny(clippy::disallowed_macros)]
 
+pub mod capture;
 pub mod cli;
 pub mod domain;
 pub mod logging_init;

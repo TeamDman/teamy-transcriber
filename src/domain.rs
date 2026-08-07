@@ -203,6 +203,7 @@ pub struct Recording {
     pub id: RecordingId,
     pub source: SourceAsset,
     pub status: RecordingStatus,
+    pub failure: Option<String>,
     pub clips: Vec<Clip>,
     pub transcripts: Vec<TranscriptVersion>,
 }
@@ -236,6 +237,20 @@ impl AppState {
                 recording_id,
                 source,
             },
+            Command::StartRecording { recording_id } => Event::RecordingStarted { recording_id },
+            Command::CompleteRecording { recording_id } => Event::RecordingSaved { recording_id },
+            Command::FailRecording {
+                recording_id,
+                reason,
+            } => {
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyRecordingFailure);
+                }
+                Event::RecordingFailed {
+                    recording_id,
+                    reason,
+                }
+            }
             Command::AddClip {
                 recording_id,
                 clip_id,
@@ -352,10 +367,55 @@ impl AppState {
                         id: *recording_id,
                         source: source.clone(),
                         status: RecordingStatus::Created,
+                        failure: None,
                         clips: Vec::new(),
                         transcripts: Vec::new(),
                     },
                 );
+            }
+            Event::RecordingStarted { recording_id } => {
+                let recording = self.recording_mut(*recording_id)?;
+                if recording.status != RecordingStatus::Created {
+                    return Err(DomainError::InvalidRecordingTransition {
+                        recording_id: *recording_id,
+                        actual: recording.status,
+                        action: "start",
+                    });
+                }
+                recording.status = RecordingStatus::Recording;
+                recording.failure = None;
+            }
+            Event::RecordingSaved { recording_id } => {
+                let recording = self.recording_mut(*recording_id)?;
+                if recording.status != RecordingStatus::Recording {
+                    return Err(DomainError::InvalidRecordingTransition {
+                        recording_id: *recording_id,
+                        actual: recording.status,
+                        action: "save",
+                    });
+                }
+                recording.status = RecordingStatus::Saved;
+            }
+            Event::RecordingFailed {
+                recording_id,
+                reason,
+            } => {
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyRecordingFailure);
+                }
+                let recording = self.recording_mut(*recording_id)?;
+                if !matches!(
+                    recording.status,
+                    RecordingStatus::Created | RecordingStatus::Recording
+                ) {
+                    return Err(DomainError::InvalidRecordingTransition {
+                        recording_id: *recording_id,
+                        actual: recording.status,
+                        action: "fail",
+                    });
+                }
+                recording.status = RecordingStatus::Failed;
+                recording.failure = Some(reason.clone());
             }
             Event::ClipAdded {
                 recording_id,
@@ -468,6 +528,16 @@ pub enum Command {
         recording_id: RecordingId,
         source: SourceAsset,
     },
+    StartRecording {
+        recording_id: RecordingId,
+    },
+    CompleteRecording {
+        recording_id: RecordingId,
+    },
+    FailRecording {
+        recording_id: RecordingId,
+        reason: String,
+    },
     AddClip {
         recording_id: RecordingId,
         clip_id: ClipId,
@@ -499,6 +569,16 @@ pub enum Event {
         recording_id: RecordingId,
         source: SourceAsset,
     },
+    RecordingStarted {
+        recording_id: RecordingId,
+    },
+    RecordingSaved {
+        recording_id: RecordingId,
+    },
+    RecordingFailed {
+        recording_id: RecordingId,
+        reason: String,
+    },
     ClipAdded {
         recording_id: RecordingId,
         clip_id: ClipId,
@@ -527,6 +607,9 @@ impl Event {
     pub fn recording_id(&self) -> RecordingId {
         match self {
             Self::RecordingCreated { recording_id, .. }
+            | Self::RecordingStarted { recording_id }
+            | Self::RecordingSaved { recording_id }
+            | Self::RecordingFailed { recording_id, .. }
             | Self::ClipAdded { recording_id, .. }
             | Self::ClipMoved { recording_id, .. }
             | Self::ClipDeleted { recording_id, .. }
@@ -552,6 +635,14 @@ pub enum DomainError {
     RecordingNotFound(RecordingId),
     #[error("recording {0} already exists")]
     RecordingAlreadyExists(RecordingId),
+    #[error("recording {recording_id} cannot {action} from status {actual:?}")]
+    InvalidRecordingTransition {
+        recording_id: RecordingId,
+        actual: RecordingStatus,
+        action: &'static str,
+    },
+    #[error("recording failure reason cannot be empty")]
+    EmptyRecordingFailure,
     #[error("clip {0} was not found")]
     ClipNotFound(ClipId),
     #[error("clip {0} already exists")]

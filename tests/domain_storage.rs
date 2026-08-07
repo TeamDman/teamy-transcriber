@@ -7,6 +7,7 @@ use teamy_transcriber::domain::ClipId;
 use teamy_transcriber::domain::Command;
 use teamy_transcriber::domain::DomainError;
 use teamy_transcriber::domain::RecordingId;
+use teamy_transcriber::domain::RecordingStatus;
 use teamy_transcriber::domain::SourceAsset;
 use teamy_transcriber::domain::TimeRange;
 use teamy_transcriber::domain::TranscriptId;
@@ -194,6 +195,82 @@ fn active_clip_ranges_must_not_overlap() {
         source_range: TimeRange::new(999_999, 2_000_000).expect("range should be valid"),
     });
     assert!(matches!(result, Err(DomainError::ClipOverlaps { .. })));
+}
+
+#[test]
+fn recording_capture_lifecycle_is_typed_and_replayable() {
+    let recording_id = RecordingId::new();
+    let source = SourceAsset::new(AssetKind::MicrophoneRecording, PathBuf::from("mic.wav"))
+        .expect("microphone path should be accepted");
+    let mut state = AppState::new();
+    state
+        .execute(Command::CreateRecording {
+            recording_id,
+            source,
+        })
+        .expect("recording creation should succeed");
+
+    let invalid_save = state.execute(Command::CompleteRecording { recording_id });
+    assert!(matches!(
+        invalid_save,
+        Err(DomainError::InvalidRecordingTransition {
+            action: "save",
+            actual: RecordingStatus::Created,
+            ..
+        })
+    ));
+
+    state
+        .execute(Command::StartRecording { recording_id })
+        .expect("recording should start");
+    state
+        .execute(Command::CompleteRecording { recording_id })
+        .expect("recording should save");
+    let saved = state
+        .recording(recording_id)
+        .expect("recording should exist");
+    assert_eq!(saved.status, RecordingStatus::Saved);
+    assert_eq!(saved.failure, None);
+
+    let failed_id = RecordingId::new();
+    let mut failed_state = AppState::new();
+    let mut records = Vec::new();
+    records.push(
+        failed_state
+            .execute(Command::CreateRecording {
+                recording_id: failed_id,
+                source: SourceAsset::new(
+                    AssetKind::MicrophoneRecording,
+                    PathBuf::from("other-mic.wav"),
+                )
+                .expect("microphone path should be accepted"),
+            })
+            .expect("failed recording creation should succeed"),
+    );
+    records.push(
+        failed_state
+            .execute(Command::StartRecording {
+                recording_id: failed_id,
+            })
+            .expect("failed recording should start"),
+    );
+    records.push(
+        failed_state
+            .execute(Command::FailRecording {
+                recording_id: failed_id,
+                reason: "simulated device disconnect".to_string(),
+            })
+            .expect("failure should be recorded"),
+    );
+    let replayed = AppState::replay(records).expect("capture lifecycle should replay");
+    let failed = replayed
+        .recording(failed_id)
+        .expect("failed recording should exist");
+    assert_eq!(failed.status, RecordingStatus::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("simulated device disconnect")
+    );
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

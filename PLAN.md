@@ -1,11 +1,11 @@
 # teamy-transcriber implementation plan
 
-Status: active implementation slice; the prepared-recording to local-worker path is next to validate with a real runtime.
+Status: active implementation slice; the microphone path is now ready for an explicit capture run, while local-worker inference still awaits a supplied runtime/model fixture.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
-Current focus: [~] W11: connect prepared recordings, full-duration clips, and local WhisperX transcript persistence
+Current focus: [~] W10: finish microphone capture lifecycle and validate a saved local recording
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -30,6 +30,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-06: Added typed runtime readiness for Python, the WhisperX worker, and the model directory. Python executable resolution now supports PATH commands such as `python` instead of requiring a filesystem path; `doctor` reports the readiness states and configured ffmpeg tools.
 
 2026-08-06: Added active-clip overlap validation and explicit transcript export. The domain rejects overlapping active ranges, and `recording export` writes the latest committed transcript per active clip to an atomic text artifact with provenance labels.
+
+2026-08-06: Added Windows Core Audio microphone inventory and an explicitly bounded WASAPI capture command. `microphone list` empirically enumerated two active 48 kHz endpoints on this device; capture lifecycle events now persist `created → recording → saved` or `failed` with a replayable failure reason. Capture code was not started implicitly, so a real saved microphone fixture remains pending an explicit capture run.
 
 ## Plan operating rules
 
@@ -320,11 +322,11 @@ Validation: Rust boundary tests and worker source review are complete; a real lo
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
-#### W10 [ ] Add microphone capture
+#### W10 [~] Add microphone capture
 
-Work: Enumerate devices, show stable endpoint identity, capture to the chosen authoritative format, detect start/stop/failure states, and route captured audio into the same artifact path as imports.
+Work: Enumerate devices, show stable endpoint identity, capture an explicitly bounded interval through WASAPI, save native-rate mono-f32 audio, detect start/stop/failure states, and route captured audio into the same artifact path as imports. The current slice provides active endpoint inventory, `microphone record`, and replayable recording lifecycle states; GUI controls and an armed state remain pending.
 
-Validation: Device list works without capture; a real recording can be saved and replayed; device disconnect and permission errors are diagnosable; no external focused-window typing occurs.
+Validation: Device inventory works without capture and empirically reported two active endpoints. The bounded capture path compiles and rejects zero-duration requests without opening a device; domain tests cover saved/failed lifecycle replay. A real saved recording, device disconnect, and permission errors remain pending an explicit capture run.
 
 Completion: Microphone recording is a normal source kind in the domain model and can be transcribed by the same backend.
 
