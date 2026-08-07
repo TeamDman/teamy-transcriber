@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod domain;
 pub mod logging_init;
+pub mod media;
 pub mod paths;
 pub mod storage;
 pub mod transcription;

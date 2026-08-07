@@ -1,11 +1,11 @@
 # teamy-transcriber implementation plan
 
-Status: active implementation baseline; domain/storage work is next.
+Status: active implementation slice; the prepared-recording to local-worker path is next to validate with a real runtime.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
-Current focus: [~] W2: establish the typed domain/storage contract on the template-backed application shell
+Current focus: [~] W11: connect prepared recordings, full-duration clips, and local WhisperX transcript persistence
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -16,6 +16,12 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-06: Created the public GitHub repository TeamDman/teamy-transcriber and pushed baseline commit 3f5bb81 to main. GitHub reports the repository as public and MPL-2.0.
 
 2026-08-06: Implemented typed domain state, replayable event records, manifest/NDJSON persistence, local model inventory, a deterministic fake transcription backend, and the doctor/model/recording CLI surfaces. The current model policy assumes locally supplied files and defers CDN acquisition.
+
+2026-08-06: Added a generated stereo-WAV fixture and a replaceable WavMediaAdapter. The adapter inspects metadata, downmixes, resamples to 16 kHz mono, writes a deterministic derived WAV, and is exposed through `recording prepare`. Evidence is bounded to generated WAV fixtures; video, ffmpeg, and microphone paths remain open.
+
+2026-08-06: Added a local WhisperX JSONL worker boundary with `local_files_only=True`, request correlation, model-directory configuration, and a `recording transcribe` command that persists raw ASR results. Full repository validation passes; real inference is unverified because no Python, WhisperX, ffmpeg, or ffprobe executable is available on PATH in the current environment.
+
+2026-08-06: Added persisted `recording clip add` boundaries and normalized WAV clip extraction. Partial clips now become immutable derived artifacts before transcription, and out-of-range requests are rejected instead of being silently clamped.
 
 ## Plan operating rules
 
@@ -245,11 +251,11 @@ Validation: cargo check, unit tests, and a crate-dependency review show no UI-to
 
 Completion: A pure domain crate can load a manifest, apply valid commands, reject invalid transitions, and emit replayable events. The current template-backed shell is complete; the domain/storage extension remains.
 
-#### W3 [ ] Establish a fixture corpus
+#### W3 [~] Establish a fixture corpus
 
 Work: Add short licensed or generated audio fixtures, at least one video fixture, silence/noise/speech cases, and expected normalized metadata. Keep large/private recordings out of Git.
 
-Validation: Fixture checksums and provenance are recorded; tests run without a microphone, GPU, hosted service, or user profile.
+Validation: A generated stereo WAV fixture exercises metadata, downmixing, resampling, and output duration without a microphone, GPU, hosted service, or user profile. Video, silence/noise/speech cases, checksums, and provenance are still pending.
 
 Completion: A fresh checkout can exercise import, normalization metadata, clip boundaries, and a fake transcription backend.
 
@@ -271,37 +277,37 @@ Validation: Round-trip tests cover interrupted writes, missing derived files, pa
 
 Completion: The application can show exactly which source and clip produced a transcript and where the recording is stored.
 
-#### W6 [ ] Add media import and normalization
+#### W6 [~] Add media import and normalization
 
-Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping.
+Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping. The first bounded implementation is a WAV adapter with generated-fixture coverage; video and broader format support remain deferred.
 
-Validation: Run audio/video fixtures through the adapter; compare duration, channels, sample count, and failure diagnostics. Preserve offsets.
+Validation: The WAV fixture compares duration, channels, sample count, and normalized output metadata. Audio/video fixture matrices, offsets, and failure diagnostics beyond WAV remain pending.
 
 Completion: Imported audio and video produce normalized clips with deterministic metadata and no model dependency.
 
 ### Phase 3: local runtime and capture
 
-#### W7 [ ] Define the transcription backend protocol
+#### W7 [~] Define the transcription backend protocol
 
-Work: Implement a fake backend first, capability descriptors, doctor/describe/prepare/submit/stream/cancel/shutdown messages, schema versions, and bounded progress events.
+Work: Implement a fake backend first, capability descriptors, and a narrow one-shot Rust-to-Python JSONL submit/response boundary with request correlation. Full doctor/describe/prepare/stream/cancel/shutdown messages, schema versions, and bounded progress events remain pending.
 
-Validation: Fake backend tests cover ordering, cancellation, stale results, retries, partial results, and resource failure.
+Validation: Fake backend behavior, local-only capability reporting, configuration rejection, JSONL serialization, process errors, empty results, and response correlation are covered at the current boundary. Long-running lifecycle behavior remains unverified.
 
 Completion: The app can run a fully observable transcription job without real inference and can replay its receipt.
 
-#### W8 [ ] Build model and runtime preparation
+#### W8 [~] Build model and runtime preparation
 
 Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. Do not add a downloader or CDN dependency.
 
-Validation: Doctor reports missing runtime, missing model, incompatible model, unavailable accelerator, and permission failures without guessing. Re-running prepare is idempotent.
+Validation: `model show`, local inventory, and backend configuration report the configured local model/runtime paths without downloading or modifying them. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
-#### W9 [ ] Integrate local WhisperX
+#### W9 [~] Integrate local WhisperX
 
-Work: Implement the first Python WhisperX worker behind the backend protocol, consuming model files supplied in the configured local model directory. Start with normalized 16 kHz mono input and raw/staged transcript output; add VAD/alignment only behind capability flags.
+Work: Implement the first Python WhisperX worker behind the backend protocol, consuming model files supplied in the configured local model directory. The current worker accepts normalized 16 kHz mono input, uses `local_files_only=True`, caches models within one process, and returns raw transcript text. VAD/alignment remain later capabilities.
 
-Validation: Run a real local fixture, record model/runtime versions, device, timings, chunk count, and output checksum. Test long input ordering, bounded work, cancellation, and failure.
+Validation: Rust boundary tests and worker source review are complete; a real local fixture, model/runtime versions, device timings, chunk count, output checksum, long-input ordering, bounded work, cancellation, and failure matrix are pending a local Python/WhisperX runtime.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -315,11 +321,11 @@ Completion: Microphone recording is a normal source kind in the domain model and
 
 ### Phase 4: headless transcription workflow
 
-#### W11 [ ] Complete one file-to-transcript vertical slice
+#### W11 [~] Complete one file-to-transcript vertical slice
 
-Work: Connect import, normalization, model doctor, preparation, local WhisperX, ordered result staging, manifest update, and text export through the same semantic actions.
+Work: Connect WAV normalization, full-duration or persisted partial-clip extraction, local WhisperX submission, raw transcript commit, and structured CLI output through the same event-backed recording. Import/video coverage, ordered result staging, progress, cancellation, and text export remain pending.
 
-Validation: Run without the GUI, capture structured receipts, show progress and stage timings, and verify that raw ASR survives derived edits.
+Validation: The no-GUI command path and event receipt are implemented and the full repository gate passes. Actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
@@ -506,12 +512,13 @@ Remaining open gates are intentional decisions, not omitted requirements.
 
 ## Next safe implementation slice
 
-The next implementation turn should continue W2 and begin W3/W6:
+The next implementation turn should continue W11 and close the runtime-dependent evidence gap:
 
-1. Add a small checked-in fixture corpus and deterministic media metadata fixtures.
-2. Define the media adapter boundary and source-time to normalized-time mapping.
-3. Add clip creation and fake-backend transcript commands on top of the persisted recording.
-4. Keep local model inventory and runtime validation separate from any future CDN acquisition.
+1. Run `recording prepare` and `recording transcribe` against a local Python/WhisperX installation and locally supplied model files, recording versions, device, timing, and output checksum.
+2. Add a portable video/audio fixture strategy and source-time mapping, likely behind an ffmpeg/ffprobe adapter or a documented native library.
+3. Add an explicit CLI clip-creation command and source-time mapping for clips that are not currently represented by persisted events.
+4. Expand the backend lifecycle with progress, cancellation, staged results, and structured receipts.
+5. Keep local model inventory and runtime validation separate from any future CDN acquisition.
 
 Do not begin by copying WhisperX, building the skeuomorphic microphone, adding tray hotkeys, or writing the Slug renderer. Those are downstream of the semantic and storage contract.
 

@@ -1,6 +1,9 @@
 use crate::cli::output::CliOutput;
+use crate::cli::recording::clip::ClipArgs;
 use crate::cli::recording::create::RecordingCreateArgs;
+use crate::cli::recording::prepare::RecordingPrepareArgs;
 use crate::cli::recording::show::RecordingShowArgs;
+use crate::cli::recording::transcribe::RecordingTranscribeArgs;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -17,10 +20,16 @@ pub struct RecordingArgs {
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum RecordingCommand {
+    /// Manage immutable recording clips.
+    Clip(ClipArgs),
     /// Create a durable recording manifest for an audio, video, or microphone source.
     Create(RecordingCreateArgs),
+    /// Normalize a WAV recording into local 16 kHz mono audio.
+    Prepare(RecordingPrepareArgs),
     /// Show a recording manifest and its current clip/transcript counts.
     Show(RecordingShowArgs),
+    /// Transcribe a prepared recording clip with local `WhisperX`.
+    Transcribe(RecordingTranscribeArgs),
 }
 
 impl RecordingArgs {
@@ -29,8 +38,11 @@ impl RecordingArgs {
     /// This function returns an error if the recording subcommand fails.
     pub async fn invoke(self) -> Result<CliOutput> {
         match self.command {
+            RecordingCommand::Clip(args) => args.invoke().await,
             RecordingCommand::Create(args) => args.invoke().await,
+            RecordingCommand::Prepare(args) => args.invoke().await,
             RecordingCommand::Show(args) => args.invoke().await,
+            RecordingCommand::Transcribe(args) => args.invoke().await,
         }
     }
 }

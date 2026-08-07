@@ -1,8 +1,12 @@
 use crate::domain::ClipId;
 use crate::domain::RecordingId;
 use crate::domain::TranscriptProvenance;
+use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,6 +88,159 @@ impl TranscriptionBackend for FakeTranscriptionBackend {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct LocalWhisperXConfig {
+    pub python_executable: PathBuf,
+    pub worker_script: PathBuf,
+    pub model_dir: PathBuf,
+    pub model_name: String,
+    pub device: String,
+    pub compute_type: String,
+    pub batch_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct LocalWhisperXBackend {
+    config: LocalWhisperXConfig,
+}
+
+impl LocalWhisperXBackend {
+    #[must_use]
+    pub fn new(config: LocalWhisperXConfig) -> Self {
+        Self { config }
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &LocalWhisperXConfig {
+        &self.config
+    }
+
+    fn validate_configuration(
+        &self,
+        request: &TranscriptionRequest,
+    ) -> Result<(), TranscriptionError> {
+        let paths = [
+            ("Python executable", self.config.python_executable.as_path()),
+            ("WhisperX worker", self.config.worker_script.as_path()),
+            ("model directory", self.config.model_dir.as_path()),
+            ("normalized audio", request.audio_path.as_path()),
+        ];
+        for (label, path) in paths {
+            if !path.exists() {
+                return Err(TranscriptionError::Configuration(format!(
+                    "{label} does not exist: {}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl TranscriptionBackend for LocalWhisperXBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            backend_id: "whisperx-local".to_string(),
+            local_only: true,
+            accepts_normalized_audio: true,
+        }
+    }
+
+    fn transcribe(
+        &self,
+        request: &TranscriptionRequest,
+    ) -> Result<TranscriptionResult, TranscriptionError> {
+        self.validate_configuration(request)?;
+        let worker_request = WorkerRequest {
+            operation: "transcribe".to_string(),
+            request_id: format!("{}-{}", request.recording_id, request.clip_id),
+            audio_path: request.audio_path.display().to_string(),
+            model_dir: self.config.model_dir.display().to_string(),
+            model_name: self.config.model_name.clone(),
+            device: self.config.device.clone(),
+            compute_type: self.config.compute_type.clone(),
+            batch_size: self.config.batch_size,
+        };
+        let request_json = facet_json::to_string(&worker_request)
+            .map_err(|error| TranscriptionError::Protocol(error.to_string()))?;
+        let mut child = Command::new(&self.config.python_executable)
+            .arg(&self.config.worker_script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| TranscriptionError::Process(error.to_string()))?;
+        {
+            let stdin = child.stdin.as_mut().ok_or_else(|| {
+                TranscriptionError::Process("worker stdin unavailable".to_string())
+            })?;
+            stdin
+                .write_all(request_json.as_bytes())
+                .and_then(|()| stdin.write_all(b"\n"))
+                .map_err(|error| TranscriptionError::Process(error.to_string()))?;
+        };
+        drop(child.stdin.take());
+        let output = child
+            .wait_with_output()
+            .map_err(|error| TranscriptionError::Process(error.to_string()))?;
+        if !output.status.success() {
+            return Err(TranscriptionError::Process(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let response_line = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or_else(|| {
+                TranscriptionError::Protocol("worker returned no response".to_string())
+            })?;
+        let response: WorkerResponse = facet_json::from_str(response_line)
+            .map_err(|error| TranscriptionError::Protocol(error.to_string()))?;
+        if response.request_id != worker_request.request_id {
+            return Err(TranscriptionError::Protocol(
+                "worker response request ID did not match".to_string(),
+            ));
+        }
+        if !response.ok {
+            return Err(TranscriptionError::WorkerRejected(
+                response
+                    .error
+                    .unwrap_or_else(|| "worker rejected the request".to_string()),
+            ));
+        }
+        let text = response
+            .text
+            .filter(|text| !text.trim().is_empty())
+            .ok_or(TranscriptionError::EmptyResult)?;
+        Ok(TranscriptionResult {
+            provenance: TranscriptProvenance::RawAsr,
+            text,
+        })
+    }
+}
+
+#[derive(Debug, Facet)]
+struct WorkerRequest {
+    operation: String,
+    request_id: String,
+    audio_path: String,
+    model_dir: String,
+    model_name: String,
+    device: String,
+    compute_type: String,
+    batch_size: u32,
+}
+
+#[derive(Debug, Facet)]
+struct WorkerResponse {
+    ok: bool,
+    request_id: String,
+    text: Option<String>,
+    error: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalModelInventory {
     pub root: PathBuf,
@@ -133,4 +290,12 @@ pub enum TranscriptionError {
     EmptyAudioPath,
     #[error("transcription returned empty text")]
     EmptyResult,
+    #[error("local WhisperX configuration is invalid: {0}")]
+    Configuration(String),
+    #[error("local WhisperX worker process failed: {0}")]
+    Process(String),
+    #[error("local WhisperX worker protocol failed: {0}")]
+    Protocol(String),
+    #[error("local WhisperX worker rejected the request: {0}")]
+    WorkerRejected(String),
 }

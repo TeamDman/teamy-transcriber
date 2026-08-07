@@ -25,11 +25,25 @@ cargo run -- model show
 cargo run -- home show
 cargo run -- cache show
 cargo run -- recording create example.wav
+# Then use the UUID returned by recording create:
+cargo run -- recording prepare <recording-id>
+# Optional: add a source-time clip before transcribing it:
+cargo run -- recording clip add <recording-id> 0 30000000
+# With local Python/WhisperX and model files already installed:
+cargo run -- recording transcribe <recording-id> --model-dir C:\path\to\models
 ~~~
 
 The doctor command reports the resolved application, cache, and local model
-paths. The recording command creates a durable manifest and event receipt; it
-does not decode or transcribe the source yet.
+paths. `recording prepare` currently normalizes WAV sources into 16 kHz mono
+audio. `recording transcribe` invokes the local one-shot WhisperX worker and
+commits raw ASR text through the same event receipt; persisted partial clips are
+materialized as separate normalized WAV artifacts first. Video decoding,
+microphone capture, runtime installation, and model/CDN acquisition remain
+later slices.
+
+The local worker is documented in [runtime/README.md](G:/Programming/Repos/teamy-transcriber/runtime/README.md).
+Model files are assumed to be available locally for this implementation slice;
+the application does not download them.
 
 ## Development
 

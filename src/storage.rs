@@ -96,9 +96,28 @@ impl RecordingStore {
     ///
     /// Returns an error when the receipt is missing, malformed, or invalid.
     pub fn load_recording(&self, recording_id: RecordingId) -> Result<Recording, StorageError> {
+        let state = self.load_state(recording_id)?;
+        state
+            .recording(recording_id)
+            .cloned()
+            .ok_or(StorageError::MissingRecording(recording_id))
+    }
+
+    /// Load the replayable application state for one recording.
+    ///
+    /// A manifest-only recording is represented as a one-recording state so a
+    /// subsequent command can continue the same event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the receipt is missing, malformed, or invalid.
+    pub fn load_state(&self, recording_id: RecordingId) -> Result<AppState, StorageError> {
         let events_path = self.events_path(recording_id);
         if !events_path.is_file() {
-            return self.load_manifest(recording_id);
+            let recording = self.load_manifest(recording_id)?;
+            let mut state = AppState::new();
+            state.recordings.insert(recording.id, recording);
+            return Ok(state);
         }
 
         let file = File::open(events_path)?;
@@ -124,11 +143,7 @@ impl RecordingStore {
             records.push(record);
         }
 
-        let state = AppState::replay(records)?;
-        state
-            .recording(recording_id)
-            .cloned()
-            .ok_or(StorageError::MissingRecording(recording_id))
+        Ok(AppState::replay(records)?)
     }
 
     fn load_manifest(&self, recording_id: RecordingId) -> Result<Recording, StorageError> {
