@@ -13,6 +13,8 @@ documentation = "https://github.com/TeamDman/teamy-transcriber"
 
 [dependencies]
 arbitrary = { version = "1.4.1", features = ["derive"] }
+ash = "0.38"
+ash-window = "0.13"
 burn = { version = "0.19.0", default-features = false, features = ["ndarray", "std", "store", "record-item-custom-serde"] }
 burn-store = "0.19.1"
 chrono = "0.4"
@@ -24,6 +26,7 @@ rustfft = "6.4.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokenizers = { version = "0.22.0", default-features = false, features = ["onig"] }
+raw-window-handle = "0.6"
 thiserror = "1.0.69"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
@@ -44,6 +47,7 @@ facet-json = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0",
 facet-pretty = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet-pretty" }
 figue = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "figue", features = ["arbitrary"] }
 open = "5"
+winit = "0.30"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [

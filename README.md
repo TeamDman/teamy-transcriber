@@ -27,6 +27,8 @@ cargo run -- microphone record --duration-ms 5000
 cargo run -- model show
 cargo run -- home show
 cargo run -- cache show
+# Open the native Ash/Vulkan desktop surface:
+cargo run -- gui
 cargo run -- recording create example.wav
 # Then use the UUID returned by recording create:
 cargo run -- recording prepare <recording-id>
@@ -53,6 +55,13 @@ model/CDN acquisition remain later slices.
 The renderer-neutral presentation model in `src/presentation.rs` keeps stable
 UI/action IDs, contextual key resolution, transcript projection, and diagnostics
 separate from the future window, tray, and GPU renderer.
+
+`cargo run -- gui` now creates the native Winit window, Ash/Vulkan surface and
+swapchain, and a CPU-rasterized reference layout with a microphone control,
+microphone/save-directory selectors, waveform, and transcript panel. The first
+slice is intentionally renderer-focused: the microphone click changes the
+visible recording state, while capture, persistence, and transcription dispatch
+still need to be connected through the existing domain/action boundaries.
 
 The native model package is assumed to be available locally for this
 implementation slice; the application does not download or convert it. The

@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-07
-Current focus: [~] verify native Burnpack inference with a local model package
+Current focus: [~] connect the verified native GUI shell to capture and domain actions
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -42,6 +42,21 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-07: Added the pure-Rust native Whisper vertical slice from the burnt-apple Burn implementation: Whisper log-mel frontend, Burn encoder/decoder, Burnpack loading, tokenizer prompt construction, greedy decoding, and legacy packed-NPY inspection. `recording transcribe` now uses this backend directly; Python and the WhisperX worker are no longer application prerequisites. `cargo check --all-targets` and `cargo test --all-targets` pass. Real model-backed inference remains unverified because no local `model.bpk`/`dims.json`/`tokenizer.json` package was found in the searched workspace/model locations.
 
 2026-08-07: Compared model lifecycle conventions with `G:\Programming\Repos\teamy-tts`. Both projects should share stable model IDs, revision-keyed prepared directories, explicit manifests, artifact hashes, and acquisition receipts. Whisper keeps its task-specific `model.bpk`, `dims.json`, and `tokenizer.json` contract; TTS keeps its role-specific Burnpack/frontend assets. Neither project should treat the other task's tensors or sidecars as interchangeable.
+
+2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
+raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
+teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
+physical device, logical device, swapchain, transfer command buffer, and redraw
+loop. The CPU reference layout follows the supplied microphone-centered sketch
+and includes a clickable recording-state toggle, waveform, and transcript panel.
+`cargo check --all-targets`, `cargo build`, and focused GUI state/bitmap tests
+pass; a live launch reached event-loop, window, and Vulkan-renderer startup and
+remained responsive. Capture, persistence, and action/domain dispatch are still
+pending, so W15 remains in progress.
+
+The full `cargo clippy --all-targets -- -D warnings` command still reports
+pre-existing warnings in the native Whisper/media implementation; the new GUI
+module is clean under the same strict lint configuration.
 
 ## Plan operating rules
 
@@ -427,11 +442,11 @@ Validation: Headless tests verify deterministic Escape, transcript, timeline, an
 
 Completion: A headless presentation test can drive the first slice without depending on a window or renderer.
 
-#### W15 [ ] Build the microphone-centered window
+#### W15 [~] Build the microphone-centered window
 
-Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions.
+Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions. The first Ash/Vulkan/Winit shell now provides the window lifecycle, microphone-centered reference layout, visible state toggle, waveform, and transcript panel; domain/action integration and the remaining controls are next.
 
-Validation: Window lifecycle, focus, keyboard, error, cancellation, and accessibility/narration paths are tested. The view shows provenance and does not imply uncommitted text is final.
+Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bitmap glyph and microphone hit-test paths are covered by focused tests. Focus, keyboard, error, cancellation, accessibility/narration, domain dispatch, and persistence integration remain open. The view shows provenance and does not imply uncommitted text is final.
 
 Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
 

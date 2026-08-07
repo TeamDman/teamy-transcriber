@@ -2,6 +2,7 @@ pub mod cache;
 pub mod doctor;
 pub mod facet_shape;
 pub mod global_args;
+pub mod gui;
 pub mod home;
 pub mod microphone;
 pub mod model;
@@ -11,6 +12,7 @@ pub mod recording;
 use crate::cli::cache::CacheArgs;
 use crate::cli::doctor::DoctorArgs;
 use crate::cli::global_args::GlobalArgs;
+use crate::cli::gui::GuiArgs;
 use crate::cli::home::HomeArgs;
 use crate::cli::microphone::MicrophoneArgs;
 use crate::cli::model::ModelArgs;
@@ -75,6 +77,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Home-related commands.
     Home(HomeArgs),
+    /// Open the native Teamy-Transcriber desktop window.
+    Gui(GuiArgs),
     /// Local model inspection commands.
     Model(ModelArgs),
     /// Local microphone inventory commands.
@@ -93,6 +97,7 @@ impl Command {
             Command::Cache(args) => args.invoke().await,
             Command::Doctor(args) => args.invoke().await,
             Command::Home(args) => args.invoke().await,
+            Command::Gui(args) => args.invoke().await,
             Command::Model(args) => args.invoke().await,
             Command::Microphone(args) => args.invoke().await,
             Command::Recording(args) => args.invoke().await,

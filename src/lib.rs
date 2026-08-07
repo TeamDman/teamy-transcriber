@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod cli;
 pub mod domain;
+pub mod gui;
 pub mod logging_init;
 pub mod media;
 pub mod native_whisper;
