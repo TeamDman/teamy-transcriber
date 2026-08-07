@@ -7,6 +7,7 @@ pub mod domain;
 pub mod logging_init;
 pub mod media;
 pub mod paths;
+pub mod presentation;
 pub mod storage;
 pub mod transcription;
 #[cfg(windows)]

@@ -50,6 +50,10 @@ creates contiguous, non-overlapping clip records and resumes from their stable
 IDs after a failure. Video decoding, GUI
 controls, runtime installation, and model/CDN acquisition remain later slices.
 
+The renderer-neutral presentation model in `src/presentation.rs` keeps stable
+UI/action IDs, contextual key resolution, transcript projection, and diagnostics
+separate from the future window, tray, and GPU renderer.
+
 The local worker is documented in [runtime/README.md](G:/Programming/Repos/teamy-transcriber/runtime/README.md).
 Model files are assumed to be available locally for this implementation slice;
 the application does not download them.

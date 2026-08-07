@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
-Current focus: [~] W12: add deterministic long-input chunking and resumable per-clip work
+Current focus: [~] W14: establish renderer-neutral presentation state and action routing
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -36,6 +36,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-06: Added typed clip transcription lifecycle events. `recording transcribe` now persists `pending/failed → processing → transcribed`, records local-worker failure reasons before returning the error, and `recording show` projects clip status/failure diagnostics. The VCTK recording empirically reached `failed` with the honest missing-`python` reason; no hosted inference was attempted.
 
 2026-08-06: Added a deterministic fixed-duration chunk planner and `recording transcribe --chunk-duration-ms`. Chunk ranges are contiguous and non-overlapping, become immutable clip records before work starts, and retain pending/failed statuses for resumable retries. A 2.0515-second VCTK smoke with 500 ms chunks produced five persisted ranges; the first failed honestly on missing `python` and the remaining four stayed pending.
+
+2026-08-06: Added renderer-neutral presentation state with stable UI/action IDs, contextual key resolution, selected-clip/transcript projection, and failure diagnostics. Headless tests verify that transcript and clip state are projected without depending on a window or renderer; actual GUI, tray, and hotkey integration remain deferred.
 
 ## Plan operating rules
 
@@ -362,11 +364,11 @@ Completion: A user can review and export a transcript without losing the source 
 
 ### Phase 5: GUI, actions, and tray
 
-#### W14 [ ] Build renderer-neutral presentation state
+#### W14 [~] Build renderer-neutral presentation state
 
-Work: Define stable UI IDs, action IDs, focus/context state, narration/diagnostics, waveform/transcript projections, and contextual keyboard precedence.
+Work: Define stable UI IDs, action IDs, focus/context state, narration/diagnostics, waveform/transcript projections, and contextual keyboard precedence. The current slice provides these as a pure `presentation` module with selected-clip and committed-transcript projections; waveform bins, domain command dispatch, and window/tray transport remain pending.
 
-Validation: Pointer, keyboard, palette, and future tray invocations produce the same domain command. Conflicting chords resolve deterministically and are logged.
+Validation: Headless tests verify deterministic Escape, transcript, timeline, and recording-control key precedence plus renderer-neutral transcript/diagnostic projection. Pointer/palette/tray adapters, action-to-domain command dispatch, and conflict logging remain pending.
 
 Completion: A headless presentation test can drive the first slice without depending on a window or renderer.
 
