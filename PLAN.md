@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
-Current focus: [~] W11: persist transcription processing failures and validate the local-worker receipt
+Current focus: [~] W12: add deterministic long-input chunking and resumable per-clip work
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -34,6 +34,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-06: Added Windows Core Audio microphone inventory and an explicitly bounded WASAPI capture command. `microphone list` empirically enumerated two active 48 kHz endpoints on this device; capture lifecycle events now persist `created → recording → saved` or `failed` with a replayable failure reason. Capture code was not started implicitly, so a real saved microphone fixture remains pending an explicit capture run.
 
 2026-08-06: Added typed clip transcription lifecycle events. `recording transcribe` now persists `pending/failed → processing → transcribed`, records local-worker failure reasons before returning the error, and `recording show` projects clip status/failure diagnostics. The VCTK recording empirically reached `failed` with the honest missing-`python` reason; no hosted inference was attempted.
+
+2026-08-06: Added a deterministic fixed-duration chunk planner and `recording transcribe --chunk-duration-ms`. Chunk ranges are contiguous and non-overlapping, become immutable clip records before work starts, and retain pending/failed statuses for resumable retries. A 2.0515-second VCTK smoke with 500 ms chunks produced five persisted ranges; the first failed honestly on missing `python` and the remaining four stayed pending.
 
 ## Plan operating rules
 
@@ -342,11 +344,11 @@ Validation: The no-GUI command path, event receipt, VCTK normalization smoke, an
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
-#### W12 [ ] Add long-input chunking and quality controls
+#### W12 [~] Add long-input chunking and quality controls
 
-Work: Implement bounded chunking, speech-aware boundaries where available, ordered assembly, partial results, retry/cancel semantics, and quality metadata. Preserve source-to-chunk offsets.
+Work: Implement bounded chunking, speech-aware boundaries where available, ordered assembly, partial results, retry/cancel semantics, and quality metadata. The current slice provides deterministic fixed-duration ranges, stable clip IDs, ordered per-clip reports, and resumable failure states; speech-aware boundaries, cancellation, and timing quality metadata remain pending. Preserve source-to-chunk offsets.
 
-Validation: Synthetic and real long fixtures verify no dropped/duplicated chunks, deterministic ordering, bounded worker use, and timing evidence.
+Validation: Unit coverage verifies no gaps or overlap in synthetic plans; the VCTK smoke empirically produced five ordered ranges with no duplication before the expected missing-runtime failure. Real local inference, long-input worker limits, cancellation, and timing evidence remain pending.
 
 Completion: Long files yield a coherent transcript with a machine-readable chunk map and no unreported approximation.
 

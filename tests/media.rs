@@ -9,6 +9,27 @@ use teamy_transcriber::media::MediaAdapter;
 use teamy_transcriber::media::MediaError;
 use teamy_transcriber::media::WHISPER_SAMPLE_RATE_HZ;
 use teamy_transcriber::media::WavMediaAdapter;
+use teamy_transcriber::media::plan_time_chunks;
+
+#[test]
+fn chunk_plan_covers_duration_without_gaps_or_overlap() {
+    let chunks = plan_time_chunks(2_500_000, 1_000_000).expect("chunk plan should be valid");
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(
+        chunks[0],
+        TimeRange::new(0, 1_000_000).expect("range should be valid")
+    );
+    assert_eq!(
+        chunks[1],
+        TimeRange::new(1_000_000, 2_000_000).expect("range should be valid")
+    );
+    assert_eq!(
+        chunks[2],
+        TimeRange::new(2_000_000, 2_500_000).expect("range should be valid")
+    );
+    assert!(plan_time_chunks(0, 1).is_err());
+    assert!(plan_time_chunks(1, 0).is_err());
+}
 
 #[test]
 fn wav_adapter_inspects_and_normalizes_to_whisper_format() {

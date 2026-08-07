@@ -34,6 +34,8 @@ cargo run -- recording prepare <recording-id>
 cargo run -- recording clip add <recording-id> 0 30000000
 # With local Python/WhisperX and model files already installed:
 cargo run -- recording transcribe <recording-id> --model-dir C:\path\to\models
+# Optional deterministic fixed-duration chunks:
+cargo run -- recording transcribe <recording-id> --chunk-duration-ms 30000
 # Export committed transcript text after transcription:
 cargo run -- recording export <recording-id>
 ~~~
@@ -43,7 +45,9 @@ paths. `recording prepare` normalizes WAV sources directly and routes other
 audio/video sources through local `ffmpeg` into 16 kHz mono audio.
 `recording transcribe` invokes the local one-shot WhisperX worker and
 commits raw ASR text through the same event receipt; persisted partial clips are
-materialized as separate normalized WAV artifacts first. Video decoding, GUI
+materialized as separate normalized WAV artifacts first. `--chunk-duration-ms`
+creates contiguous, non-overlapping clip records and resumes from their stable
+IDs after a failure. Video decoding, GUI
 controls, runtime installation, and model/CDN acquisition remain later slices.
 
 The local worker is documented in [runtime/README.md](G:/Programming/Repos/teamy-transcriber/runtime/README.md).

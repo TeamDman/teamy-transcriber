@@ -11,6 +11,43 @@ pub const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const FFMPEG_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFMPEG";
 pub const FFPROBE_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFPROBE";
 
+/// Plan contiguous, non-overlapping source-time chunks for one recording.
+///
+/// The final chunk is shorter when the duration is not an exact multiple of
+/// `max_chunk_duration_us`. The returned ranges cover the recording exactly.
+///
+/// # Errors
+///
+/// Returns an error when either duration is zero or a range cannot be formed.
+pub fn plan_time_chunks(
+    duration_us: u64,
+    max_chunk_duration_us: u64,
+) -> Result<Vec<TimeRange>, MediaError> {
+    if duration_us == 0 {
+        return Err(MediaError::InvalidChunkDuration(
+            "recording duration must be greater than zero".to_string(),
+        ));
+    }
+    if max_chunk_duration_us == 0 {
+        return Err(MediaError::InvalidChunkDuration(
+            "maximum chunk duration must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut ranges = Vec::new();
+    let mut start_us = 0;
+    while start_us < duration_us {
+        let end_us = start_us
+            .saturating_add(max_chunk_duration_us)
+            .min(duration_us);
+        let range = TimeRange::new(start_us, end_us)
+            .map_err(|error| MediaError::InvalidChunkDuration(error.to_string()))?;
+        ranges.push(range);
+        start_us = end_us;
+    }
+    Ok(ranges)
+}
+
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 pub struct MediaMetadata {
     pub duration_us: u64,
@@ -445,6 +482,8 @@ pub enum MediaError {
     TooManySamples(String),
     #[error("source clip range is invalid: {0}")]
     InvalidClipRange(String),
+    #[error("source chunk duration is invalid: {0}")]
+    InvalidChunkDuration(String),
     #[error("source clip range contains no samples")]
     EmptyClip,
     #[error("ffmpeg operation failed: {0}")]
