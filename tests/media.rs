@@ -4,7 +4,9 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use teamy_transcriber::domain::ClipId;
 use teamy_transcriber::domain::TimeRange;
+use teamy_transcriber::media::FfmpegMediaAdapter;
 use teamy_transcriber::media::MediaAdapter;
+use teamy_transcriber::media::MediaError;
 use teamy_transcriber::media::WHISPER_SAMPLE_RATE_HZ;
 use teamy_transcriber::media::WavMediaAdapter;
 
@@ -53,6 +55,18 @@ fn wav_adapter_inspects_and_normalizes_to_whisper_format() {
     assert_eq!(prepared_metadata.frame_count, 1_600);
 
     std::fs::remove_dir_all(root).expect("fixture directory should be removable");
+}
+
+#[test]
+fn ffprobe_adapter_reports_missing_tool_explicitly() {
+    let adapter = FfmpegMediaAdapter {
+        ffmpeg_executable: PathBuf::from("teamy-transcriber-missing-ffmpeg"),
+        ffprobe_executable: PathBuf::from("teamy-transcriber-missing-ffprobe"),
+    };
+    let error = adapter
+        .inspect(Path::new("missing-source.mp4"))
+        .expect_err("missing ffprobe should be reported");
+    assert!(matches!(error, MediaError::Probe(detail) if detail.contains("could not be launched")));
 }
 
 fn write_fixture(path: &Path) {

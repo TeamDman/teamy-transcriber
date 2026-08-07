@@ -23,6 +23,14 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-06: Added persisted `recording clip add` boundaries and normalized WAV clip extraction. Partial clips now become immutable derived artifacts before transcription, and out-of-range requests are rejected instead of being silently clamped.
 
+2026-08-06: Used the local G:\Datasets\VCTK\VCTK-Corpus-smaller corpus as an empirical media check without copying it into the repository. `p225_001.wav` created and normalized successfully to 16 kHz mono (2,051,500 microseconds, 32,824 frames). The corpus includes local ODC-By attribution text; actual WhisperX inference remains unverified because the configured `python` command is missing.
+
+2026-08-06: Added a replaceable `ffmpeg`/`ffprobe` media adapter for non-WAV audio and video sources, with explicit executable environment overrides and probe/normalization diagnostics. It is compile- and parser-tested but not empirically executed because `ffmpeg` and `ffprobe` are absent on PATH in this environment.
+
+2026-08-06: Added typed runtime readiness for Python, the WhisperX worker, and the model directory. Python executable resolution now supports PATH commands such as `python` instead of requiring a filesystem path; `doctor` reports the readiness states and configured ffmpeg tools.
+
+2026-08-06: Added active-clip overlap validation and explicit transcript export. The domain rejects overlapping active ranges, and `recording export` writes the latest committed transcript per active clip to an atomic text artifact with provenance labels.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -87,6 +95,7 @@ This file is the living work contract. A fresh agent should be able to resume fr
 | piing and tb | G:\Programming\Repos\piing and G:\Programming\Repos\tb | Tray lifecycle, hidden console behavior, global hotkey, logs, config, and taskbar affordance patterns are available prior art. |
 | teamy-subs | G:\Programming\Repos\teamy-subs | Keep pure media/subtitle domain logic separate from subprocess adapters; use fixtures, golden tests, and explicit unsupported syntax decisions. |
 | cursor-latency | G:\Programming\Repos\cursor-latency | User-perceived latency should be measured end to end rather than inferred from renderer timing. |
+| VCTK local corpus | G:\Datasets\VCTK\VCTK-Corpus-smaller\README and COPYING | Use as a user-owned speech-quality/media corpus for empirical checks; preserve its ODC-By attribution and keep it out of Git. |
 
 ### Source limitations
 
@@ -255,17 +264,17 @@ Completion: A pure domain crate can load a manifest, apply valid commands, rejec
 
 Work: Add short licensed or generated audio fixtures, at least one video fixture, silence/noise/speech cases, and expected normalized metadata. Keep large/private recordings out of Git.
 
-Validation: A generated stereo WAV fixture exercises metadata, downmixing, resampling, and output duration without a microphone, GPU, hosted service, or user profile. Video, silence/noise/speech cases, checksums, and provenance are still pending.
+Validation: A generated stereo WAV fixture and one local VCTK speech sample exercise metadata, downmixing, resampling, and output duration without a microphone, GPU, or hosted service. The VCTK check is empirical and user-owned; video, silence/noise cases, checked-in checksums, and complete provenance fixtures are still pending.
 
 Completion: A fresh checkout can exercise import, normalization metadata, clip boundaries, and a fake transcription backend.
 
 ### Phase 2: domain, storage, and media
 
-#### W4 [ ] Implement typed recording and clip state
+#### W4 [~] Implement typed recording and clip state
 
-Work: Implement IDs, time/sample ranges, recording/job/clip state machines, commands, events, validation, replay, and deterministic serialization.
+Work: Implement IDs, time/sample ranges, recording/job/clip state machines, commands, events, validation, replay, and deterministic serialization. The current kernel rejects invalid ranges, duplicate IDs, deleted-transcript commits, and overlapping active clip ranges while permitting adjacent ranges.
 
-Validation: Unit tests cover invalid transitions, overlap/boundary rules, ordering, cancellation, duplicate IDs, and replay equivalence.
+Validation: Unit tests cover invalid ranges, overlap/boundary rules, ordering, duplicate IDs, deleted clips, and replay equivalence. Job-state and cancellation transitions remain pending.
 
 Completion: A complete headless session can import an asset, create clips, move them, and recover from its event receipt.
 
@@ -279,9 +288,9 @@ Completion: The application can show exactly which source and clip produced a tr
 
 #### W6 [~] Add media import and normalization
 
-Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping. The first bounded implementation is a WAV adapter with generated-fixture coverage; video and broader format support remain deferred.
+Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping. The bounded implementation now includes a WAV adapter and an ffmpeg/ffprobe adapter for non-WAV audio/video; support remains dependent on local tool availability and fixture coverage.
 
-Validation: The WAV fixture compares duration, channels, sample count, and normalized output metadata. Audio/video fixture matrices, offsets, and failure diagnostics beyond WAV remain pending.
+Validation: The generated WAV fixture and VCTK sample compare duration, channels, sample count, and normalized output metadata. ffprobe parser tests and missing-tool diagnostics pass; actual audio/video fixture execution and offset checks remain pending local ffmpeg/ffprobe availability.
 
 Completion: Imported audio and video produce normalized clips with deterministic metadata and no model dependency.
 
@@ -289,7 +298,7 @@ Completion: Imported audio and video produce normalized clips with deterministic
 
 #### W7 [~] Define the transcription backend protocol
 
-Work: Implement a fake backend first, capability descriptors, and a narrow one-shot Rust-to-Python JSONL submit/response boundary with request correlation. Full doctor/describe/prepare/stream/cancel/shutdown messages, schema versions, and bounded progress events remain pending.
+Work: Implement a fake backend first, capability descriptors, typed runtime readiness, and a narrow one-shot Rust-to-Python JSONL submit/response boundary with request correlation. Full doctor/describe/prepare/stream/cancel/shutdown messages, schema versions, and bounded progress events remain pending.
 
 Validation: Fake backend behavior, local-only capability reporting, configuration rejection, JSONL serialization, process errors, empty results, and response correlation are covered at the current boundary. Long-running lifecycle behavior remains unverified.
 
@@ -299,7 +308,7 @@ Completion: The app can run a fully observable transcription job without real in
 
 Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. Do not add a downloader or CDN dependency.
 
-Validation: `model show`, local inventory, and backend configuration report the configured local model/runtime paths without downloading or modifying them. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
+Validation: `model show`, local inventory, `doctor`, and backend readiness report the configured local model/runtime paths without downloading or modifying them. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
@@ -325,7 +334,7 @@ Completion: Microphone recording is a normal source kind in the domain model and
 
 Work: Connect WAV normalization, full-duration or persisted partial-clip extraction, local WhisperX submission, raw transcript commit, and structured CLI output through the same event-backed recording. Import/video coverage, ordered result staging, progress, cancellation, and text export remain pending.
 
-Validation: The no-GUI command path and event receipt are implemented and the full repository gate passes. Actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
+Validation: The no-GUI command path, event receipt, and VCTK normalization smoke are implemented and the full repository gate passes. The current runtime check reports a clear missing-`python` failure; actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
@@ -337,11 +346,11 @@ Validation: Synthetic and real long fixtures verify no dropped/duplicated chunks
 
 Completion: Long files yield a coherent transcript with a machine-readable chunk map and no unreported approximation.
 
-#### W13 [ ] Add explicit transcript editing and output routing
+#### W13 [~] Add explicit transcript editing and output routing
 
-Work: Add staged versus committed transcript versions, user edits, local derivative actions, copy/export/save, and an explicit future integration boundary for external apps.
+Work: Add staged versus committed transcript versions, user edits, local derivative actions, copy/export/save, and an explicit future integration boundary for external apps. The current slice exports the latest committed transcript per active clip to an explicit or recording-owned text file; user editing and external-target actions remain pending.
 
-Validation: Raw ASR, user edits, and LLM derivatives remain distinguishable; an external focused window cannot receive text accidentally.
+Validation: Raw ASR provenance remains in the manifest and export labels; export is explicit and writes a recording-owned or user-selected file. User edits, LLM derivatives, and external-target safety tests remain pending.
 
 Completion: A user can review and export a transcript without losing the source or raw result.
 

@@ -144,6 +144,11 @@ impl TimeRange {
         }
         Ok(())
     }
+
+    #[must_use]
+    pub const fn overlaps(self, other: Self) -> bool {
+        self.start_us < other.end_us && other.start_us < self.end_us
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Facet, PartialEq)]
@@ -362,6 +367,15 @@ impl AppState {
                 if recording.clips.iter().any(|clip| clip.id == *clip_id) {
                     return Err(DomainError::ClipAlreadyExists(*clip_id));
                 }
+                if let Some(existing) = recording.clips.iter().find(|clip| {
+                    clip.status != ClipStatus::Deleted && clip.source_range.overlaps(*source_range)
+                }) {
+                    return Err(DomainError::ClipOverlaps {
+                        existing: existing.id,
+                        requested_start_us: source_range.start_us,
+                        requested_end_us: source_range.end_us,
+                    });
+                }
                 recording.clips.push(Clip {
                     id: *clip_id,
                     source_range: *source_range,
@@ -542,6 +556,12 @@ pub enum DomainError {
     ClipNotFound(ClipId),
     #[error("clip {0} already exists")]
     ClipAlreadyExists(ClipId),
+    #[error("clip range {requested_start_us}..{requested_end_us} overlaps active clip {existing}")]
+    ClipOverlaps {
+        existing: ClipId,
+        requested_start_us: u64,
+        requested_end_us: u64,
+    },
     #[error("clip {0} is deleted")]
     ClipDeleted(ClipId),
     #[error("transcript {0} already exists")]

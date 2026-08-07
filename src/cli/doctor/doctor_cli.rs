@@ -1,5 +1,9 @@
 use crate::cli::output::CliOutput;
+use crate::media::FfmpegMediaAdapter;
 use crate::transcription::LocalModelInventory;
+use crate::transcription::LocalWhisperXBackend;
+use crate::transcription::LocalWhisperXConfig;
+use crate::transcription::RuntimeAssetStatus;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -14,10 +18,15 @@ struct DoctorReport {
     model_home_exists: bool,
     model_file_count: usize,
     whisperx_worker: String,
+    whisperx_worker_status: RuntimeAssetStatus,
     python_executable: String,
+    python_status: RuntimeAssetStatus,
+    model_status: RuntimeAssetStatus,
+    ffmpeg_executable: String,
+    ffprobe_executable: String,
 }
 
-/// Report local application paths and the current transcription-runtime placeholder.
+/// Report local application paths and local `WhisperX` runtime readiness.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 pub struct DoctorArgs;
 
@@ -39,6 +48,17 @@ impl DoctorArgs {
             .join("whisperx_worker.py");
         let python_executable =
             std::env::var("TEAMY_TRANSCRIBER_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let backend = LocalWhisperXBackend::new(LocalWhisperXConfig {
+            python_executable: std::path::PathBuf::from(&python_executable),
+            worker_script: worker_path.clone(),
+            model_dir: model_home.0.clone(),
+            model_name: "small".to_string(),
+            device: "cpu".to_string(),
+            compute_type: "int8".to_string(),
+            batch_size: 1,
+        });
+        let readiness = backend.readiness();
+        let media_adapter = FfmpegMediaAdapter::from_environment();
 
         Ok(CliOutput::facet(DoctorReport {
             app_home: app_home.display().to_string(),
@@ -57,7 +77,12 @@ impl DoctorArgs {
                     "missing"
                 }
             ),
+            whisperx_worker_status: readiness.worker_script,
             python_executable,
+            python_status: readiness.python,
+            model_status: readiness.model_dir,
+            ffmpeg_executable: media_adapter.ffmpeg_executable.display().to_string(),
+            ffprobe_executable: media_adapter.ffprobe_executable.display().to_string(),
         }))
     }
 }

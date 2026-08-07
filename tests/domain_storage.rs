@@ -5,6 +5,7 @@ use teamy_transcriber::domain::AppState;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipId;
 use teamy_transcriber::domain::Command;
+use teamy_transcriber::domain::DomainError;
 use teamy_transcriber::domain::RecordingId;
 use teamy_transcriber::domain::SourceAsset;
 use teamy_transcriber::domain::TimeRange;
@@ -165,6 +166,34 @@ fn local_model_inventory_does_not_download_or_modify() {
 fn invalid_time_ranges_are_rejected_before_events_exist() {
     assert!(TimeRange::new(10, 10).is_err());
     assert!(TimeRange::new(20, 10).is_err());
+}
+
+#[test]
+fn active_clip_ranges_must_not_overlap() {
+    let recording_id = RecordingId::new();
+    let source = SourceAsset::new(AssetKind::AudioFile, PathBuf::from("fixture.wav"))
+        .expect("fixture path should be accepted");
+    let mut state = AppState::new();
+    state
+        .execute(Command::CreateRecording {
+            recording_id,
+            source,
+        })
+        .expect("recording creation should succeed");
+    state
+        .execute(Command::AddClip {
+            recording_id,
+            clip_id: ClipId::new(),
+            source_range: TimeRange::new(0, 1_000_000).expect("range should be valid"),
+        })
+        .expect("first clip should succeed");
+
+    let result = state.execute(Command::AddClip {
+        recording_id,
+        clip_id: ClipId::new(),
+        source_range: TimeRange::new(999_999, 2_000_000).expect("range should be valid"),
+    });
+    assert!(matches!(result, Err(DomainError::ClipOverlaps { .. })));
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

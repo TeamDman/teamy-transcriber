@@ -3,9 +3,13 @@ use crate::domain::TimeRange;
 use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use thiserror::Error;
 
 pub const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
+pub const FFMPEG_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFMPEG";
+pub const FFPROBE_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFPROBE";
 
 #[derive(Clone, Debug, Facet, PartialEq, Eq)]
 pub struct MediaMetadata {
@@ -136,6 +140,179 @@ impl MediaAdapter for WavMediaAdapter {
             metadata: normalized_metadata(end - start),
         })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FfmpegMediaAdapter {
+    pub ffmpeg_executable: PathBuf,
+    pub ffprobe_executable: PathBuf,
+}
+
+impl Default for FfmpegMediaAdapter {
+    fn default() -> Self {
+        Self {
+            ffmpeg_executable: PathBuf::from("ffmpeg"),
+            ffprobe_executable: PathBuf::from("ffprobe"),
+        }
+    }
+}
+
+impl FfmpegMediaAdapter {
+    #[must_use]
+    pub fn from_environment() -> Self {
+        Self {
+            ffmpeg_executable: std::env::var(FFMPEG_ENV_VAR)
+                .map_or_else(|_| PathBuf::from("ffmpeg"), PathBuf::from),
+            ffprobe_executable: std::env::var(FFPROBE_ENV_VAR)
+                .map_or_else(|_| PathBuf::from("ffprobe"), PathBuf::from),
+        }
+    }
+}
+
+impl MediaAdapter for FfmpegMediaAdapter {
+    fn inspect(&self, source: &Path) -> Result<MediaMetadata, MediaError> {
+        let output = Command::new(&self.ffprobe_executable)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_rate,channels,nb_frames,duration",
+                "-of",
+                "csv=p=0:s=,",
+            ])
+            .arg(source)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| {
+                MediaError::Probe(format!(
+                    "{} could not be launched: {error}",
+                    self.ffprobe_executable.display()
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(MediaError::Probe(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        parse_probe_output(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    fn prepare_audio(&self, source: &Path, output_dir: &Path) -> Result<PreparedAudio, MediaError> {
+        std::fs::create_dir_all(output_dir)?;
+        let output_path = output_dir.join("normalized-16khz-mono.wav");
+        let output = Command::new(&self.ffmpeg_executable)
+            .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
+            .arg(source)
+            .args([
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_f32le",
+            ])
+            .arg(&output_path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| {
+                MediaError::Ffmpeg(format!(
+                    "{} could not be launched: {error}",
+                    self.ffmpeg_executable.display()
+                ))
+            })?;
+        if !output.status.success() {
+            return Err(MediaError::Ffmpeg(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        let metadata = WavMediaAdapter.inspect(&output_path)?;
+        Ok(PreparedAudio {
+            path: output_path,
+            metadata,
+        })
+    }
+
+    fn prepare_clip(
+        &self,
+        normalized_source: &Path,
+        output_dir: &Path,
+        source_range: TimeRange,
+        clip_id: ClipId,
+    ) -> Result<PreparedAudio, MediaError> {
+        WavMediaAdapter.prepare_clip(normalized_source, output_dir, source_range, clip_id)
+    }
+}
+
+fn parse_probe_output(output: &str) -> Result<MediaMetadata, MediaError> {
+    let fields: Vec<&str> = output.trim().split(',').map(str::trim).collect();
+    if fields.len() < 4 {
+        return Err(MediaError::InvalidProbe(format!(
+            "expected four audio fields, got: {output:?}"
+        )));
+    }
+    let sample_rate_hz = fields[0]
+        .parse::<u32>()
+        .map_err(|error| MediaError::InvalidProbe(format!("invalid sample rate: {error}")))?;
+    let channels = fields[1]
+        .parse::<u16>()
+        .map_err(|error| MediaError::InvalidProbe(format!("invalid channel count: {error}")))?;
+    let duration_us = parse_decimal_seconds_us(fields[3])?;
+    let frame_count = if fields[2].is_empty() || fields[2] == "N/A" {
+        u128::from(duration_us)
+            .saturating_mul(u128::from(sample_rate_hz))
+            .checked_div(u128::from(1_000_000_u32))
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| MediaError::InvalidProbe("frame count overflowed".to_string()))?
+    } else {
+        fields[2]
+            .parse::<u64>()
+            .map_err(|error| MediaError::InvalidProbe(format!("invalid frame count: {error}")))?
+    };
+    Ok(MediaMetadata {
+        duration_us,
+        sample_rate_hz,
+        channels,
+        frame_count,
+    })
+}
+
+fn parse_decimal_seconds_us(value: &str) -> Result<u64, MediaError> {
+    let (whole, fraction) = value
+        .split_once('.')
+        .ok_or_else(|| MediaError::InvalidProbe(format!("invalid duration: {value:?}")))?;
+    let whole_us = whole
+        .parse::<u64>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000))
+        .ok_or_else(|| MediaError::InvalidProbe(format!("invalid duration: {value:?}")))?;
+    let mut fractional_us = 0_u64;
+    let mut digits = 0;
+    for byte in fraction.bytes().take(6) {
+        if !byte.is_ascii_digit() {
+            return Err(MediaError::InvalidProbe(format!(
+                "invalid duration: {value:?}"
+            )));
+        }
+        fractional_us = fractional_us * 10 + u64::from(byte - b'0');
+        digits += 1;
+    }
+    if fraction.len() > 6 && !fraction.bytes().skip(6).all(|byte| byte.is_ascii_digit()) {
+        return Err(MediaError::InvalidProbe(format!(
+            "invalid duration: {value:?}"
+        )));
+    }
+    for _ in digits..6 {
+        fractional_us *= 10;
+    }
+    whole_us
+        .checked_add(fractional_us)
+        .ok_or_else(|| MediaError::InvalidProbe(format!("duration overflowed: {value:?}")))
 }
 
 fn write_normalized_wav(path: &Path, samples: &[f32]) -> Result<(), MediaError> {
@@ -270,4 +447,30 @@ pub enum MediaError {
     InvalidClipRange(String),
     #[error("source clip range contains no samples")]
     EmptyClip,
+    #[error("ffmpeg operation failed: {0}")]
+    Ffmpeg(String),
+    #[error("ffprobe operation failed: {0}")]
+    Probe(String),
+    #[error("ffprobe returned invalid metadata: {0}")]
+    InvalidProbe(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_probe_output;
+
+    #[test]
+    fn parses_ffprobe_duration_and_missing_frame_count() {
+        let metadata =
+            parse_probe_output("48000,2,N/A,1.250000\n").expect("ffprobe output should parse");
+        assert_eq!(metadata.sample_rate_hz, 48_000);
+        assert_eq!(metadata.channels, 2);
+        assert_eq!(metadata.duration_us, 1_250_000);
+        assert_eq!(metadata.frame_count, 60_000);
+    }
+
+    #[test]
+    fn rejects_malformed_ffprobe_output() {
+        assert!(parse_probe_output("not,a,probe").is_err());
+    }
 }

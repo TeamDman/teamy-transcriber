@@ -1,5 +1,7 @@
 use crate::cli::output::CliOutput;
+use crate::domain::AssetKind;
 use crate::domain::RecordingId;
+use crate::media::FfmpegMediaAdapter;
 use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;
 use crate::storage::RecordingStore;
@@ -47,9 +49,22 @@ impl RecordingPrepareArgs {
             .wrap_err("failed to load recording manifest")?;
         let source = Path::new(&recording.source.path);
         let output_dir = store.recording_dir(recording_id).join("audio");
-        let prepared = WavMediaAdapter
-            .prepare_audio(source, &output_dir)
-            .wrap_err("failed to normalize WAV source")?;
+        let prepared = match recording.source.kind {
+            AssetKind::AudioFile | AssetKind::MicrophoneRecording
+                if source.extension().is_some_and(|extension| {
+                    extension.to_string_lossy().eq_ignore_ascii_case("wav")
+                }) =>
+            {
+                WavMediaAdapter
+                    .prepare_audio(source, &output_dir)
+                    .wrap_err("failed to normalize WAV source")?
+            }
+            AssetKind::AudioFile | AssetKind::VideoFile | AssetKind::MicrophoneRecording => {
+                FfmpegMediaAdapter::from_environment()
+                    .prepare_audio(source, &output_dir)
+                    .wrap_err("failed to normalize source through ffmpeg")?
+            }
+        };
 
         Ok(CliOutput::facet(RecordingPrepareReport {
             recording_id: recording_id.to_string(),

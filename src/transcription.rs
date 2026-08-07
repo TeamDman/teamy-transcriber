@@ -9,6 +9,35 @@ use std::process::Command;
 use std::process::Stdio;
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, Eq, Facet, PartialEq)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum RuntimeAssetStatus {
+    Present,
+    Missing,
+    WrongKind,
+    Unavailable,
+}
+
+impl std::fmt::Display for RuntimeAssetStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Present => "present",
+            Self::Missing => "missing",
+            Self::WrongKind => "wrong_kind",
+            Self::Unavailable => "unavailable",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Facet, PartialEq)]
+pub struct LocalWhisperXReadiness {
+    pub python: RuntimeAssetStatus,
+    pub worker_script: RuntimeAssetStatus,
+    pub model_dir: RuntimeAssetStatus,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendCapabilities {
     pub backend_id: String,
@@ -115,25 +144,109 @@ impl LocalWhisperXBackend {
         &self.config
     }
 
+    #[must_use]
+    pub fn readiness(&self) -> LocalWhisperXReadiness {
+        LocalWhisperXReadiness {
+            python: executable_status(&self.config.python_executable),
+            worker_script: file_status(&self.config.worker_script),
+            model_dir: directory_status(&self.config.model_dir),
+        }
+    }
+
     fn validate_configuration(
         &self,
         request: &TranscriptionRequest,
     ) -> Result<(), TranscriptionError> {
-        let paths = [
-            ("Python executable", self.config.python_executable.as_path()),
-            ("WhisperX worker", self.config.worker_script.as_path()),
-            ("model directory", self.config.model_dir.as_path()),
-            ("normalized audio", request.audio_path.as_path()),
-        ];
-        for (label, path) in paths {
-            if !path.exists() {
-                return Err(TranscriptionError::Configuration(format!(
-                    "{label} does not exist: {}",
-                    path.display()
-                )));
-            }
+        let readiness = self.readiness();
+        if readiness.python != RuntimeAssetStatus::Present {
+            return Err(TranscriptionError::Configuration(format!(
+                "Python executable is {status}: {}",
+                self.config.python_executable.display(),
+                status = readiness.python
+            )));
+        }
+        if readiness.worker_script != RuntimeAssetStatus::Present {
+            return Err(TranscriptionError::Configuration(format!(
+                "WhisperX worker is {status}: {}",
+                self.config.worker_script.display(),
+                status = readiness.worker_script
+            )));
+        }
+        if readiness.model_dir != RuntimeAssetStatus::Present {
+            return Err(TranscriptionError::Configuration(format!(
+                "model directory is {status}: {}",
+                self.config.model_dir.display(),
+                status = readiness.model_dir
+            )));
+        }
+        if !request.audio_path.is_file() {
+            return Err(TranscriptionError::Configuration(format!(
+                "normalized audio is missing: {}",
+                request.audio_path.display()
+            )));
+        }
+        if self.config.model_name.trim().is_empty() {
+            return Err(TranscriptionError::Configuration(
+                "model name cannot be empty".to_string(),
+            ));
+        }
+        if self.config.device.trim().is_empty() {
+            return Err(TranscriptionError::Configuration(
+                "device cannot be empty".to_string(),
+            ));
+        }
+        if self.config.compute_type.trim().is_empty() {
+            return Err(TranscriptionError::Configuration(
+                "compute type cannot be empty".to_string(),
+            ));
+        }
+        if self.config.batch_size == 0 {
+            return Err(TranscriptionError::Configuration(
+                "batch size must be greater than zero".to_string(),
+            ));
         }
         Ok(())
+    }
+}
+
+fn executable_status(executable: &Path) -> RuntimeAssetStatus {
+    if executable.exists() {
+        return if executable.is_file() {
+            RuntimeAssetStatus::Present
+        } else {
+            RuntimeAssetStatus::WrongKind
+        };
+    }
+    let result = Command::new(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match result {
+        Ok(status) if status.success() => RuntimeAssetStatus::Present,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeAssetStatus::Missing,
+        Ok(_) | Err(_) => RuntimeAssetStatus::Unavailable,
+    }
+}
+
+fn file_status(path: &Path) -> RuntimeAssetStatus {
+    if !path.exists() {
+        RuntimeAssetStatus::Missing
+    } else if path.is_file() {
+        RuntimeAssetStatus::Present
+    } else {
+        RuntimeAssetStatus::WrongKind
+    }
+}
+
+fn directory_status(path: &Path) -> RuntimeAssetStatus {
+    if !path.exists() {
+        RuntimeAssetStatus::Missing
+    } else if path.is_dir() {
+        RuntimeAssetStatus::Present
+    } else {
+        RuntimeAssetStatus::WrongKind
     }
 }
 

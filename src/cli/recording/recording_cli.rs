@@ -1,6 +1,7 @@
 use crate::cli::output::CliOutput;
 use crate::cli::recording::clip::ClipArgs;
 use crate::cli::recording::create::RecordingCreateArgs;
+use crate::cli::recording::export::RecordingExportArgs;
 use crate::cli::recording::prepare::RecordingPrepareArgs;
 use crate::cli::recording::show::RecordingShowArgs;
 use crate::cli::recording::transcribe::RecordingTranscribeArgs;
@@ -24,6 +25,8 @@ pub enum RecordingCommand {
     Clip(ClipArgs),
     /// Create a durable recording manifest for an audio, video, or microphone source.
     Create(RecordingCreateArgs),
+    /// Export committed transcript text for a recording.
+    Export(RecordingExportArgs),
     /// Normalize a WAV recording into local 16 kHz mono audio.
     Prepare(RecordingPrepareArgs),
     /// Show a recording manifest and its current clip/transcript counts.
@@ -40,6 +43,7 @@ impl RecordingArgs {
         match self.command {
             RecordingCommand::Clip(args) => args.invoke().await,
             RecordingCommand::Create(args) => args.invoke().await,
+            RecordingCommand::Export(args) => args.invoke().await,
             RecordingCommand::Prepare(args) => args.invoke().await,
             RecordingCommand::Show(args) => args.invoke().await,
             RecordingCommand::Transcribe(args) => args.invoke().await,

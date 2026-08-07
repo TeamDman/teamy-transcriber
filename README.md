@@ -31,11 +31,14 @@ cargo run -- recording prepare <recording-id>
 cargo run -- recording clip add <recording-id> 0 30000000
 # With local Python/WhisperX and model files already installed:
 cargo run -- recording transcribe <recording-id> --model-dir C:\path\to\models
+# Export committed transcript text after transcription:
+cargo run -- recording export <recording-id>
 ~~~
 
 The doctor command reports the resolved application, cache, and local model
-paths. `recording prepare` currently normalizes WAV sources into 16 kHz mono
-audio. `recording transcribe` invokes the local one-shot WhisperX worker and
+paths. `recording prepare` normalizes WAV sources directly and routes other
+audio/video sources through local `ffmpeg` into 16 kHz mono audio.
+`recording transcribe` invokes the local one-shot WhisperX worker and
 commits raw ASR text through the same event receipt; persisted partial clips are
 materialized as separate normalized WAV artifacts first. Video decoding,
 microphone capture, runtime installation, and model/CDN acquisition remain
@@ -44,6 +47,10 @@ later slices.
 The local worker is documented in [runtime/README.md](G:/Programming/Repos/teamy-transcriber/runtime/README.md).
 Model files are assumed to be available locally for this implementation slice;
 the application does not download them.
+
+For local media validation, a user-owned VCTK sample corpus can be used when
+available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
+builds or automated tests, and it must not be copied into this repository.
 
 ## Development
 
@@ -62,6 +69,8 @@ The path environment overrides are:
 - TEAMY_TRANSCRIBER_HOME_DIR
 - TEAMY_TRANSCRIBER_CACHE_DIR
 - TEAMY_TRANSCRIBER_MODEL_DIR
+- TEAMY_TRANSCRIBER_FFMPEG
+- TEAMY_TRANSCRIBER_FFPROBE
 - RUST_LOG
 
 ## License
