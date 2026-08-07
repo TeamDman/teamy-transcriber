@@ -4,6 +4,7 @@ use std::time::UNIX_EPOCH;
 use teamy_transcriber::domain::AppState;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipId;
+use teamy_transcriber::domain::ClipStatus;
 use teamy_transcriber::domain::Command;
 use teamy_transcriber::domain::DomainError;
 use teamy_transcriber::domain::RecordingId;
@@ -62,6 +63,14 @@ fn domain_events_replay_to_the_same_state() {
                 target_index: 0,
             })
             .expect("clip movement should succeed"),
+    );
+    records.push(
+        state
+            .execute(Command::BeginTranscription {
+                recording_id,
+                clip_id: second_clip,
+            })
+            .expect("transcription should start"),
     );
     records.push(
         state
@@ -271,6 +280,69 @@ fn recording_capture_lifecycle_is_typed_and_replayable() {
         failed.failure.as_deref(),
         Some("simulated device disconnect")
     );
+}
+
+#[test]
+fn failed_transcription_can_be_retried_without_losing_the_failure_reason() {
+    let recording_id = RecordingId::new();
+    let clip_id = ClipId::new();
+    let source = SourceAsset::new(AssetKind::AudioFile, PathBuf::from("fixture.wav"))
+        .expect("audio path should be accepted");
+    let mut state = AppState::new();
+    state
+        .execute(Command::CreateRecording {
+            recording_id,
+            source,
+        })
+        .expect("recording creation should succeed");
+    state
+        .execute(Command::AddClip {
+            recording_id,
+            clip_id,
+            source_range: TimeRange::new(0, 1_000_000).expect("range should be valid"),
+        })
+        .expect("clip creation should succeed");
+    state
+        .execute(Command::BeginTranscription {
+            recording_id,
+            clip_id,
+        })
+        .expect("transcription should start");
+    state
+        .execute(Command::FailTranscription {
+            recording_id,
+            clip_id,
+            reason: "local worker exited".to_string(),
+        })
+        .expect("failure should be recorded");
+    let failed = state
+        .recording(recording_id)
+        .and_then(|recording| recording.clips.first())
+        .expect("failed clip should exist");
+    assert_eq!(failed.status, ClipStatus::Failed);
+    assert_eq!(failed.failure.as_deref(), Some("local worker exited"));
+
+    state
+        .execute(Command::BeginTranscription {
+            recording_id,
+            clip_id,
+        })
+        .expect("failed transcription should be retryable");
+    state
+        .execute(Command::CommitTranscript {
+            recording_id,
+            clip_id,
+            transcript_id: TranscriptId::new(),
+            provenance: TranscriptProvenance::RawAsr,
+            text: "retried locally".to_string(),
+        })
+        .expect("retried transcript should commit");
+    let completed = state
+        .recording(recording_id)
+        .and_then(|recording| recording.clips.first())
+        .expect("completed clip should exist");
+    assert_eq!(completed.status, ClipStatus::Transcribed);
+    assert_eq!(completed.failure, None);
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

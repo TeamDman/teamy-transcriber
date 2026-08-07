@@ -1,4 +1,5 @@
 use crate::cli::output::CliOutput;
+use crate::domain::ClipStatus;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
 use crate::storage::RecordingStore;
@@ -16,6 +17,16 @@ struct RecordingShowReport {
     failure: Option<String>,
     clip_count: usize,
     transcript_count: usize,
+    clips: Vec<RecordingClipReport>,
+}
+
+#[derive(Facet, Debug)]
+struct RecordingClipReport {
+    clip_id: String,
+    start_us: u64,
+    end_us: u64,
+    status: ClipStatus,
+    failure: Option<String>,
 }
 
 /// Show one persisted recording manifest.
@@ -50,6 +61,17 @@ impl RecordingShowArgs {
             failure: recording.failure,
             clip_count: recording.clips.len(),
             transcript_count: recording.transcripts.len(),
+            clips: recording
+                .clips
+                .into_iter()
+                .map(|clip| RecordingClipReport {
+                    clip_id: clip.id.to_string(),
+                    start_us: clip.source_range.start_us,
+                    end_us: clip.source_range.end_us,
+                    status: clip.status,
+                    failure: clip.failure,
+                })
+                .collect(),
         }))
     }
 }

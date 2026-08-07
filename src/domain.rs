@@ -168,6 +168,7 @@ pub enum ClipStatus {
     Pending,
     Ready,
     Processing,
+    Failed,
     Transcribed,
     Edited,
     Deleted,
@@ -188,6 +189,7 @@ pub struct Clip {
     pub id: ClipId,
     pub source_range: TimeRange,
     pub status: ClipStatus,
+    pub failure: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
@@ -248,6 +250,27 @@ impl AppState {
                 }
                 Event::RecordingFailed {
                     recording_id,
+                    reason,
+                }
+            }
+            Command::BeginTranscription {
+                recording_id,
+                clip_id,
+            } => Event::TranscriptionStarted {
+                recording_id,
+                clip_id,
+            },
+            Command::FailTranscription {
+                recording_id,
+                clip_id,
+                reason,
+            } => {
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyTranscriptionFailure);
+                }
+                Event::TranscriptionFailed {
+                    recording_id,
+                    clip_id,
                     reason,
                 }
             }
@@ -417,6 +440,57 @@ impl AppState {
                 recording.status = RecordingStatus::Failed;
                 recording.failure = Some(reason.clone());
             }
+            Event::TranscriptionStarted {
+                recording_id,
+                clip_id,
+            } => {
+                let recording = self.recording_mut(*recording_id)?;
+                let clip = recording
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == *clip_id)
+                    .ok_or(DomainError::ClipNotFound(*clip_id))?;
+                if !matches!(
+                    clip.status,
+                    ClipStatus::Pending
+                        | ClipStatus::Ready
+                        | ClipStatus::Failed
+                        | ClipStatus::Transcribed
+                        | ClipStatus::Edited
+                ) {
+                    return Err(DomainError::InvalidClipTranscriptionTransition {
+                        clip_id: *clip_id,
+                        actual: clip.status,
+                        action: "start",
+                    });
+                }
+                clip.status = ClipStatus::Processing;
+                clip.failure = None;
+            }
+            Event::TranscriptionFailed {
+                recording_id,
+                clip_id,
+                reason,
+            } => {
+                if reason.trim().is_empty() {
+                    return Err(DomainError::EmptyTranscriptionFailure);
+                }
+                let recording = self.recording_mut(*recording_id)?;
+                let clip = recording
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == *clip_id)
+                    .ok_or(DomainError::ClipNotFound(*clip_id))?;
+                if clip.status != ClipStatus::Processing {
+                    return Err(DomainError::InvalidClipTranscriptionTransition {
+                        clip_id: *clip_id,
+                        actual: clip.status,
+                        action: "fail",
+                    });
+                }
+                clip.status = ClipStatus::Failed;
+                clip.failure = Some(reason.clone());
+            }
             Event::ClipAdded {
                 recording_id,
                 clip_id,
@@ -440,6 +514,7 @@ impl AppState {
                     id: *clip_id,
                     source_range: *source_range,
                     status: ClipStatus::Pending,
+                    failure: None,
                 });
             }
             Event::ClipMoved {
@@ -494,6 +569,13 @@ impl AppState {
                 if clip.status == ClipStatus::Deleted {
                     return Err(DomainError::ClipDeleted(*clip_id));
                 }
+                if clip.status != ClipStatus::Processing {
+                    return Err(DomainError::InvalidClipTranscriptionTransition {
+                        clip_id: *clip_id,
+                        actual: clip.status,
+                        action: "commit",
+                    });
+                }
                 if recording
                     .transcripts
                     .iter()
@@ -508,6 +590,7 @@ impl AppState {
                     text: text.clone(),
                 });
                 clip.status = ClipStatus::Transcribed;
+                clip.failure = None;
             }
         }
         Ok(())
@@ -536,6 +619,15 @@ pub enum Command {
     },
     FailRecording {
         recording_id: RecordingId,
+        reason: String,
+    },
+    BeginTranscription {
+        recording_id: RecordingId,
+        clip_id: ClipId,
+    },
+    FailTranscription {
+        recording_id: RecordingId,
+        clip_id: ClipId,
         reason: String,
     },
     AddClip {
@@ -579,6 +671,15 @@ pub enum Event {
         recording_id: RecordingId,
         reason: String,
     },
+    TranscriptionStarted {
+        recording_id: RecordingId,
+        clip_id: ClipId,
+    },
+    TranscriptionFailed {
+        recording_id: RecordingId,
+        clip_id: ClipId,
+        reason: String,
+    },
     ClipAdded {
         recording_id: RecordingId,
         clip_id: ClipId,
@@ -610,6 +711,8 @@ impl Event {
             | Self::RecordingStarted { recording_id }
             | Self::RecordingSaved { recording_id }
             | Self::RecordingFailed { recording_id, .. }
+            | Self::TranscriptionStarted { recording_id, .. }
+            | Self::TranscriptionFailed { recording_id, .. }
             | Self::ClipAdded { recording_id, .. }
             | Self::ClipMoved { recording_id, .. }
             | Self::ClipDeleted { recording_id, .. }
@@ -643,6 +746,14 @@ pub enum DomainError {
     },
     #[error("recording failure reason cannot be empty")]
     EmptyRecordingFailure,
+    #[error("transcription failure reason cannot be empty")]
+    EmptyTranscriptionFailure,
+    #[error("clip {clip_id} cannot {action} from status {actual:?}")]
+    InvalidClipTranscriptionTransition {
+        clip_id: ClipId,
+        actual: ClipStatus,
+        action: &'static str,
+    },
     #[error("clip {0} was not found")]
     ClipNotFound(ClipId),
     #[error("clip {0} already exists")]

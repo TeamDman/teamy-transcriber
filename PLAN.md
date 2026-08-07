@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-06
-Current focus: [~] W10: finish microphone capture lifecycle and validate a saved local recording
+Current focus: [~] W11: persist transcription processing failures and validate the local-worker receipt
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -32,6 +32,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 2026-08-06: Added active-clip overlap validation and explicit transcript export. The domain rejects overlapping active ranges, and `recording export` writes the latest committed transcript per active clip to an atomic text artifact with provenance labels.
 
 2026-08-06: Added Windows Core Audio microphone inventory and an explicitly bounded WASAPI capture command. `microphone list` empirically enumerated two active 48 kHz endpoints on this device; capture lifecycle events now persist `created → recording → saved` or `failed` with a replayable failure reason. Capture code was not started implicitly, so a real saved microphone fixture remains pending an explicit capture run.
+
+2026-08-06: Added typed clip transcription lifecycle events. `recording transcribe` now persists `pending/failed → processing → transcribed`, records local-worker failure reasons before returning the error, and `recording show` projects clip status/failure diagnostics. The VCTK recording empirically reached `failed` with the honest missing-`python` reason; no hosted inference was attempted.
 
 ## Plan operating rules
 
@@ -334,9 +336,9 @@ Completion: Microphone recording is a normal source kind in the domain model and
 
 #### W11 [~] Complete one file-to-transcript vertical slice
 
-Work: Connect WAV normalization, full-duration or persisted partial-clip extraction, local WhisperX submission, raw transcript commit, and structured CLI output through the same event-backed recording. Import/video coverage, ordered result staging, progress, cancellation, and text export remain pending.
+Work: Connect WAV normalization, full-duration or persisted partial-clip extraction, local WhisperX submission, raw transcript commit, and structured CLI output through the same event-backed recording. The current slice also persists clip processing/failure transitions and projects them through `recording show`; import/video coverage, ordered result staging, progress, cancellation, and text export remain pending.
 
-Validation: The no-GUI command path, event receipt, and VCTK normalization smoke are implemented and the full repository gate passes. The current runtime check reports a clear missing-`python` failure; actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
+Validation: The no-GUI command path, event receipt, VCTK normalization smoke, and persisted missing-`python` clip failure are implemented and the full repository gate passes. Actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 

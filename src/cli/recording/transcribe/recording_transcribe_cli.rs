@@ -104,14 +104,37 @@ impl RecordingTranscribeArgs {
                 )?
                 .path
         };
+        store
+            .apply_command(
+                &mut state,
+                Command::BeginTranscription {
+                    recording_id,
+                    clip_id: clip.id,
+                },
+            )
+            .wrap_err("failed to persist transcription start state")?;
         let backend = LocalWhisperXBackend::new(self.local_whisperx_config()?);
-        let result = backend
-            .transcribe(&TranscriptionRequest {
-                recording_id,
-                clip_id: clip.id,
-                audio_path: clip_audio_path.clone(),
-            })
-            .map_err(|error| eyre::eyre!("{error}"))?;
+        let result = match backend.transcribe(&TranscriptionRequest {
+            recording_id,
+            clip_id: clip.id,
+            audio_path: clip_audio_path.clone(),
+        }) {
+            Ok(result) => result,
+            Err(error) => {
+                let reason = error.to_string();
+                store
+                    .apply_command(
+                        &mut state,
+                        Command::FailTranscription {
+                            recording_id,
+                            clip_id: clip.id,
+                            reason,
+                        },
+                    )
+                    .wrap_err("failed to persist transcription failure state")?;
+                return Err(eyre::eyre!("{error}")).wrap_err("local WhisperX transcription failed");
+            }
+        };
         let transcript_id = TranscriptId::new();
         store
             .apply_command(
