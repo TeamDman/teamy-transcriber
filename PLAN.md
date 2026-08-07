@@ -1,11 +1,11 @@
 # teamy-transcriber implementation plan
 
-Status: active implementation slice; the microphone path is now ready for an explicit capture run, while local-worker inference still awaits a supplied runtime/model fixture.
+Status: active implementation slice; the microphone path is ready for an explicit capture run and the application now has a compiled pure-Rust Whisper backend. Actual model-backed inference still awaits a supplied native model fixture.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
-Last updated: 2026-08-06
-Current focus: [~] W14: establish renderer-neutral presentation state and action routing
+Last updated: 2026-08-07
+Current focus: [~] verify native Burnpack inference with a local model package
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -39,6 +39,10 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-06: Added renderer-neutral presentation state with stable UI/action IDs, contextual key resolution, selected-clip/transcript projection, and failure diagnostics. Headless tests verify that transcript and clip state are projected without depending on a window or renderer; actual GUI, tray, and hotkey integration remain deferred.
 
+2026-08-07: Added the pure-Rust native Whisper vertical slice from the burnt-apple Burn implementation: Whisper log-mel frontend, Burn encoder/decoder, Burnpack loading, tokenizer prompt construction, greedy decoding, and legacy packed-NPY inspection. `recording transcribe` now uses this backend directly; Python and the WhisperX worker are no longer application prerequisites. `cargo check --all-targets` and `cargo test --all-targets` pass. Real model-backed inference remains unverified because no local `model.bpk`/`dims.json`/`tokenizer.json` package was found in the searched workspace/model locations.
+
+2026-08-07: Compared model lifecycle conventions with `G:\Programming\Repos\teamy-tts`. Both projects should share stable model IDs, revision-keyed prepared directories, explicit manifests, artifact hashes, and acquisition receipts. Whisper keeps its task-specific `model.bpk`, `dims.json`, and `tokenizer.json` contract; TTS keeps its role-specific Burnpack/frontend assets. Neither project should treat the other task's tensors or sidecars as interchangeable.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -49,6 +53,31 @@ This file is the living work contract. A fresh agent should be able to resume fr
 6. Prefer a narrow end-to-end vertical slice over broad scaffolding.
 7. Do not claim real-time quality, GPU speed, formal coverage, or clean-machine installability until the corresponding evidence exists.
 8. When a plan item changes, update its validation and completion criteria at the same time.
+
+## Native model artifact convention
+
+The current native Whisper runtime accepts a self-contained prepared model
+directory. The preferred package is:
+
+- `model.bpk`: Burnpack weights for the handwritten Burn Whisper model;
+- `dims.json`: the dimensions needed to instantiate that model;
+- `tokenizer.json`: the tokenizer used for the language/task prompt and text
+  decoding.
+
+The older `encoder/` and `decoder/` packed-NPY layout remains readable during
+migration, but new prepared artifacts should use Burnpack. The runtime does
+not download or convert model files during transcription.
+
+The shared cross-project registry shape follows `teamy-tts`: stable model ID,
+revision, prepared-directory path, package status, source/archive fingerprint,
+manifest version, and per-file hashes. A future `model-manifest.json` (or the
+equivalent project-specific manifest) should identify task, model family,
+converter version, backend, and artifact roles. `teamy-transcriber` should
+adopt the shared registry metadata shape while retaining the Whisper-specific
+sidecars above; `teamy-tts` should retain its separate ForwardTacotron,
+HiFiGAN, phonemizer, and voice artifacts. This gives the projects compatible
+acquisition and verification tooling without falsely claiming weight or
+tokenizer compatibility.
 
 ## User guidance ledger
 
@@ -89,7 +118,7 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 | Area | Evidence | Transferable lesson |
 |---|---|---|
-| Teamy Studio | G:\Programming\Repos\Teamy-Studio\docs\spec\product\audio-input.md and G:\Programming\Repos\Teamy-Studio\docs\notes\audio-input-inbox-plan.md | Rust should own capture, normalization, buffering, feature preparation, result staging, and explicit output routing; Python should initially own WhisperX inference. |
+| Teamy Studio | G:\Programming\Repos\Teamy-Studio\docs\spec\product\audio-input.md and G:\Programming\Repos\Teamy-Studio\docs\notes\audio-input-inbox-plan.md | Rust should own capture, normalization, buffering, feature preparation, result staging, and explicit output routing; the active native Whisper path keeps inference local and in-process. |
 | Teamy Studio Whisper work | G:\Programming\Repos\Teamy-Studio\docs\notes\whisperx-optimization-plan.md | Long inputs need bounded chunking, ordered assembly, progress, timing, and resource-aware worker selection. |
 | Teamy Studio architecture | G:\Programming\Repos\Teamy-Studio\Cargo.toml and AGENTS.md | Crate boundaries and preservation-first refactors are useful, but this project must avoid inheriting Teamy Studio's experimental breadth. |
 | whisper-burn | G:\Programming\Repos\whisper-burn\README.md | A Rust/Burn path is valuable as a future backend or verification experiment; it has nontrivial model conversion and model-file assumptions. |
@@ -123,7 +152,7 @@ teamy-transcriber captures or imports speech, creates durable audio clips, runs 
 2. File import for common audio and video formats through a replaceable media adapter.
 3. Microphone capture with an explicit armed/recording/stopped state.
 4. Authoritative recording and clip manifests stored under an app-owned data directory.
-5. Local WhisperX backend with model/runtime doctor, preparation, progress, cancellation, and staged results.
+5. Local native Whisper ASR backend with model/package doctor, preparation, progress, cancellation, and staged results.
 6. Transcript presentation with source/clip provenance and explicit commit/export actions.
 7. Predictable clip split, move, append, and delete operations with undo or replayable history.
 8. Small, reversible audio preparation profiles: gain, noise reduction, equalization, and resampling where required by the backend.
@@ -136,7 +165,7 @@ teamy-transcriber captures or imports speech, creates durable audio clips, runs 
 - A nonlinear video editor.
 - Cloud transcription or cloud LLM inference in the default product path.
 - Blind typing into whichever external window currently has focus.
-- A requirement that Rust/Burn reproduce WhisperX before a usable local backend exists.
+- A requirement that the first native slice include full WhisperX alignment, diarization, or timestamp behavior.
 - Diarization, translation, speaker labeling, or word-level alignment as first-slice blockers. They may be capabilities added behind explicit gates.
 - A claim that Vulkan/Slug is required for the first usable transcription flow.
 
@@ -151,7 +180,7 @@ flowchart LR
     M --> N[Normalize and prepare]
     C --> N
     N --> S[Immutable source and clip store]
-    S --> T[WhisperX backend]
+    S --> T[Native Whisper backend]
     T --> R[Typed transcript results]
     R --> P[Transcript projection]
     R --> L[Optional local LLM action]
@@ -219,7 +248,11 @@ The first backend contract should expose:
 6. cancel: stop work without corrupting the source or committed transcript;
 7. shutdown: release resources and report final metrics.
 
-Python WhisperX is the first implementation candidate. A Rust/Burn adapter is a later candidate and must conform to the same typed contract rather than silently becoming a second product architecture.
+The active backend is a pure-Rust Burn Whisper implementation. It consumes a
+local native model package and conforms to this typed contract. WhisperX-style
+VAD, alignment, diarization, timestamps, and accelerator strategies remain
+separate capabilities to add around the native ASR core rather than hidden
+Python prerequisites.
 
 ### Rendering and transport boundary
 
@@ -306,9 +339,16 @@ Completion: Imported audio and video produce normalized clips with deterministic
 
 #### W7 [~] Define the transcription backend protocol
 
-Work: Implement a fake backend first, capability descriptors, typed runtime readiness, and a narrow one-shot Rust-to-Python JSONL submit/response boundary with request correlation. Full doctor/describe/prepare/stream/cancel/shutdown messages, schema versions, and bounded progress events remain pending.
+Work: Implement a fake backend, capability descriptors, typed native-model
+readiness, and a native Rust submit/decode boundary. Full doctor/describe/
+prepare/stream/cancel/shutdown messages, schema versions, and bounded progress
+events remain pending.
 
-Validation: Fake backend behavior, local-only capability reporting, configuration rejection, JSONL serialization, process errors, empty results, and response correlation are covered at the current boundary. Long-running lifecycle behavior remains unverified.
+Validation: Fake backend behavior, local-only capability reporting, native
+model configuration rejection, Burn frontend reference behavior, model-shape
+checks, greedy-decoder behavior, and empty-result handling are covered at the
+current boundary. Long-running lifecycle behavior and a real model fixture
+remain unverified.
 
 Completion: The app can run a fully observable transcription job without real inference and can replay its receipt.
 
@@ -320,11 +360,18 @@ Validation: `model show`, local inventory, `doctor`, and backend readiness repor
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
-#### W9 [~] Integrate local WhisperX
+#### W9 [~] Integrate native Whisper ASR
 
-Work: Implement the first Python WhisperX worker behind the backend protocol, consuming model files supplied in the configured local model directory. The current worker accepts normalized 16 kHz mono input, uses `local_files_only=True`, caches models within one process, and returns raw transcript text. VAD/alignment remain later capabilities.
+Work: Implement the first native Whisper ASR path behind the backend protocol,
+consuming `model.bpk`, `dims.json`, and `tokenizer.json` supplied in the
+configured local model directory. The current path accepts normalized 16 kHz
+mono input, builds Whisper log-mel features in Rust, loads Burn weights, and
+returns raw transcript text. VAD/alignment remain later capabilities.
 
-Validation: Rust boundary tests and worker source review are complete; a real local fixture, model/runtime versions, device timings, chunk count, output checksum, long-input ordering, bounded work, cancellation, and failure matrix are pending a local Python/WhisperX runtime.
+Validation: Rust unit and integration tests pass, including deterministic
+frontend and model-shape checks. A real local native model, output checksum,
+long-input ordering, bounded work, cancellation, and quality/timing matrix are
+pending a supplied model package.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -340,9 +387,17 @@ Completion: Microphone recording is a normal source kind in the domain model and
 
 #### W11 [~] Complete one file-to-transcript vertical slice
 
-Work: Connect WAV normalization, full-duration or persisted partial-clip extraction, local WhisperX submission, raw transcript commit, and structured CLI output through the same event-backed recording. The current slice also persists clip processing/failure transitions and projects them through `recording show`; import/video coverage, ordered result staging, progress, cancellation, and text export remain pending.
+Work: Connect WAV normalization, full-duration or persisted partial-clip
+extraction, native Whisper submission, raw transcript commit, and structured
+CLI output through the same event-backed recording. The current slice also
+persists clip processing/failure transitions and projects them through
+`recording show`; import/video coverage, ordered result staging, progress,
+cancellation, and text export remain pending.
 
-Validation: The no-GUI command path, event receipt, VCTK normalization smoke, and persisted missing-`python` clip failure are implemented and the full repository gate passes. Actual local inference and timing receipts are unverified until a local runtime/model fixture is available.
+Validation: The no-GUI command path, event receipt, VCTK normalization smoke,
+native frontend/model tests, persisted failure state, and full repository gate
+pass. Actual model-backed inference and timing receipts are unverified until a
+local native model fixture is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
@@ -523,19 +578,19 @@ Remaining open gates are intentional decisions, not omitted requirements.
 | Date | Decision | Reason | Revisit trigger |
 |---|---|---|---|
 | 2026-08-06 | Start with a typed Rust domain/storage/backend contract and a fake backend. | Produces a testable vertical slice before device/model/rendering complexity. | Revisit if the chosen GUI framework forces a different boundary. |
-| 2026-08-06 | Treat Python WhisperX as first local backend and Burn as a later adapter. | Existing WhisperX is the closest path to user value; Burn conversion is a separate research problem. | Revisit after capability/quality measurements. |
+| 2026-08-07 | Make the native Burn Whisper path the active ASR backend; retain WhisperX behavior as future capability work. | The reusable burnt-apple frontend/model/Burnpack loader provides a pure-Rust path and removes a Python runtime prerequisite. | Revisit if model parity or quality evidence requires a different core. |
 | 2026-08-06 | Keep raw ASR immutable and LLM output derived. | Protects trust and makes local transformations auditable. | Revisit only with an explicit versioning design. |
 | 2026-08-06 | CPU fontdue is the text-rendering reference. | Prior Slug artifacts require a stable comparator and honest GPU evidence. | Revisit after artifact fixtures pass. |
 
 ## Next safe implementation slice
 
-The next implementation turn should continue W11 and close the runtime-dependent evidence gap:
+The next implementation turn should continue W11 and close the model-dependent evidence gap:
 
-1. Run `recording prepare` and `recording transcribe` against a local Python/WhisperX installation and locally supplied model files, recording versions, device, timing, and output checksum.
+1. Run `recording prepare` and `recording transcribe` against a local native model package, recording model revision, artifact hashes, CPU timing, and output checksum.
 2. Add a portable video/audio fixture strategy and source-time mapping, likely behind an ffmpeg/ffprobe adapter or a documented native library.
 3. Add an explicit CLI clip-creation command and source-time mapping for clips that are not currently represented by persisted events.
 4. Expand the backend lifecycle with progress, cancellation, staged results, and structured receipts.
-5. Keep local model inventory and runtime validation separate from any future CDN acquisition.
+5. Keep local model inventory and native artifact validation separate from any future CDN acquisition.
 
 Do not begin by copying WhisperX, building the skeuomorphic microphone, adding tray hotkeys, or writing the Slug renderer. Those are downstream of the semantic and storage contract.
 

@@ -6,6 +6,7 @@ pub mod cli;
 pub mod domain;
 pub mod logging_init;
 pub mod media;
+pub mod native_whisper;
 pub mod paths;
 pub mod presentation;
 pub mod storage;

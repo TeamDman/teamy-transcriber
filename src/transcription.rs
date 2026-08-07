@@ -1,12 +1,15 @@
 use crate::domain::ClipId;
 use crate::domain::RecordingId;
 use crate::domain::TranscriptProvenance;
+use crate::native_whisper::frontend::whisper_log_mel_spectrogram;
+use crate::native_whisper::model::MODEL_BURNPACK_FILE_NAME;
+use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
+use crate::native_whisper::model::TOKENIZER_FILE_NAME;
+use crate::native_whisper::model::inspect_model_dir;
+use crate::native_whisper::whisper::greedy_decode_with_model;
 use facet::Facet;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Stdio;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, Facet, PartialEq)]
@@ -32,10 +35,11 @@ impl std::fmt::Display for RuntimeAssetStatus {
 }
 
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
-pub struct LocalWhisperXReadiness {
-    pub python: RuntimeAssetStatus,
-    pub worker_script: RuntimeAssetStatus,
+pub struct NativeWhisperReadiness {
     pub model_dir: RuntimeAssetStatus,
+    pub weights: RuntimeAssetStatus,
+    pub dims: RuntimeAssetStatus,
+    pub tokenizer: RuntimeAssetStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -118,38 +122,52 @@ impl TranscriptionBackend for FakeTranscriptionBackend {
 }
 
 #[derive(Clone, Debug)]
-pub struct LocalWhisperXConfig {
-    pub python_executable: PathBuf,
-    pub worker_script: PathBuf,
+pub struct NativeWhisperConfig {
     pub model_dir: PathBuf,
-    pub model_name: String,
-    pub device: String,
-    pub compute_type: String,
-    pub batch_size: u32,
+    pub max_decode_tokens: usize,
 }
 
 #[derive(Clone, Debug)]
-pub struct LocalWhisperXBackend {
-    config: LocalWhisperXConfig,
+pub struct NativeWhisperBackend {
+    config: NativeWhisperConfig,
 }
 
-impl LocalWhisperXBackend {
+impl NativeWhisperBackend {
     #[must_use]
-    pub fn new(config: LocalWhisperXConfig) -> Self {
+    pub fn new(config: NativeWhisperConfig) -> Self {
         Self { config }
     }
 
     #[must_use]
-    pub fn config(&self) -> &LocalWhisperXConfig {
+    pub const fn config(&self) -> &NativeWhisperConfig {
         &self.config
     }
 
     #[must_use]
-    pub fn readiness(&self) -> LocalWhisperXReadiness {
-        LocalWhisperXReadiness {
-            python: executable_status(&self.config.python_executable),
-            worker_script: file_status(&self.config.worker_script),
-            model_dir: directory_status(&self.config.model_dir),
+    pub fn readiness(&self) -> NativeWhisperReadiness {
+        let root = &self.config.model_dir;
+        let weights = if file_status(&root.join(MODEL_BURNPACK_FILE_NAME))
+            == RuntimeAssetStatus::Present
+            || (directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
+                && directory_status(&root.join("decoder")) == RuntimeAssetStatus::Present)
+        {
+            RuntimeAssetStatus::Present
+        } else {
+            RuntimeAssetStatus::Missing
+        };
+        let dims = if file_status(&root.join(MODEL_DIMS_FILE_NAME)) == RuntimeAssetStatus::Present
+            || weights == RuntimeAssetStatus::Present
+                && directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
+        {
+            RuntimeAssetStatus::Present
+        } else {
+            RuntimeAssetStatus::Missing
+        };
+        NativeWhisperReadiness {
+            model_dir: directory_status(root),
+            weights,
+            dims,
+            tokenizer: file_status(&root.join(TOKENIZER_FILE_NAME)),
         }
     }
 
@@ -157,27 +175,8 @@ impl LocalWhisperXBackend {
         &self,
         request: &TranscriptionRequest,
     ) -> Result<(), TranscriptionError> {
-        let readiness = self.readiness();
-        if readiness.python != RuntimeAssetStatus::Present {
-            return Err(TranscriptionError::Configuration(format!(
-                "Python executable is {status}: {}",
-                self.config.python_executable.display(),
-                status = readiness.python
-            )));
-        }
-        if readiness.worker_script != RuntimeAssetStatus::Present {
-            return Err(TranscriptionError::Configuration(format!(
-                "WhisperX worker is {status}: {}",
-                self.config.worker_script.display(),
-                status = readiness.worker_script
-            )));
-        }
-        if readiness.model_dir != RuntimeAssetStatus::Present {
-            return Err(TranscriptionError::Configuration(format!(
-                "model directory is {status}: {}",
-                self.config.model_dir.display(),
-                status = readiness.model_dir
-            )));
+        if request.audio_path.as_os_str().is_empty() {
+            return Err(TranscriptionError::EmptyAudioPath);
         }
         if !request.audio_path.is_file() {
             return Err(TranscriptionError::Configuration(format!(
@@ -185,48 +184,97 @@ impl LocalWhisperXBackend {
                 request.audio_path.display()
             )));
         }
-        if self.config.model_name.trim().is_empty() {
+        if self.config.max_decode_tokens == 0 {
             return Err(TranscriptionError::Configuration(
-                "model name cannot be empty".to_string(),
+                "max decode tokens must be greater than zero".to_string(),
             ));
         }
-        if self.config.device.trim().is_empty() {
-            return Err(TranscriptionError::Configuration(
-                "device cannot be empty".to_string(),
-            ));
+        let readiness = self.readiness();
+        if readiness.model_dir != RuntimeAssetStatus::Present {
+            return Err(TranscriptionError::Configuration(format!(
+                "native model directory is {status}: {}",
+                self.config.model_dir.display(),
+                status = readiness.model_dir
+            )));
         }
-        if self.config.compute_type.trim().is_empty() {
-            return Err(TranscriptionError::Configuration(
-                "compute type cannot be empty".to_string(),
-            ));
+        if readiness.tokenizer != RuntimeAssetStatus::Present
+            || readiness.weights != RuntimeAssetStatus::Present
+            || readiness.dims != RuntimeAssetStatus::Present
+        {
+            return Err(TranscriptionError::Configuration(format!(
+                "native model package is incomplete (weights={}, dims={}, tokenizer={})",
+                readiness.weights, readiness.dims, readiness.tokenizer
+            )));
         }
-        if self.config.batch_size == 0 {
-            return Err(TranscriptionError::Configuration(
-                "batch size must be greater than zero".to_string(),
-            ));
-        }
-        Ok(())
+        inspect_model_dir(&self.config.model_dir)
+            .map(|_| ())
+            .map_err(|error| TranscriptionError::Configuration(error.to_string()))
     }
 }
 
-fn executable_status(executable: &Path) -> RuntimeAssetStatus {
-    if executable.exists() {
-        return if executable.is_file() {
-            RuntimeAssetStatus::Present
-        } else {
-            RuntimeAssetStatus::WrongKind
-        };
+impl TranscriptionBackend for NativeWhisperBackend {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            backend_id: "whisper-burn-native-cpu".to_string(),
+            local_only: true,
+            accepts_normalized_audio: true,
+        }
     }
-    let result = Command::new(executable)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match result {
-        Ok(status) if status.success() => RuntimeAssetStatus::Present,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeAssetStatus::Missing,
-        Ok(_) | Err(_) => RuntimeAssetStatus::Unavailable,
+
+    fn transcribe(
+        &self,
+        request: &TranscriptionRequest,
+    ) -> Result<TranscriptionResult, TranscriptionError> {
+        self.validate_configuration(request)?;
+        let artifacts = inspect_model_dir(&self.config.model_dir)
+            .map_err(|error| TranscriptionError::Configuration(error.to_string()))?;
+        let samples = read_normalized_wav(&request.audio_path)?;
+        let features = whisper_log_mel_spectrogram(&samples);
+        let result = greedy_decode_with_model(&artifacts, &features, self.config.max_decode_tokens)
+            .map_err(|error| TranscriptionError::Inference(error.to_string()))?;
+        let text = result.text.trim().to_string();
+        if text.is_empty() {
+            return Err(TranscriptionError::EmptyResult);
+        }
+        Ok(TranscriptionResult {
+            provenance: TranscriptProvenance::RawAsr,
+            text,
+        })
+    }
+}
+
+fn read_normalized_wav(path: &Path) -> Result<Vec<f32>, TranscriptionError> {
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|error| TranscriptionError::Audio(error.to_string()))?;
+    let spec = reader.spec();
+    if spec.sample_rate != crate::media::WHISPER_SAMPLE_RATE_HZ || spec.channels != 1 {
+        return Err(TranscriptionError::Audio(format!(
+            "native Whisper expects 16 kHz mono WAV, found {} Hz / {} channels",
+            spec.sample_rate, spec.channels
+        )));
+    }
+    match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| TranscriptionError::Audio(error.to_string())),
+        hound::SampleFormat::Int => {
+            if spec.bits_per_sample > 16 {
+                return Err(TranscriptionError::Audio(format!(
+                    "native Whisper does not accept integer WAVs wider than 16 bits (found {})",
+                    spec.bits_per_sample
+                )));
+            }
+            let scale = 2_f32.powi(i32::from(spec.bits_per_sample.saturating_sub(1)));
+            reader
+                .samples::<i16>()
+                .map(|sample| {
+                    sample
+                        .map(|sample| f32::from(sample) / scale)
+                        .map_err(|error| TranscriptionError::Audio(error.to_string()))
+                })
+                .collect()
+        }
     }
 }
 
@@ -248,110 +296,6 @@ fn directory_status(path: &Path) -> RuntimeAssetStatus {
     } else {
         RuntimeAssetStatus::WrongKind
     }
-}
-
-impl TranscriptionBackend for LocalWhisperXBackend {
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities {
-            backend_id: "whisperx-local".to_string(),
-            local_only: true,
-            accepts_normalized_audio: true,
-        }
-    }
-
-    fn transcribe(
-        &self,
-        request: &TranscriptionRequest,
-    ) -> Result<TranscriptionResult, TranscriptionError> {
-        self.validate_configuration(request)?;
-        let worker_request = WorkerRequest {
-            operation: "transcribe".to_string(),
-            request_id: format!("{}-{}", request.recording_id, request.clip_id),
-            audio_path: request.audio_path.display().to_string(),
-            model_dir: self.config.model_dir.display().to_string(),
-            model_name: self.config.model_name.clone(),
-            device: self.config.device.clone(),
-            compute_type: self.config.compute_type.clone(),
-            batch_size: self.config.batch_size,
-        };
-        let request_json = facet_json::to_string(&worker_request)
-            .map_err(|error| TranscriptionError::Protocol(error.to_string()))?;
-        let mut child = Command::new(&self.config.python_executable)
-            .arg(&self.config.worker_script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| TranscriptionError::Process(error.to_string()))?;
-        {
-            let stdin = child.stdin.as_mut().ok_or_else(|| {
-                TranscriptionError::Process("worker stdin unavailable".to_string())
-            })?;
-            stdin
-                .write_all(request_json.as_bytes())
-                .and_then(|()| stdin.write_all(b"\n"))
-                .map_err(|error| TranscriptionError::Process(error.to_string()))?;
-        };
-        drop(child.stdin.take());
-        let output = child
-            .wait_with_output()
-            .map_err(|error| TranscriptionError::Process(error.to_string()))?;
-        if !output.status.success() {
-            return Err(TranscriptionError::Process(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let response_line = stdout
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .ok_or_else(|| {
-                TranscriptionError::Protocol("worker returned no response".to_string())
-            })?;
-        let response: WorkerResponse = facet_json::from_str(response_line)
-            .map_err(|error| TranscriptionError::Protocol(error.to_string()))?;
-        if response.request_id != worker_request.request_id {
-            return Err(TranscriptionError::Protocol(
-                "worker response request ID did not match".to_string(),
-            ));
-        }
-        if !response.ok {
-            return Err(TranscriptionError::WorkerRejected(
-                response
-                    .error
-                    .unwrap_or_else(|| "worker rejected the request".to_string()),
-            ));
-        }
-        let text = response
-            .text
-            .filter(|text| !text.trim().is_empty())
-            .ok_or(TranscriptionError::EmptyResult)?;
-        Ok(TranscriptionResult {
-            provenance: TranscriptProvenance::RawAsr,
-            text,
-        })
-    }
-}
-
-#[derive(Debug, Facet)]
-struct WorkerRequest {
-    operation: String,
-    request_id: String,
-    audio_path: String,
-    model_dir: String,
-    model_name: String,
-    device: String,
-    compute_type: String,
-    batch_size: u32,
-}
-
-#[derive(Debug, Facet)]
-struct WorkerResponse {
-    ok: bool,
-    request_id: String,
-    text: Option<String>,
-    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -403,12 +347,10 @@ pub enum TranscriptionError {
     EmptyAudioPath,
     #[error("transcription returned empty text")]
     EmptyResult,
-    #[error("local WhisperX configuration is invalid: {0}")]
+    #[error("native Whisper configuration is invalid: {0}")]
     Configuration(String),
-    #[error("local WhisperX worker process failed: {0}")]
-    Process(String),
-    #[error("local WhisperX worker protocol failed: {0}")]
-    Protocol(String),
-    #[error("local WhisperX worker rejected the request: {0}")]
-    WorkerRejected(String),
+    #[error("native Whisper audio decoding failed: {0}")]
+    Audio(String),
+    #[error("native Whisper inference failed: {0}")]
+    Inference(String),
 }

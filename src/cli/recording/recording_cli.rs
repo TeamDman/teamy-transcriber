@@ -31,7 +31,7 @@ pub enum RecordingCommand {
     Prepare(RecordingPrepareArgs),
     /// Show a recording manifest and its current clip/transcript counts.
     Show(RecordingShowArgs),
-    /// Transcribe a prepared recording clip with local `WhisperX`.
+    /// Transcribe a prepared recording clip with native local Whisper.
     Transcribe(RecordingTranscribeArgs),
 }
 

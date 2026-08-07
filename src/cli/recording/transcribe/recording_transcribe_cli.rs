@@ -12,8 +12,8 @@ use crate::media::WavMediaAdapter;
 use crate::media::plan_time_chunks;
 use crate::paths::ModelHome;
 use crate::storage::RecordingStore;
-use crate::transcription::LocalWhisperXBackend;
-use crate::transcription::LocalWhisperXConfig;
+use crate::transcription::NativeWhisperBackend;
+use crate::transcription::NativeWhisperConfig;
 use crate::transcription::TranscriptionBackend;
 use crate::transcription::TranscriptionRequest;
 use arbitrary::Arbitrary;
@@ -41,33 +41,18 @@ struct TranscribedChunkReport {
     text: String,
 }
 
-/// Run the local `WhisperX` worker against a prepared recording clip.
+/// Run the local pure-Rust Whisper backend against a prepared recording clip.
 #[derive(Default, Facet, Arbitrary, Debug, PartialEq)]
 pub struct RecordingTranscribeArgs {
     /// Recording UUID returned by recording create.
     #[facet(args::positional)]
     pub recording_id: String,
-    /// Python executable; defaults to `TEAMY_TRANSCRIBER_PYTHON` or python.
-    #[facet(args::named)]
-    pub python: Option<String>,
-    /// `WhisperX` worker script; defaults to the repository runtime script.
-    #[facet(args::named)]
-    pub worker_script: Option<String>,
-    /// Local model directory; defaults to the resolved model home.
+    /// Local native Whisper model directory; defaults to the resolved model home.
     #[facet(args::named)]
     pub model_dir: Option<String>,
-    /// `WhisperX` model identifier.
+    /// Maximum number of decoder tokens generated for each clip.
     #[facet(args::named)]
-    pub model_name: Option<String>,
-    /// `WhisperX` device, such as cpu or cuda.
-    #[facet(args::named)]
-    pub device: Option<String>,
-    /// `WhisperX` compute type, such as int8 or float16.
-    #[facet(args::named)]
-    pub compute_type: Option<String>,
-    /// `WhisperX` batch size.
-    #[facet(args::named)]
-    pub batch_size: Option<u32>,
+    pub max_decode_tokens: Option<usize>,
     /// Maximum source chunk duration in milliseconds; omitted uses one full-recording clip.
     #[facet(args::named)]
     pub chunk_duration_ms: Option<u64>,
@@ -77,7 +62,7 @@ impl RecordingTranscribeArgs {
     /// # Errors
     ///
     /// Returns an error when the recording is not prepared, the local
-    /// `WhisperX` configuration is unavailable, or the transcript cannot be
+    /// native Whisper configuration is unavailable, or the transcript cannot be
     /// committed to the event store.
     #[expect(
         clippy::unused_async,
@@ -119,7 +104,7 @@ impl RecordingTranscribeArgs {
                 full_range,
             )?]
         };
-        let backend = LocalWhisperXBackend::new(self.local_whisperx_config()?);
+        let backend = NativeWhisperBackend::new(self.native_whisper_config()?);
         let backend_id = backend.capabilities().backend_id;
         let mut chunks = Vec::with_capacity(clips.len());
         for clip in clips {
@@ -142,41 +127,16 @@ impl RecordingTranscribeArgs {
         }))
     }
 
-    fn local_whisperx_config(&self) -> Result<LocalWhisperXConfig> {
+    fn native_whisper_config(&self) -> Result<NativeWhisperConfig> {
         let model_home = ModelHome::resolve()?;
-        Ok(LocalWhisperXConfig {
-            python_executable: self
-                .python
-                .as_deref()
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var("TEAMY_TRANSCRIBER_PYTHON")
-                        .ok()
-                        .map(PathBuf::from)
-                })
-                .unwrap_or_else(|| PathBuf::from("python")),
-            worker_script: self.worker_script.as_deref().map_or_else(
-                || {
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("runtime")
-                        .join("whisperx_worker.py")
-                },
-                PathBuf::from,
-            ),
+        Ok(NativeWhisperConfig {
             model_dir: self
                 .model_dir
                 .as_deref()
                 .map_or(model_home.0, PathBuf::from),
-            model_name: self
-                .model_name
-                .clone()
-                .unwrap_or_else(|| "small".to_string()),
-            device: self.device.clone().unwrap_or_else(|| "cpu".to_string()),
-            compute_type: self
-                .compute_type
-                .clone()
-                .unwrap_or_else(|| "int8".to_string()),
-            batch_size: self.batch_size.unwrap_or(1),
+            max_decode_tokens: self
+                .max_decode_tokens
+                .unwrap_or(crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS),
         })
     }
 }
@@ -188,7 +148,7 @@ fn transcribe_clip(
     clip: &Clip,
     full_range: TimeRange,
     normalized_path: &std::path::Path,
-    backend: &LocalWhisperXBackend,
+    backend: &NativeWhisperBackend,
 ) -> Result<TranscribedChunkReport> {
     store
         .apply_command(
@@ -232,7 +192,7 @@ fn transcribe_clip(
                     },
                 )
                 .wrap_err("failed to persist transcription failure state")?;
-            return Err(eyre::eyre!("{error}")).wrap_err("local WhisperX transcription failed");
+            return Err(eyre::eyre!("{error}")).wrap_err("native Whisper transcription failed");
         }
     };
     let transcript_id = TranscriptId::new();

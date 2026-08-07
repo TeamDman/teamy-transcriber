@@ -6,7 +6,7 @@ The first release is deliberately narrow:
 
 - capture or import audio;
 - save an authoritative recording and clip manifest;
-- transcribe locally through a managed WhisperX runtime;
+- transcribe locally through a pure-Rust Burn Whisper runtime;
 - present staged transcript text without silently typing into another application;
 - provide predictable clip movement and a small set of reversible audio-preparation operations;
 - keep the GUI, tray behavior, renderer, and model runtime observable and testable.
@@ -32,7 +32,7 @@ cargo run -- recording create example.wav
 cargo run -- recording prepare <recording-id>
 # Optional: add a source-time clip before transcribing it:
 cargo run -- recording clip add <recording-id> 0 30000000
-# With local Python/WhisperX and model files already installed:
+# With a local native model package already installed:
 cargo run -- recording transcribe <recording-id> --model-dir C:\path\to\models
 # Optional deterministic fixed-duration chunks:
 cargo run -- recording transcribe <recording-id> --chunk-duration-ms 30000
@@ -43,20 +43,22 @@ cargo run -- recording export <recording-id>
 The doctor command reports the resolved application, cache, and local model
 paths. `recording prepare` normalizes WAV sources directly and routes other
 audio/video sources through local `ffmpeg` into 16 kHz mono audio.
-`recording transcribe` invokes the local one-shot WhisperX worker and
+`recording transcribe` invokes the native Burn Whisper encoder/decoder and
 commits raw ASR text through the same event receipt; persisted partial clips are
 materialized as separate normalized WAV artifacts first. `--chunk-duration-ms`
 creates contiguous, non-overlapping clip records and resumes from their stable
-IDs after a failure. Video decoding, GUI
-controls, runtime installation, and model/CDN acquisition remain later slices.
+IDs after a failure. Video decoding, GUI controls, runtime installation, and
+model/CDN acquisition remain later slices.
 
 The renderer-neutral presentation model in `src/presentation.rs` keeps stable
 UI/action IDs, contextual key resolution, transcript projection, and diagnostics
 separate from the future window, tray, and GPU renderer.
 
-The local worker is documented in [runtime/README.md](G:/Programming/Repos/teamy-transcriber/runtime/README.md).
-Model files are assumed to be available locally for this implementation slice;
-the application does not download them.
+The native model package is assumed to be available locally for this
+implementation slice; the application does not download or convert it. The
+preferred model directory contains `model.bpk`, `dims.json`, and
+`tokenizer.json`. The runtime also recognizes the older packed-NPY
+`encoder/`/`decoder/` layout during migration.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
