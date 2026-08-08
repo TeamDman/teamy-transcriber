@@ -65,6 +65,14 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Retested WASAPI with the endpoint's exact `GetMixFormat()` pointer, a valid closest-match output pointer, and the standard one-second shared buffer. `IsFormatSupported` returned `S_OK`, but `Initialize` still returned `E_INVALIDARG` on the active default endpoint; the capture error now explains the privacy/exclusive-control recovery checks instead of implying a format conversion failure.
 
+2026-08-08: Made shared WASAPI initialization ask the audio engine for its
+smallest valid period, and added a standards-compliant fresh-client exclusive
+mode probe after shared `E_INVALIDARG`. Both active endpoints still reject the
+session here: shared initialization returns `0x80070057`, while exclusive
+format support returns `0x88890008` after reporting a 100,000 100-ns default
+period and 30,000 100-ns minimum period. The GUI preserves this as a
+recoverable recording failure; a saved microphone fixture remains unverified.
+
 2026-08-08: Added bounded transcript scrolling to the GUI. Mouse-wheel input over the transcript panel and PageUp/PageDown now select visible wrapped lines without changing the committed transcript or edit provenance; headless state coverage verifies the scroll position cannot move above the beginning.
 
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
@@ -485,7 +493,7 @@ Completion: One imported audio fixture and one imported video fixture produce a 
 
 #### W10 [~] Add microphone capture
 
-Work: Enumerate devices, show stable endpoint identity, capture an explicitly bounded interval through WASAPI, save native-rate mono-f32 audio, detect start/stop/failure states, and route captured audio into the same artifact path as imports. The current slice provides active endpoint inventory, shared bounded capture, GUI stop-controlled capture, and replayable recording lifecycle states; real-device GUI capture evidence remains pending.
+Work: Enumerate devices, show stable endpoint identity, capture an explicitly bounded interval through WASAPI, save native-rate mono-f32 audio, detect start/stop/failure states, and route captured audio into the same artifact path as imports. The current slice provides active endpoint inventory, shared bounded capture with fresh-client exclusive-mode diagnostics after shared initialization failure, GUI stop-controlled capture, and replayable recording lifecycle states; real-device GUI capture evidence remains pending.
 
 Validation: Device inventory works without capture and empirically reported two active endpoints. The bounded capture path compiles and rejects zero-duration requests without opening a device; domain tests cover saved/failed lifecycle replay. A real saved recording, device disconnect, and permission errors remain pending an explicit capture run.
 

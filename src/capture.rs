@@ -258,10 +258,12 @@ mod windows_capture {
     use std::time::Instant;
     use windows::Win32::Foundation::E_INVALIDARG;
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_EXCLUSIVE;
     use windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED;
     use windows::Win32::Media::Audio::ERole;
     use windows::Win32::Media::Audio::IAudioCaptureClient;
     use windows::Win32::Media::Audio::IAudioClient;
+    use windows::Win32::Media::Audio::IMMDevice;
     use windows::Win32::Media::Audio::IMMDeviceEnumerator;
     use windows::Win32::Media::Audio::MMDeviceEnumerator;
     use windows::Win32::Media::Audio::WAVEFORMATEX;
@@ -275,6 +277,7 @@ mod windows_capture {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::Com::CoUninitialize;
     use windows::core::GUID;
+    use windows::core::HRESULT;
     use windows::core::PCWSTR;
 
     const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x0000_0002;
@@ -284,7 +287,10 @@ mod windows_capture {
     const KSDATAFORMAT_SUBTYPE_PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
     const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID =
         GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-    const WASAPI_SHARED_BUFFER_100NS: i64 = 10_000_000;
+    // A zero shared-mode buffer duration asks the audio engine to choose the
+    // smallest valid shared period for the endpoint. This is more portable
+    // than imposing a one-second buffer on devices with a constrained period.
+    const WASAPI_SHARED_BUFFER_100NS: i64 = 0;
 
     struct ComApartment {
         uninitialize_on_drop: bool,
@@ -435,26 +441,13 @@ mod windows_capture {
                 avg_bytes_per_sec,
             );
         }
-        let initialize_result = unsafe {
-            audio_client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                0,
-                WASAPI_SHARED_BUFFER_100NS,
-                0,
-                initialize_format,
-                None,
-            )
-        };
-        initialize_result.map_err(|error| {
-            let recovery_hint = if error.code() == E_INVALIDARG {
-                " The endpoint accepted its advertised mix format probe but rejected stream initialization; check Windows microphone privacy access and whether another application has exclusive control of the device."
-            } else {
-                ""
-            };
-            eyre::eyre!(
-                "failed to initialize shared microphone stream ({capture_format:?}, buffer_100ns={WASAPI_SHARED_BUFFER_100NS}, format_support={format_support:?}): {error}.{recovery_hint}"
-            )
-        })?;
+        let audio_client = initialize_audio_client(
+            &device,
+            audio_client,
+            initialize_format,
+            format_support,
+            capture_format,
+        )?;
         let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
             .wrap_err("failed to acquire the microphone capture client")?;
         unsafe { audio_client.Start() }.wrap_err("failed to start the microphone stream")?;
@@ -477,6 +470,97 @@ mod windows_capture {
             frame_count,
             duration_us,
         })
+    }
+
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "WASAPI initialization requires fresh COM audio-client interfaces after failure"
+    )]
+    fn initialize_audio_client(
+        device: &IMMDevice,
+        audio_client: IAudioClient,
+        initialize_format: *const WAVEFORMATEX,
+        format_support: HRESULT,
+        capture_format: AudioCaptureFormat,
+    ) -> eyre::Result<IAudioClient> {
+        let initialize_result = unsafe {
+            audio_client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                0,
+                WASAPI_SHARED_BUFFER_100NS,
+                0,
+                initialize_format,
+                None,
+            )
+        };
+        match initialize_result {
+            Ok(()) => Ok(audio_client),
+            Err(shared_error) if shared_error.code() == E_INVALIDARG => {
+                // Microsoft requires a fresh IAudioClient after Initialize fails;
+                // retrying the same interface can leave it in an unusable state.
+                drop(audio_client);
+                let exclusive_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+                    .wrap_err(
+                    "failed to reactivate the microphone audio client for exclusive-mode recovery",
+                )?;
+                let mut default_period_100ns = 0_i64;
+                let mut minimum_period_100ns = 0_i64;
+                let period_result = unsafe {
+                    exclusive_client.GetDevicePeriod(
+                        Some(&raw mut default_period_100ns),
+                        Some(&raw mut minimum_period_100ns),
+                    )
+                }
+                .wrap_err(
+                    "failed to read the microphone device period for exclusive-mode recovery",
+                );
+                period_result?;
+                if default_period_100ns <= 0 {
+                    eyre::bail!(
+                        "microphone reported an invalid exclusive device period ({default_period_100ns} 100-ns units) after shared initialization failed ({shared_error:?})"
+                    );
+                }
+                let mut exclusive_closest_format = std::ptr::null_mut();
+                let exclusive_format_support = unsafe {
+                    exclusive_client.IsFormatSupported(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE,
+                        initialize_format,
+                        Some(&raw mut exclusive_closest_format),
+                    )
+                };
+                if !exclusive_closest_format.is_null() {
+                    unsafe { CoTaskMemFree(Some(exclusive_closest_format.cast::<c_void>())) };
+                }
+                if exclusive_format_support.is_err() {
+                    eyre::bail!(
+                        "shared microphone initialization rejected the mix format ({shared_error:?}); exclusive-mode format probe also failed ({exclusive_format_support:?}, shared_format_support={format_support:?}, device_period_100ns={default_period_100ns}, minimum_period_100ns={minimum_period_100ns})"
+                    );
+                }
+                let exclusive_initialize_result = unsafe {
+                    exclusive_client
+                        .Initialize(
+                            AUDCLNT_SHAREMODE_EXCLUSIVE,
+                            0,
+                            default_period_100ns,
+                            default_period_100ns,
+                            initialize_format,
+                            None,
+                        )
+                        .map_err(|exclusive_error| {
+                            eyre::eyre!(
+                                "failed to initialize microphone in shared mode ({shared_error:?}, buffer_100ns={WASAPI_SHARED_BUFFER_100NS}, format_support={format_support:?}) and exclusive mode ({exclusive_error:?}, format_support={exclusive_format_support:?}, device_period_100ns={default_period_100ns}, minimum_period_100ns={minimum_period_100ns}); check Windows microphone privacy access and whether another application has exclusive control of the device"
+                            )
+                        })
+                };
+                exclusive_initialize_result?;
+                Ok(exclusive_client)
+            }
+            Err(error) => {
+                eyre::bail!(
+                    "failed to initialize shared microphone stream ({capture_format:?}, buffer_100ns={WASAPI_SHARED_BUFFER_100NS}, format_support={format_support:?}): {error}"
+                );
+            }
+        }
     }
 
     #[expect(
