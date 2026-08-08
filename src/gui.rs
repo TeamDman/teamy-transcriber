@@ -14,6 +14,7 @@ use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
 use crate::media::AudioProfile;
+use crate::media::read_waveform_peaks;
 use crate::native_whisper::model::inspect_model_dir;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
@@ -1203,6 +1204,7 @@ struct GuiState {
     clip_ids: Vec<ClipId>,
     chunk_duration_ms: Option<u64>,
     audio_profile: AudioProfile,
+    waveform_peaks: Vec<f32>,
     prepared: bool,
 }
 
@@ -1239,6 +1241,7 @@ impl GuiState {
             clip_ids: Vec::new(),
             chunk_duration_ms,
             audio_profile,
+            waveform_peaks: Vec::new(),
             prepared: false,
         }
     }
@@ -1270,6 +1273,7 @@ impl GuiState {
             self.recording_source = "NO RECORDING".to_string();
             self.selected_clip_id = None;
             self.clip_ids.clear();
+            self.waveform_peaks.clear();
             self.prepared = false;
             self.transcript_editable = false;
             if !self.transcript_editing {
@@ -1300,6 +1304,15 @@ impl GuiState {
             .filter(|clip_id| self.clip_ids.contains(clip_id))
             .or_else(|| self.clip_ids.first().copied());
         self.prepared = audio_path_for_profile(store, recording.id, self.audio_profile).is_file();
+        self.waveform_peaks = if self.prepared {
+            read_waveform_peaks(
+                &audio_path_for_profile(store, recording.id, self.audio_profile),
+                180,
+            )
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if !self.transcript_editing {
             let transcript = self
                 .selected_clip_id
@@ -1911,19 +1924,37 @@ impl Canvas {
         );
 
         let center_y = (waveform_top + waveform_bottom) as f32 * 0.5;
-        let amplitude =
-            (waveform_bottom - waveform_top) as f32 * if state.recording { 0.42 } else { 0.16 };
-        let mut previous = Point::new(panel_left as f32 + 12.0, center_y);
-        for index in 1..=180 {
-            let fraction = index as f32 / 180.0;
-            let x = panel_left as f32 + 12.0 + fraction * (panel_right - panel_left - 24) as f32;
-            let y = center_y
-                + (fraction * 32.0 + state.phase).sin()
-                    * amplitude
-                    * (0.45 + 0.55 * (fraction * 11.0).sin().abs());
-            let current = Point::new(x, y);
-            self.line(previous, current, ink);
-            previous = current;
+        let plot_width = (panel_right - panel_left - 24) as f32;
+        if !state.recording && !state.waveform_peaks.is_empty() {
+            let amplitude = (waveform_bottom - waveform_top) as f32 * 0.42;
+            let mut previous_upper = Point::new(panel_left as f32 + 12.0, center_y);
+            let mut previous_lower = previous_upper;
+            for (index, peak) in state.waveform_peaks.iter().enumerate().skip(1) {
+                let fraction = index as f32 / (state.waveform_peaks.len() - 1).max(1) as f32;
+                let x = panel_left as f32 + 12.0 + fraction * plot_width;
+                let height = peak.clamp(0.0, 1.0) * amplitude;
+                let upper = Point::new(x, center_y - height);
+                let lower = Point::new(x, center_y + height);
+                self.line(previous_upper, upper, ink);
+                self.line(previous_lower, lower, ink);
+                previous_upper = upper;
+                previous_lower = lower;
+            }
+        } else {
+            let amplitude =
+                (waveform_bottom - waveform_top) as f32 * if state.recording { 0.42 } else { 0.16 };
+            let mut previous = Point::new(panel_left as f32 + 12.0, center_y);
+            for index in 1..=180 {
+                let fraction = index as f32 / 180.0;
+                let x = panel_left as f32 + 12.0 + fraction * plot_width;
+                let y = center_y
+                    + (fraction * 32.0 + state.phase).sin()
+                        * amplitude
+                        * (0.45 + 0.55 * (fraction * 11.0).sin().abs());
+                let current = Point::new(x, y);
+                self.line(previous, current, ink);
+                previous = current;
+            }
         }
         self.draw_wrapped_text(
             Point::new((panel_left + 18) as f32, (transcript_top + 20) as f32),

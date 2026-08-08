@@ -398,6 +398,63 @@ pub fn apply_audio_profile(
     })
 }
 
+/// Read a bounded peak envelope without loading the entire WAV into memory.
+///
+/// # Errors
+///
+/// Returns an error when the WAV cannot be opened, has no channels, or uses an
+/// unsupported integer sample depth.
+pub fn read_waveform_peaks(path: &Path, bins: usize) -> Result<Vec<f32>, MediaError> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    if spec.channels == 0 {
+        return Err(MediaError::InvalidChannels);
+    }
+    let frame_count = usize::try_from(reader.duration())
+        .map_err(|error| MediaError::TooManySamples(error.to_string()))?;
+    if frame_count == 0 {
+        return Ok(vec![0.0]);
+    }
+    let bin_count = bins.max(1).min(frame_count);
+    let mut peaks = vec![0.0; bin_count];
+    let channels = usize::from(spec.channels);
+    match spec.sample_format {
+        hound::SampleFormat::Float => {
+            for (sample_index, sample) in reader.samples::<f32>().enumerate() {
+                let frame_index = sample_index / channels;
+                if frame_index >= frame_count {
+                    break;
+                }
+                accumulate_peak(&mut peaks, frame_index, frame_count, sample?.abs());
+            }
+        }
+        hound::SampleFormat::Int => {
+            if spec.bits_per_sample > 16 {
+                return Err(MediaError::UnsupportedIntegerBits(spec.bits_per_sample));
+            }
+            let scale = 2_f32.powi(i32::from(spec.bits_per_sample.saturating_sub(1)));
+            for (sample_index, sample) in reader.samples::<i16>().enumerate() {
+                let frame_index = sample_index / channels;
+                if frame_index >= frame_count {
+                    break;
+                }
+                accumulate_peak(
+                    &mut peaks,
+                    frame_index,
+                    frame_count,
+                    (f32::from(sample?) / scale).abs(),
+                );
+            }
+        }
+    }
+    Ok(peaks)
+}
+
+fn accumulate_peak(peaks: &mut [f32], frame_index: usize, frame_count: usize, value: f32) {
+    let bin = (frame_index.saturating_mul(peaks.len()) / frame_count).min(peaks.len() - 1);
+    peaks[bin] = peaks[bin].max(value);
+}
+
 fn apply_voice_eq(samples: &[f32]) -> Vec<f32> {
     let mut previous = 0.0;
     samples

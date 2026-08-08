@@ -12,6 +12,7 @@ use teamy_transcriber::media::WHISPER_SAMPLE_RATE_HZ;
 use teamy_transcriber::media::WavMediaAdapter;
 use teamy_transcriber::media::apply_audio_profile;
 use teamy_transcriber::media::plan_time_chunks;
+use teamy_transcriber::media::read_waveform_peaks;
 
 #[test]
 fn chunk_plan_covers_duration_without_gaps_or_overlap() {
@@ -76,6 +77,10 @@ fn wav_adapter_inspects_and_normalizes_to_whisper_format() {
     assert_eq!(prepared_metadata.sample_rate_hz, WHISPER_SAMPLE_RATE_HZ);
     assert_eq!(prepared_metadata.channels, 1);
     assert_eq!(prepared_metadata.frame_count, 1_600);
+    assert_eq!(
+        read_waveform_peaks(&prepared.path, 16).expect("waveform peaks should be readable"),
+        vec![0.0; 16]
+    );
 
     std::fs::remove_dir_all(root).expect("fixture directory should be removable");
 }

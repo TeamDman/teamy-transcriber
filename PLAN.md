@@ -51,6 +51,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Added GUI-selectable reversible audio profiles. `AUDIO` cycles the original normalized signal, +6 dB gain, a conservative amplitude noise gate, and a simple voice-EQ filter; derived WAVs and JSON parameter receipts remain separate from the authoritative normalized artifact, and GUI transcription uses the selected derived path.
 
+2026-08-08: Replaced the prepared-media synthetic waveform with a bounded streaming peak envelope from the selected derived WAV. Live microphone capture retains the animated level view until its artifact is available; media tests cover deterministic peak extraction without loading the whole file.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

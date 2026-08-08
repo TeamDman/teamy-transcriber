@@ -77,7 +77,9 @@ persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
 `AUDIO` cycles the original normalized signal, gain, a conservative noise gate,
 and a simple voice-EQ profile. Derived WAVs are written beside the original
-normalized artifact with a JSON parameter receipt.
+normalized artifact with a JSON parameter receipt. Prepared recordings render a
+bounded peak envelope from the selected WAV; live capture keeps a level view
+until the recording is saved.
 
 The GUI and diagnostic CLI share the workflow orchestration in
 `src/workflow.rs`; both persist the same recording lifecycle and transcript
