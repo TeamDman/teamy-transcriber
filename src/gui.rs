@@ -1902,6 +1902,29 @@ fn model_status_text(readiness: &NativeWhisperReadiness) -> String {
     )
 }
 
+fn next_gui_step(state: &GuiState) -> &'static str {
+    match state.operation {
+        GuiOperation::Preparing => "WAIT: AUDIO PREPARATION IN PROGRESS",
+        GuiOperation::MovingClip => "WAIT: CLIP MOVE IN PROGRESS",
+        GuiOperation::DeletingClip => "WAIT: CLIP DELETE IN PROGRESS",
+        GuiOperation::SplittingClip => "WAIT: CLIP SPLIT IN PROGRESS",
+        GuiOperation::AppendingClips => "WAIT: CLIP APPEND IN PROGRESS",
+        GuiOperation::Recording => "CLICK MIC AGAIN TO STOP RECORDING",
+        GuiOperation::Stopping => "WAIT: SAVING THE RECORDING",
+        GuiOperation::Transcribing => "CANCEL STOPS AFTER THE CURRENT CLIP",
+        GuiOperation::Exporting => "WAIT: EXPORTING TRANSCRIPT",
+        GuiOperation::Editing => "WAIT: SAVING TRANSCRIPT EDIT",
+        GuiOperation::Idle if state.transcript_editing => "ENTER SAVES EDIT; ESC CANCELS",
+        GuiOperation::Idle if !state.model_ready => "CLICK MODEL TO SELECT LOCAL MODEL FILES",
+        GuiOperation::Idle if state.recording_id.is_none() => {
+            "CLICK IMPORT OR THE MICROPHONE TO START"
+        }
+        GuiOperation::Idle if !state.prepared => "CLICK PREPARE TO NORMALIZE AUDIO",
+        GuiOperation::Idle if !state.transcript_editable => "CLICK TRANSCRIBE TO CREATE TEXT",
+        GuiOperation::Idle => "REVIEW TEXT, THEN CLICK EXPORT",
+    }
+}
+
 fn asset_kind_for_path(path: &Path) -> AssetKind {
     match path
         .extension()
@@ -2640,11 +2663,12 @@ impl Canvas {
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
             &format!(
-                "{}\nMODEL PATH {}\n{}\n{}\n{}\nSOURCE {}",
+                "{}\nMODEL PATH {}\n{}\n{}\nNEXT {}\n{}\nSOURCE {}",
                 state.model_status,
                 display_path(&state.model_dir),
                 operation_label(state.operation),
                 state.clip_label(),
+                next_gui_step(state),
                 "KEYS S:SPLIT A:APPEND",
                 &state.recording_source,
             ),
@@ -3390,6 +3414,7 @@ mod tests {
     use super::INK;
     use super::Point;
     use super::glyph;
+    use super::next_gui_step;
     use ash::vk;
     use winit::dpi::PhysicalPosition;
     use winit::dpi::PhysicalSize;
@@ -3540,5 +3565,23 @@ mod tests {
         assert_eq!(state.transcript_scroll_lines, 4);
         state.scroll_transcript(-100);
         assert_eq!(state.transcript_scroll_lines, 0);
+    }
+
+    #[test]
+    fn first_use_guidance_points_to_gui_actions() {
+        let state = GuiState::default();
+        assert_eq!(
+            next_gui_step(&state),
+            "CLICK MODEL TO SELECT LOCAL MODEL FILES"
+        );
+
+        let state = GuiState {
+            model_ready: true,
+            ..state
+        };
+        assert_eq!(
+            next_gui_step(&state),
+            "CLICK IMPORT OR THE MICROPHONE TO START"
+        );
     }
 }

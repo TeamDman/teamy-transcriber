@@ -74,7 +74,9 @@ selected microphone, transcribe locally, review/edit the committed transcript,
 and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
 bounded preparation/transcription progress and success/failure back into the
-visible status line. Press Space to start/stop
+visible status line. The status panel also shows a state-derived `NEXT`
+instruction, so a first-use workflow can be followed entirely from the GUI.
+Press Space to start/stop
 microphone capture, Escape to stop capture, cancel transcription, or cancel
 transcript editing, and
 Ctrl+E to open transcript export. Mouse-wheel or PageUp/PageDown scrolling
