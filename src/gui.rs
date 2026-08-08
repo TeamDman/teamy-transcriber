@@ -121,15 +121,26 @@ struct GuiApplication {
 
 impl GuiApplication {
     fn new() -> Result<Self> {
-        let app_home = AppHome::resolve()?;
-        app_home.ensure_dir()?;
+        let app_home = resolve_gui_app_home()?;
         let store = RecordingStore::new(app_home.0.clone());
         let preferences = load_preferences(&app_home);
         let model_dir = preferences
             .model_dir
             .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or(ModelHome::resolve()?.0);
+            .map_or_else(
+                || {
+                ModelHome::resolve().map_or_else(
+                    |error| {
+                        eprintln!(
+                            "default model home could not be resolved; using the GUI app home: {error:#}"
+                        );
+                        app_home.0.join("models")
+                    },
+                    |model_home| model_home.0,
+                )
+                },
+                PathBuf::from,
+            );
         let save_dir = preferences
             .save_dir
             .as_deref()
@@ -1650,6 +1661,40 @@ fn display_path(path: &Path) -> String {
         || path.to_string_lossy().into_owned(),
         |name| name.to_string_lossy().into_owned(),
     )
+}
+
+fn resolve_gui_app_home() -> Result<AppHome> {
+    match AppHome::resolve() {
+        Ok(app_home) if app_home.ensure_dir().is_ok() => return Ok(app_home),
+        Ok(app_home) => {
+            eprintln!(
+                "platform GUI app home could not be created; trying a writable fallback: {}",
+                app_home.0.display()
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "platform GUI app home could not be resolved; trying a writable fallback: {error:#}"
+            );
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local_app_data)
+                .join("TeamDman")
+                .join(crate::paths::APP_HOME_DIR_NAME),
+        );
+    }
+    candidates.push(std::env::current_dir()?.join(format!(".{}", crate::paths::APP_HOME_DIR_NAME)));
+    candidates.push(std::env::temp_dir().join(crate::paths::APP_HOME_DIR_NAME));
+    for candidate in candidates {
+        if std::fs::create_dir_all(&candidate).is_ok() {
+            return Ok(AppHome(candidate));
+        }
+    }
+    bail!("no writable GUI app home could be created")
 }
 
 fn compact_text(value: &str, max_chars: usize) -> String {

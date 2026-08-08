@@ -61,6 +61,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Added a confirmation-gated GUI `DELETE` action for the selected clip. Deletion is a replayable soft-delete through the shared domain workflow; source and derived audio stay on disk, and the GUI reloads the active clip projection after the event.
 
+2026-08-08: Hardened GUI startup for constrained machines. The platform app home remains preferred, but if it cannot be resolved or created the GUI tries an app-owned LocalAppData, working-directory, then temporary fallback; an empirical smoke with a deliberately unusable configured home still reached a responsive Ash/Vulkan window.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
