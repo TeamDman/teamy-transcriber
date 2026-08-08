@@ -2635,10 +2635,32 @@ impl Canvas {
         };
         let (left, top, right, bottom) = rect.as_i32();
         self.panel(left, top, right, bottom, color);
+        let label_char_count = label.chars().count() as i32;
+        let scale_two_width = self
+            .font
+            .as_ref()
+            .map_or(6 * 2, |font| font.advance_width(2));
+        let scale = if label_char_count * scale_two_width + 24 <= right - left {
+            2
+        } else {
+            1
+        };
+        let character_width = self
+            .font
+            .as_ref()
+            .map_or(6 * scale, |font| font.advance_width(scale));
+        let label_width = label_char_count * character_width;
+        let line_height = self
+            .font
+            .as_ref()
+            .map_or(8 * scale, |font| font.line_height(scale));
         self.draw_text(
-            Point::new((left + 12) as f32, (top + (bottom - top - 14) / 2) as f32),
+            Point::new(
+                (left + ((right - left - label_width) / 2).max(4)) as f32,
+                (top + (bottom - top - line_height) / 2) as f32,
+            ),
             label,
-            2,
+            scale,
             color,
         );
     }

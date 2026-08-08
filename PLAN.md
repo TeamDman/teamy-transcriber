@@ -173,6 +173,10 @@ transcript panel now exposes `COPY`, copying the visible committed text or edit
 draft through the native clipboard and reporting clipboard failures in the
 status line; `EXPORT` remains the explicit persisted output path.
 
+2026-08-08: Made button labels responsive to their hit-target width, scaling
+and centering text at the 720-pixel minimum window size so the compact
+COPY/EXPORT/DELETE output row remains usable after resize.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
