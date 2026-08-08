@@ -20,6 +20,7 @@ use teamy_transcriber::transcription::TranscriptionBackend;
 use teamy_transcriber::transcription::TranscriptionRequest;
 use teamy_transcriber::workflow::commit_transcript_edit;
 use teamy_transcriber::workflow::create_recording;
+use teamy_transcriber::workflow::delete_clip;
 use teamy_transcriber::workflow::export_recording;
 use teamy_transcriber::workflow::move_clip;
 
@@ -520,6 +521,42 @@ fn shared_workflow_persists_clip_reordering() {
         loaded.clips.iter().map(|clip| clip.id).collect::<Vec<_>>(),
         vec![second, first]
     );
+
+    std::fs::remove_dir_all(root).expect("test directory should be removable");
+}
+
+#[test]
+fn shared_workflow_persists_replayable_soft_clip_deletion() {
+    let root = unique_temp_dir("teamy-transcriber-delete");
+    let store = RecordingStore::new(root.clone());
+    let recording_id = create_recording(&store, AssetKind::AudioFile, "fixture.wav")
+        .expect("recording should be created");
+    let clip_id = ClipId::new();
+    let mut state = store
+        .load_state(recording_id)
+        .expect("recording state should load");
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id,
+                source_range: TimeRange::new(0, 1_000_000).expect("range should be valid"),
+            },
+        )
+        .expect("clip should persist");
+
+    let report = delete_clip(&store, recording_id, clip_id).expect("clip should delete");
+    assert_eq!(report.clip_id, clip_id);
+    let loaded = store
+        .load_recording(recording_id)
+        .expect("deleted recording should reload");
+    let deleted = loaded
+        .clips
+        .iter()
+        .find(|clip| clip.id == clip_id)
+        .expect("deleted clip should remain in replayed history");
+    assert_eq!(deleted.status, ClipStatus::Deleted);
 
     std::fs::remove_dir_all(root).expect("test directory should be removable");
 }
