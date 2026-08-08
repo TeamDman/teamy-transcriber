@@ -1181,6 +1181,9 @@ impl GuiState {
         if cursor.distance_squared(layout.mic_center) <= layout.mic_radius.powi(2) {
             return Some(GuiAction::ToggleRecording);
         }
+        if !matches!(self.operation, GuiOperation::Idle) {
+            return None;
+        }
         if layout.import.contains(cursor) {
             return Some(GuiAction::ImportFile);
         }
@@ -1583,10 +1586,7 @@ impl Canvas {
         let margin = (width * 0.018).max(16.0) as i32;
         let layout = GuiLayout::new(PhysicalSize::new(self.width, self.height));
         let ink = if state.recording { ACTIVE } else { INK };
-        let enabled = matches!(
-            state.operation,
-            GuiOperation::Idle | GuiOperation::Recording
-        );
+        let enabled = matches!(state.operation, GuiOperation::Idle);
 
         self.panel(margin, 16, self.width as i32 - margin, 94, ink);
         self.draw_text(

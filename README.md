@@ -72,9 +72,12 @@ persisted recordings; those choices survive restart.
 
 The GUI and diagnostic CLI share the workflow orchestration in
 `src/workflow.rs`; both persist the same recording lifecycle and transcript
-provenance events. Restarting the GUI reopens the most recent persisted
-recording and restores the selected model, microphone, and export directory
-from its app-owned settings file.
+provenance events. Restarting the GUI reopens the selected persisted recording
+(falling back to the available recordings) and restores the selected model,
+microphone, and export directory
+from its app-owned settings file. Selecting MODEL validates the tokenizer,
+dimensions, and Burnpack/legacy layout before TRANSCRIBE is enabled; no CLI
+model-preparation command is required for a locally supplied package.
 
 The native model package is assumed to be available locally for this
 implementation slice; the application does not download or convert it. The

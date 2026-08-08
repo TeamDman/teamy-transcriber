@@ -86,6 +86,10 @@ model-readiness labels to the canvas so recovery does not depend on CLI
 inspection. The GUI-only path remains blocked only on empirical execution with
 a real local model/device fixture, not on missing control wiring.
 
+2026-08-08: Re-ran the full quality gate and a launch smoke after the recovery
+labels/control-safety changes. `check-all.ps1` passes, and the GUI process
+reaches the event loop and remains responsive with a writable app-home override.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
