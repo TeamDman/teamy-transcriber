@@ -122,6 +122,7 @@ struct GuiApplication {
     message_rx: Receiver<GuiMessage>,
     stop_recording: Option<Arc<AtomicBool>>,
     operation_cancel: Option<Arc<AtomicBool>>,
+    close_requested: bool,
 }
 
 impl GuiApplication {
@@ -190,6 +191,7 @@ impl GuiApplication {
             message_rx,
             stop_recording: None,
             operation_cancel: None,
+            close_requested: false,
         };
         application.inspect_model();
         application.refresh_devices();
@@ -1224,8 +1226,14 @@ impl ApplicationHandler for GuiApplication {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                self.cancel_active_operation();
-                event_loop.exit();
+                if matches!(self.state.operation, GuiOperation::Idle) {
+                    event_loop.exit();
+                } else {
+                    self.close_requested = true;
+                    self.cancel_active_operation();
+                    self.state.status_line =
+                        "Finishing the active operation before closing...".to_string();
+                }
             }
             WindowEvent::Resized(size) => {
                 if size.width == 0 || size.height == 0 {
@@ -1285,8 +1293,12 @@ impl ApplicationHandler for GuiApplication {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_messages();
+        if self.close_requested && matches!(self.state.operation, GuiOperation::Idle) {
+            event_loop.exit();
+            return;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }

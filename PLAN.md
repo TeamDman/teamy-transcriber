@@ -74,6 +74,12 @@ Both operations retain replaced clips and derived artifacts, start the new
 clip(s) pending, reload the active projection, and require explicit
 re-transcription. Shared workflow tests cover split-then-append replay.
 
+2026-08-08: Made the split/append operations visible bottom-row GUI controls
+and added hit-target coverage. Hardened close behavior so an active recording
+or transcription receives its stop/cancel request and the event loop waits
+for the terminal worker message before exiting; this preserves the persisted
+completion/failure receipt during window shutdown.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
