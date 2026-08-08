@@ -47,6 +47,7 @@ facet-json = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0",
 facet-pretty = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet-pretty" }
 figue = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "figue", features = ["arbitrary"] }
 open = "5"
+rfd = "0.15"
 winit = "0.30"
 
 [target.'cfg(windows)'.dependencies]

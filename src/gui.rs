@@ -6,17 +6,64 @@
     reason = "The reference rasterizer converts bounded window coordinates between screen numeric types"
 )]
 
-use ash::{Entry, vk};
-use eyre::{Context, Result, bail};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use crate::capture::AudioInputDevice;
+use crate::capture::list_audio_input_devices;
+use crate::domain::AssetKind;
+use crate::domain::ClipId;
+use crate::domain::Recording;
+use crate::domain::RecordingId;
+use crate::domain::RecordingStatus;
+use crate::paths::AppHome;
+use crate::paths::ModelHome;
+use crate::storage::RecordingStore;
+use crate::transcription::NativeWhisperBackend;
+use crate::transcription::NativeWhisperConfig;
+use crate::transcription::NativeWhisperReadiness;
+use crate::transcription::RuntimeAssetStatus;
+use crate::workflow::ExportReport;
+use crate::workflow::MicrophoneReport;
+use crate::workflow::PrepareReport;
+use crate::workflow::TranscriptionReport;
+use crate::workflow::commit_transcript_edit;
+use crate::workflow::create_recording;
+use crate::workflow::export_recording;
+use crate::workflow::prepare_recording;
+use crate::workflow::record_microphone;
+use crate::workflow::transcribe_recording;
+use ash::Entry;
+use ash::vk;
+use eyre::Context;
+use eyre::Result;
+use eyre::bail;
+use facet::Facet;
+use raw_window_handle::HasDisplayHandle;
+use raw_window_handle::HasWindowHandle;
+use rfd::FileDialog;
 use std::ffi::CString;
-use winit::{
-    application::ApplicationHandler,
-    dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
-};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::channel;
+use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalPosition;
+use winit::dpi::PhysicalSize;
+use winit::event::ElementState;
+use winit::event::Ime;
+use winit::event::KeyEvent;
+use winit::event::MouseButton;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::ControlFlow;
+use winit::event_loop::EventLoop;
+use winit::keyboard::Key;
+use winit::keyboard::ModifiersState;
+use winit::keyboard::NamedKey;
+use winit::window::Window;
+use winit::window::WindowId;
 
 const INITIAL_WIDTH: u32 = 1_200;
 const INITIAL_HEIGHT: u32 = 760;
@@ -38,17 +85,525 @@ const INACTIVE: Rgba = Rgba::new(0x81, 0xa9, 0x91, 0xff);
 pub fn run() -> Result<()> {
     let event_loop = EventLoop::new().wrap_err("failed to create GUI event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut application = GuiApplication::default();
+    let mut application = GuiApplication::new()?;
     event_loop
         .run_app(&mut application)
         .wrap_err("GUI event loop failed")
 }
 
-#[derive(Default)]
 struct GuiApplication {
     window: Option<Window>,
     renderer: Option<VulkanRenderer>,
     state: GuiState,
+    app_home: AppHome,
+    store: RecordingStore,
+    preferences: GuiPreferences,
+    message_tx: Sender<GuiMessage>,
+    message_rx: Receiver<GuiMessage>,
+    stop_recording: Option<Arc<AtomicBool>>,
+}
+
+impl GuiApplication {
+    fn new() -> Result<Self> {
+        let app_home = AppHome::resolve()?;
+        app_home.ensure_dir()?;
+        let store = RecordingStore::new(app_home.0.clone());
+        let preferences = load_preferences(&app_home);
+        let model_dir = preferences
+            .model_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or(ModelHome::resolve()?.0);
+        let save_dir = preferences
+            .save_dir
+            .as_deref()
+            .map_or_else(|| default_save_dir(&app_home), PathBuf::from);
+        let recordings = store.list_recordings()?;
+        let current_recording = recordings.last().cloned();
+        let (message_tx, message_rx) = channel();
+        let mut state = GuiState::new(model_dir, save_dir, preferences.microphone_id.clone());
+        state.set_recording(current_recording.as_ref(), &store);
+        let mut application = Self {
+            window: None,
+            renderer: None,
+            state,
+            app_home,
+            store,
+            preferences,
+            message_tx,
+            message_rx,
+            stop_recording: None,
+        };
+        application.inspect_model();
+        application.refresh_devices();
+        Ok(application)
+    }
+
+    fn inspect_model(&mut self) {
+        let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+            model_dir: self.state.model_dir.clone(),
+            max_decode_tokens: crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
+        });
+        let readiness = backend.readiness();
+        self.state.model_readiness = readiness.clone();
+        self.state.model_ready = model_is_ready(&readiness);
+        self.state.model_status = model_status_text(&readiness);
+    }
+
+    fn refresh_devices(&self) {
+        let sender = self.message_tx.clone();
+        std::thread::spawn(move || {
+            let message = list_audio_input_devices().map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: None,
+                    operation: "microphone inventory".to_string(),
+                    message: error.to_string(),
+                },
+                GuiMessage::Devices,
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn persist_preferences(&mut self) {
+        self.preferences.model_dir = Some(self.state.model_dir.to_string_lossy().into_owned());
+        self.preferences.save_dir = Some(self.state.save_dir.to_string_lossy().into_owned());
+        self.preferences.microphone_id = self.state.selected_microphone.clone();
+        if let Err(error) = save_preferences(&self.app_home, &self.preferences) {
+            self.state.status_line = format!("ERROR: preferences not saved: {error}");
+        }
+    }
+
+    fn reload_recording(&mut self, recording_id: RecordingId) -> Result<()> {
+        let recording = self.store.load_recording(recording_id)?;
+        self.state.set_recording(Some(&recording), &self.store);
+        Ok(())
+    }
+
+    fn handle_action(&mut self, action: GuiAction) {
+        match action {
+            GuiAction::ImportFile => self.import_file(),
+            GuiAction::ChooseModel => self.choose_model(),
+            GuiAction::ChooseSaveDirectory => self.choose_save_directory(),
+            GuiAction::CycleMicrophone => self.cycle_microphone(),
+            GuiAction::ToggleRecording => self.toggle_recording(),
+            GuiAction::Prepare => self.start_prepare(),
+            GuiAction::Transcribe => self.start_transcription(),
+            GuiAction::Export => self.start_export(),
+            GuiAction::CommitTranscriptEdit => self.commit_edit(),
+            GuiAction::RefreshDevices => self.refresh_devices(),
+            GuiAction::CancelEdit => {
+                self.state.transcript_editing = false;
+                self.state.transcript_draft = self.state.transcript.clone();
+                self.state.status_line = "Transcript edit cancelled".to_string();
+            }
+        }
+    }
+
+    fn import_file(&mut self) {
+        let Some(path) = FileDialog::new()
+            .add_filter(
+                "Audio and video",
+                &[
+                    "wav", "mp3", "m4a", "flac", "ogg", "mp4", "mov", "mkv", "webm",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let kind = asset_kind_for_path(&path);
+        match create_recording(&self.store, kind, &path) {
+            Ok(recording_id) => {
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line =
+                        format!("ERROR: imported but could not reload: {error}");
+                    return;
+                }
+                self.state.status_line =
+                    format!("Imported {}; preparing audio...", display_path(&path));
+                self.start_prepare();
+            }
+            Err(error) => {
+                self.state.status_line = format!("ERROR: import failed: {error}");
+            }
+        }
+    }
+
+    fn choose_model(&mut self) {
+        let Some(path) = FileDialog::new().pick_folder() else {
+            return;
+        };
+        self.state.model_dir = path;
+        self.inspect_model();
+        self.persist_preferences();
+        if self.state.model_ready {
+            self.state.status_line = "Model ready for local transcription".to_string();
+        } else {
+            self.state.status_line =
+                "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
+                    .to_string();
+        }
+    }
+
+    fn choose_save_directory(&mut self) {
+        let Some(path) = FileDialog::new()
+            .set_directory(&self.state.save_dir)
+            .pick_folder()
+        else {
+            return;
+        };
+        self.state.save_dir = path;
+        self.persist_preferences();
+        self.state.status_line = format!("Save directory: {}", display_path(&self.state.save_dir));
+    }
+
+    fn cycle_microphone(&mut self) {
+        if self.state.microphones.is_empty() {
+            self.state.status_line = "No microphones found; refreshing devices...".to_string();
+            self.refresh_devices();
+            return;
+        }
+        let current_index = self
+            .state
+            .selected_microphone
+            .as_ref()
+            .and_then(|id| {
+                self.state
+                    .microphones
+                    .iter()
+                    .position(|device| &device.id == id)
+            })
+            .unwrap_or(usize::MAX);
+        let next_index = if current_index == usize::MAX {
+            0
+        } else {
+            (current_index + 1) % self.state.microphones.len()
+        };
+        self.state.selected_microphone = Some(self.state.microphones[next_index].id.clone());
+        self.persist_preferences();
+        self.state.status_line = format!("Microphone: {}", self.state.microphone_label());
+    }
+
+    fn toggle_recording(&mut self) {
+        if matches!(self.state.operation, GuiOperation::Recording) {
+            if let Some(stop_requested) = &self.stop_recording {
+                stop_requested.store(true, Ordering::Relaxed);
+                self.state.operation = GuiOperation::Stopping;
+                self.state.status_line = "Stopping microphone and saving recording...".to_string();
+            }
+            return;
+        }
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_requested);
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        let endpoint_id = self.state.selected_microphone.clone();
+        self.stop_recording = Some(stop_requested);
+        self.state.recording = true;
+        self.state.operation = GuiOperation::Recording;
+        self.state.status_line = "Recording microphone — click again to stop".to_string();
+        std::thread::spawn(move || {
+            let message = record_microphone(&store, endpoint_id.as_deref(), worker_stop)
+                .map_or_else(
+                    |error| GuiMessage::Failure {
+                        recording_id: None,
+                        operation: "microphone recording".to_string(),
+                        message: error.to_string(),
+                    },
+                    GuiMessage::Recorded,
+                );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn start_prepare(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::Preparing;
+        self.state.status_line = "Preparing audio to 16 kHz mono...".to_string();
+        std::thread::spawn(move || {
+            let message = prepare_recording(&store, recording_id).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "audio preparation".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Prepared {
+                    recording_id,
+                    report,
+                },
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn start_transcription(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        if !self.state.model_ready {
+            self.state.status_line = "Choose a complete local model folder first".to_string();
+            return;
+        }
+        if !self.state.prepared {
+            self.state.status_line = "Prepare the recording before transcription".to_string();
+            return;
+        }
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        let model_dir = self.state.model_dir.clone();
+        self.state.operation = GuiOperation::Transcribing;
+        self.state.status_line = "Transcribing locally with native Whisper...".to_string();
+        std::thread::spawn(move || {
+            let message = transcribe_recording(
+                &store,
+                recording_id,
+                model_dir,
+                crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
+                None,
+            )
+            .map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "local transcription".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Transcribed {
+                    recording_id,
+                    report,
+                },
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn start_export(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let Some(path) = FileDialog::new()
+            .set_directory(&self.state.save_dir)
+            .set_file_name("transcript.txt")
+            .save_file()
+        else {
+            return;
+        };
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::Exporting;
+        self.state.status_line = "Exporting transcript...".to_string();
+        std::thread::spawn(move || {
+            let message = export_recording(&store, recording_id, Some(path)).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "transcript export".to_string(),
+                    message: error.to_string(),
+                },
+                GuiMessage::Exported,
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn commit_edit(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            return;
+        };
+        let Some(clip_id) = self.state.selected_clip_id else {
+            self.state.status_line = "Transcribe a clip before editing its text".to_string();
+            return;
+        };
+        let text = self.state.transcript_draft.trim().to_string();
+        if text.is_empty() {
+            self.state.status_line = "Transcript cannot be empty".to_string();
+            return;
+        }
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::Editing;
+        self.state.status_line = "Saving transcript edit...".to_string();
+        std::thread::spawn(move || {
+            let message = commit_transcript_edit(&store, recording_id, clip_id, text).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "transcript edit".to_string(),
+                    message: error.to_string(),
+                },
+                |_| GuiMessage::Edited { recording_id },
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn drain_messages(&mut self) {
+        while let Ok(message) = self.message_rx.try_recv() {
+            self.handle_message(message);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The GUI message reducer keeps all async operation transitions together"
+    )]
+    fn handle_message(&mut self, message: GuiMessage) {
+        match message {
+            GuiMessage::Devices(devices) => {
+                self.state.microphones = devices;
+                let selected_is_valid =
+                    self.state.selected_microphone.as_ref().is_some_and(|id| {
+                        self.state.microphones.iter().any(|device| &device.id == id)
+                    });
+                if !selected_is_valid {
+                    self.state.selected_microphone = self
+                        .state
+                        .microphones
+                        .iter()
+                        .find(|device| device.is_default)
+                        .or_else(|| self.state.microphones.first())
+                        .map(|device| device.id.clone());
+                    self.persist_preferences();
+                }
+                self.state.status_line = if self.state.microphones.is_empty() {
+                    "No active microphones found".to_string()
+                } else {
+                    format!("{} microphone(s) available", self.state.microphones.len())
+                };
+            }
+            GuiMessage::Prepared {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line = format!("ERROR: prepared but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Prepared {:.2}s at {} Hz — ready to transcribe",
+                        report.metadata.duration_us as f64 / 1_000_000.0,
+                        report.metadata.sample_rate_hz
+                    );
+                }
+            }
+            GuiMessage::Recorded(report) => {
+                self.stop_recording = None;
+                self.state.recording = false;
+                self.state.operation = GuiOperation::Idle;
+                if let Err(error) = self.reload_recording(report.recording_id) {
+                    self.state.status_line =
+                        format!("ERROR: recording saved but reload failed: {error}");
+                } else {
+                    self.state.status_line = "Recording saved; preparing audio...".to_string();
+                    self.start_prepare();
+                }
+            }
+            GuiMessage::Transcribed {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line =
+                        format!("ERROR: transcribed but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Transcription complete: {} chunk(s), {}",
+                        report.chunks.len(),
+                        report.backend_id
+                    );
+                }
+            }
+            GuiMessage::Exported(report) => {
+                self.state.operation = GuiOperation::Idle;
+                self.state.status_line = format!(
+                    "Exported {} transcript(s) to {}",
+                    report.transcript_count,
+                    display_path(&report.output_path)
+                );
+            }
+            GuiMessage::Edited { recording_id } => {
+                self.state.operation = GuiOperation::Idle;
+                self.state.transcript_editing = false;
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line =
+                        format!("ERROR: edit saved but reload failed: {error}");
+                } else {
+                    self.state.status_line =
+                        "Transcript edit saved with user-edit provenance".to_string();
+                }
+            }
+            GuiMessage::Failure {
+                recording_id,
+                operation,
+                message,
+            } => {
+                self.stop_recording = None;
+                self.state.recording = false;
+                self.state.operation = GuiOperation::Idle;
+                let reload_message = recording_id.and_then(|recording_id| {
+                    self.reload_recording(recording_id)
+                        .err()
+                        .map(|error| format!("; recovery reload failed: {error}"))
+                });
+                self.state.status_line = format!(
+                    "ERROR: {operation}: {message}{}",
+                    reload_message.unwrap_or_default()
+                );
+            }
+        }
+    }
+
+    fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) {
+        if event.state != ElementState::Pressed {
+            return;
+        }
+        if self.state.transcript_editing {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape) => self.handle_action(GuiAction::CancelEdit),
+                Key::Named(NamedKey::Backspace) => self.state.backspace(),
+                Key::Named(NamedKey::Enter) => self.handle_action(GuiAction::CommitTranscriptEdit),
+                _ => {
+                    if let Some(text) = event.text.as_deref() {
+                        self.state.commit_input(text);
+                    }
+                }
+            }
+            return;
+        }
+        if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+            if matches!(self.state.operation, GuiOperation::Recording) {
+                self.toggle_recording();
+            }
+        } else if matches!(&event.logical_key, Key::Named(NamedKey::Space)) {
+            self.toggle_recording();
+        } else if modifiers.control_key()
+            && matches!(&event.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("e"))
+        {
+            self.start_export();
+        }
+    }
 }
 
 impl ApplicationHandler for GuiApplication {
@@ -101,13 +656,24 @@ impl ApplicationHandler for GuiApplication {
             WindowEvent::CursorMoved { position, .. } => {
                 self.state.cursor = position;
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.state.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.handle_key(&event, self.state.modifiers);
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if self.state.transcript_editing {
+                    self.state.commit_input(&text);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(window) = self.window.as_ref() {
-                    self.state.click(window.inner_size());
+                if let Some(window) = self.window.as_ref()
+                    && let Some(action) = self.state.click(window.inner_size())
+                {
+                    self.handle_action(action);
                 }
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),
@@ -116,6 +682,7 @@ impl ApplicationHandler for GuiApplication {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.drain_messages();
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -144,40 +711,412 @@ impl GuiApplication {
     }
 }
 
+#[derive(Clone, Debug, Default, Facet)]
+struct GuiPreferences {
+    model_dir: Option<String>,
+    save_dir: Option<String>,
+    microphone_id: Option<String>,
+}
+
+#[derive(Debug)]
+enum GuiMessage {
+    Devices(Vec<AudioInputDevice>),
+    Prepared {
+        recording_id: RecordingId,
+        report: PrepareReport,
+    },
+    Recorded(MicrophoneReport),
+    Transcribed {
+        recording_id: RecordingId,
+        report: TranscriptionReport,
+    },
+    Exported(ExportReport),
+    Edited {
+        recording_id: RecordingId,
+    },
+    Failure {
+        recording_id: Option<RecordingId>,
+        operation: String,
+        message: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GuiAction {
+    ImportFile,
+    ChooseModel,
+    ChooseSaveDirectory,
+    CycleMicrophone,
+    ToggleRecording,
+    Prepare,
+    Transcribe,
+    Export,
+    CommitTranscriptEdit,
+    RefreshDevices,
+    CancelEdit,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum GuiOperation {
+    #[default]
+    Idle,
+    Preparing,
+    Recording,
+    Stopping,
+    Transcribing,
+    Exporting,
+    Editing,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Rect {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Rect {
+    const fn new(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    fn contains(self, point: Point) -> bool {
+        point.x >= self.left
+            && point.x <= self.right
+            && point.y >= self.top
+            && point.y <= self.bottom
+    }
+
+    fn as_i32(self) -> (i32, i32, i32, i32) {
+        (
+            self.left.round() as i32,
+            self.top.round() as i32,
+            self.right.round() as i32,
+            self.bottom.round() as i32,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GuiLayout {
+    mic_center: Point,
+    mic_radius: f32,
+    import: Rect,
+    model: Rect,
+    microphone: Rect,
+    save_directory: Rect,
+    prepare: Rect,
+    transcribe: Rect,
+    waveform: Rect,
+    transcript: Rect,
+    export: Rect,
+    refresh_devices: Rect,
+}
+
+impl GuiLayout {
+    fn new(size: PhysicalSize<u32>) -> Self {
+        let width = size.width as f32;
+        let height = size.height as f32;
+        Self {
+            mic_center: Point::new(width * 0.16, height * 0.38),
+            mic_radius: (height * 0.115).max(58.0),
+            import: Rect::new(width * 0.69, 16.0, width * 0.80, 94.0),
+            model: Rect::new(width * 0.81, 16.0, width * 0.96, 94.0),
+            microphone: Rect::new(width * 0.27, height * 0.26, width * 0.63, height * 0.35),
+            save_directory: Rect::new(width * 0.27, height * 0.37, width * 0.63, height * 0.46),
+            prepare: Rect::new(width * 0.69, height * 0.26, width * 0.81, height * 0.35),
+            transcribe: Rect::new(width * 0.84, height * 0.26, width * 0.96, height * 0.35),
+            waveform: Rect::new(width * 0.05, height * 0.54, width * 0.67, height * 0.70),
+            transcript: Rect::new(width * 0.05, height * 0.74, width * 0.67, height * 0.95),
+            export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
+            refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These booleans are independent visible state facets in the small reference GUI"
+)]
 struct GuiState {
     cursor: PhysicalPosition<f64>,
+    modifiers: ModifiersState,
     phase: f32,
     recording: bool,
     transcript: String,
+    transcript_draft: String,
+    transcript_editable: bool,
+    transcript_editing: bool,
+    status_line: String,
+    model_dir: PathBuf,
+    model_readiness: NativeWhisperReadiness,
+    model_ready: bool,
+    model_status: String,
+    save_dir: PathBuf,
+    microphones: Vec<AudioInputDevice>,
+    selected_microphone: Option<String>,
+    operation: GuiOperation,
+    recording_id: Option<RecordingId>,
+    recording_status: Option<RecordingStatus>,
+    selected_clip_id: Option<ClipId>,
+    prepared: bool,
+}
+
+impl GuiState {
+    fn new(model_dir: PathBuf, save_dir: PathBuf, selected_microphone: Option<String>) -> Self {
+        Self {
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            modifiers: ModifiersState::default(),
+            phase: 0.0,
+            recording: false,
+            transcript: "No transcript yet. Import or record audio.".to_string(),
+            transcript_draft: String::new(),
+            transcript_editable: false,
+            transcript_editing: false,
+            status_line: "Choose a model, import media, or record from the microphone".to_string(),
+            model_dir,
+            model_readiness: missing_readiness(),
+            model_ready: false,
+            model_status: "MODEL MISSING".to_string(),
+            save_dir,
+            microphones: Vec::new(),
+            selected_microphone,
+            operation: GuiOperation::Idle,
+            recording_id: None,
+            recording_status: None,
+            selected_clip_id: None,
+            prepared: false,
+        }
+    }
+
+    fn set_recording(&mut self, recording: Option<&Recording>, store: &RecordingStore) {
+        let Some(recording) = recording else {
+            self.recording = false;
+            self.recording_id = None;
+            self.recording_status = None;
+            self.selected_clip_id = None;
+            self.prepared = false;
+            self.transcript_editable = false;
+            if !self.transcript_editing {
+                self.transcript = "No transcript yet. Import or record audio.".to_string();
+                self.transcript_draft = self.transcript.clone();
+            }
+            return;
+        };
+        self.recording_id = Some(recording.id);
+        self.recording_status = Some(recording.status);
+        self.recording = recording.status == RecordingStatus::Recording;
+        self.selected_clip_id = recording
+            .clips
+            .iter()
+            .find(|clip| clip.status != crate::domain::ClipStatus::Deleted)
+            .map(|clip| clip.id);
+        self.prepared = store
+            .recording_dir(recording.id)
+            .join("audio")
+            .join("normalized-16khz-mono.wav")
+            .is_file();
+        if !self.transcript_editing {
+            let transcript = self
+                .selected_clip_id
+                .and_then(|clip_id| {
+                    recording
+                        .transcripts
+                        .iter()
+                        .rev()
+                        .find(|transcript| transcript.clip_id == clip_id)
+                })
+                .map(|transcript| transcript.text.clone());
+            if let Some(transcript) = transcript {
+                self.transcript_editable = true;
+                self.transcript = transcript;
+            } else {
+                self.transcript_editable = false;
+                self.transcript = "No transcript yet. Prepare audio, then transcribe.".to_string();
+            }
+            self.transcript_draft = self.transcript.clone();
+        }
+    }
+
+    fn microphone_label(&self) -> String {
+        self.selected_microphone.as_ref().map_or_else(
+            || "Select microphone".to_string(),
+            |id| {
+                self.microphones
+                    .iter()
+                    .find(|device| &device.id == id)
+                    .map_or_else(
+                        || "Select microphone".to_string(),
+                        |device| device.name.clone(),
+                    )
+            },
+        )
+    }
+
+    fn click(&mut self, size: PhysicalSize<u32>) -> Option<GuiAction> {
+        let layout = GuiLayout::new(size);
+        let cursor = Point::new(self.cursor.x as f32, self.cursor.y as f32);
+        if cursor.distance_squared(layout.mic_center) <= layout.mic_radius.powi(2) {
+            return Some(GuiAction::ToggleRecording);
+        }
+        if layout.import.contains(cursor) {
+            return Some(GuiAction::ImportFile);
+        }
+        if layout.model.contains(cursor) {
+            return Some(GuiAction::ChooseModel);
+        }
+        if layout.microphone.contains(cursor) {
+            return Some(GuiAction::CycleMicrophone);
+        }
+        if layout.save_directory.contains(cursor) {
+            return Some(GuiAction::ChooseSaveDirectory);
+        }
+        if layout.prepare.contains(cursor) {
+            return Some(GuiAction::Prepare);
+        }
+        if layout.transcribe.contains(cursor) {
+            return Some(GuiAction::Transcribe);
+        }
+        if layout.export.contains(cursor) {
+            return Some(GuiAction::Export);
+        }
+        if layout.refresh_devices.contains(cursor) {
+            return Some(GuiAction::RefreshDevices);
+        }
+        if layout.transcript.contains(cursor) {
+            if !self.transcript_editable {
+                self.status_line = "Transcribe a clip before editing its text".to_string();
+                return None;
+            }
+            self.transcript_editing = true;
+            self.transcript_draft = self.transcript.clone();
+            self.status_line = "Editing transcript — Enter saves, Escape cancels".to_string();
+        }
+        None
+    }
+
+    fn commit_input(&mut self, text: &str) {
+        if self.transcript_draft.chars().count() >= 10_000 {
+            return;
+        }
+        self.transcript_draft.push_str(text);
+    }
+
+    fn backspace(&mut self) {
+        self.transcript_draft.pop();
+    }
+
+    fn transcript_display(&self) -> &str {
+        if self.transcript_editing {
+            &self.transcript_draft
+        } else {
+            &self.transcript
+        }
+    }
 }
 
 impl Default for GuiState {
     fn default() -> Self {
-        Self {
-            cursor: PhysicalPosition::new(0.0, 0.0),
-            phase: 0.0,
-            recording: false,
-            transcript: "Testing, 1, 2".to_string(),
-        }
+        Self::new(PathBuf::new(), PathBuf::new(), None)
     }
 }
 
-impl GuiState {
-    fn click(&mut self, size: PhysicalSize<u32>) {
-        let width = size.width as f32;
-        let height = size.height as f32;
-        let mic_center = Point::new(width * 0.16, height * 0.38);
-        let cursor = Point::new(self.cursor.x as f32, self.cursor.y as f32);
-        if cursor.distance_squared(mic_center) <= (height * 0.115).powi(2) {
-            self.recording = !self.recording;
-            self.transcript = if self.recording {
-                "Recording...".to_string()
-            } else {
-                "Testing, 1, 2".to_string()
-            };
-        }
+fn missing_readiness() -> NativeWhisperReadiness {
+    NativeWhisperReadiness {
+        model_dir: RuntimeAssetStatus::Missing,
+        weights: RuntimeAssetStatus::Missing,
+        dims: RuntimeAssetStatus::Missing,
+        tokenizer: RuntimeAssetStatus::Missing,
     }
+}
+
+fn model_is_ready(readiness: &NativeWhisperReadiness) -> bool {
+    readiness.model_dir == RuntimeAssetStatus::Present
+        && readiness.weights == RuntimeAssetStatus::Present
+        && readiness.dims == RuntimeAssetStatus::Present
+        && readiness.tokenizer == RuntimeAssetStatus::Present
+}
+
+fn model_status_text(readiness: &NativeWhisperReadiness) -> String {
+    format!(
+        "MODEL {} W:{} D:{} T:{}",
+        if model_is_ready(readiness) {
+            "READY"
+        } else {
+            "MISSING"
+        },
+        readiness.weights,
+        readiness.dims,
+        readiness.tokenizer
+    )
+}
+
+fn asset_kind_for_path(path: &Path) -> AssetKind {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("mp4" | "mov" | "mkv" | "webm" | "avi") => AssetKind::VideoFile,
+        _ => AssetKind::AudioFile,
+    }
+}
+
+fn default_save_dir(app_home: &AppHome) -> PathBuf {
+    std::env::var_os("USERPROFILE").map_or_else(
+        || app_home.0.join("exports"),
+        |path| PathBuf::from(path).join("Downloads"),
+    )
+}
+
+fn display_path(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn compact_text(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn operation_label(operation: GuiOperation) -> &'static str {
+    match operation {
+        GuiOperation::Idle => "IDLE",
+        GuiOperation::Preparing => "PREPARING AUDIO",
+        GuiOperation::Recording => "RECORDING",
+        GuiOperation::Stopping => "SAVING RECORDING",
+        GuiOperation::Transcribing => "TRANSCRIBING LOCALLY",
+        GuiOperation::Exporting => "EXPORTING TEXT",
+        GuiOperation::Editing => "SAVING EDIT",
+    }
+}
+
+fn load_preferences(app_home: &AppHome) -> GuiPreferences {
+    std::fs::read_to_string(app_home.file_path("gui-settings.json"))
+        .ok()
+        .and_then(|contents| facet_json::from_str(&contents).ok())
+        .unwrap_or_default()
+}
+
+fn save_preferences(app_home: &AppHome, preferences: &GuiPreferences) -> Result<()> {
+    let path = app_home.file_path("gui-settings.json");
+    let temporary_path = path.with_extension("json.tmp");
+    let contents = facet_json::to_string_pretty(preferences)?;
+    std::fs::write(&temporary_path, format!("{contents}\n"))?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    std::fs::rename(temporary_path, path)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -363,6 +1302,49 @@ impl Canvas {
         self.rect(left + 2, top + 2, right - 2, bottom - 2, color);
     }
 
+    fn button(&mut self, rect: Rect, label: &str, active: bool, enabled: bool) {
+        let color = if !enabled {
+            INACTIVE
+        } else if active {
+            ACTIVE
+        } else {
+            INK
+        };
+        let (left, top, right, bottom) = rect.as_i32();
+        self.panel(left, top, right, bottom, color);
+        self.draw_text(
+            Point::new((left + 12) as f32, (top + (bottom - top - 14) / 2) as f32),
+            label,
+            2,
+            color,
+        );
+    }
+
+    fn draw_wrapped_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        max_width: i32,
+        scale: i32,
+        color: Rgba,
+    ) {
+        let max_chars = usize::try_from((max_width / (6 * scale).max(1)).max(1)).unwrap_or(1);
+        let mut wrapped = String::new();
+        for line in text.lines() {
+            let characters = line.chars().collect::<Vec<_>>();
+            for chunk in characters.chunks(max_chars) {
+                if !wrapped.is_empty() {
+                    wrapped.push('\n');
+                }
+                wrapped.extend(chunk);
+            }
+        }
+        if wrapped.is_empty() {
+            wrapped.push(' ');
+        }
+        self.draw_text(origin, &wrapped, scale, color);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "The reference layout is kept together so the first GUI slice mirrors the supplied sketch"
@@ -372,107 +1354,120 @@ impl Canvas {
         let width = self.width as f32;
         let height = self.height as f32;
         let margin = (width * 0.018).max(16.0) as i32;
+        let layout = GuiLayout::new(PhysicalSize::new(self.width, self.height));
         let ink = if state.recording { ACTIVE } else { INK };
+        let enabled = matches!(
+            state.operation,
+            GuiOperation::Idle | GuiOperation::Recording
+        );
 
         self.panel(margin, 16, self.width as i32 - margin, 94, ink);
         self.draw_text(
             Point::new((margin + 24) as f32, 35.0),
             "TEAMY-TRANSCRIBER",
-            4,
+            3,
             ink,
         );
         self.draw_text(
-            Point::new((self.width as i32 - 220) as f32, 46.0),
-            if state.recording {
-                "RECORDING"
-            } else {
-                "READY"
-            },
+            Point::new((margin + 24) as f32, 70.0),
+            &compact_text(&state.status_line, 54),
             2,
-            if state.recording { ACTIVE } else { INACTIVE },
+            if state.status_line.starts_with("ERROR") {
+                ACTIVE
+            } else {
+                INACTIVE
+            },
+        );
+        self.button(layout.import, "IMPORT", false, enabled);
+        self.button(layout.model, "MODEL", state.model_ready, enabled);
+
+        self.circle(layout.mic_center, layout.mic_radius, ink);
+        self.circle(layout.mic_center, layout.mic_radius - 3.0, ink);
+        self.circle(
+            Point::new(layout.mic_center.x, layout.mic_center.y - 12.0),
+            19.0,
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x - 19.0, layout.mic_center.y - 12.0),
+            Point::new(layout.mic_center.x - 19.0, layout.mic_center.y + 18.0),
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x + 19.0, layout.mic_center.y - 12.0),
+            Point::new(layout.mic_center.x + 19.0, layout.mic_center.y + 18.0),
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x - 19.0, layout.mic_center.y + 18.0),
+            Point::new(layout.mic_center.x, layout.mic_center.y + 30.0),
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x + 19.0, layout.mic_center.y + 18.0),
+            Point::new(layout.mic_center.x, layout.mic_center.y + 30.0),
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x, layout.mic_center.y + 30.0),
+            Point::new(layout.mic_center.x, layout.mic_center.y + 48.0),
+            ink,
+        );
+        self.line(
+            Point::new(layout.mic_center.x - 24.0, layout.mic_center.y + 49.0),
+            Point::new(layout.mic_center.x + 24.0, layout.mic_center.y + 49.0),
+            ink,
         );
 
-        let mic_center = Point::new(width * 0.16, height * 0.38);
-        let mic_radius = (height * 0.115).max(58.0);
-        self.circle(mic_center, mic_radius, ink);
-        self.circle(mic_center, mic_radius - 3.0, ink);
-        self.circle(Point::new(mic_center.x, mic_center.y - 12.0), 19.0, ink);
-        self.line(
-            Point::new(mic_center.x - 19.0, mic_center.y - 12.0),
-            Point::new(mic_center.x - 19.0, mic_center.y + 18.0),
-            ink,
-        );
-        self.line(
-            Point::new(mic_center.x + 19.0, mic_center.y - 12.0),
-            Point::new(mic_center.x + 19.0, mic_center.y + 18.0),
-            ink,
-        );
-        self.line(
-            Point::new(mic_center.x - 19.0, mic_center.y + 18.0),
-            Point::new(mic_center.x, mic_center.y + 30.0),
-            ink,
-        );
-        self.line(
-            Point::new(mic_center.x + 19.0, mic_center.y + 18.0),
-            Point::new(mic_center.x, mic_center.y + 30.0),
-            ink,
-        );
-        self.line(
-            Point::new(mic_center.x, mic_center.y + 30.0),
-            Point::new(mic_center.x, mic_center.y + 48.0),
-            ink,
-        );
-        self.line(
-            Point::new(mic_center.x - 24.0, mic_center.y + 49.0),
-            Point::new(mic_center.x + 24.0, mic_center.y + 49.0),
-            ink,
-        );
-
-        let selector_left = (width * 0.27) as i32;
-        let selector_right = (width * 0.63) as i32;
+        let (microphone_left, microphone_top, microphone_right, microphone_bottom) =
+            layout.microphone.as_i32();
+        let (save_left, save_top, save_right, save_bottom) = layout.save_directory.as_i32();
         self.panel(
-            selector_left,
-            (height * 0.29) as i32,
-            selector_right,
-            (height * 0.38) as i32,
+            microphone_left,
+            microphone_top,
+            microphone_right,
+            microphone_bottom,
             ink,
         );
-        self.panel(
-            selector_left,
-            (height * 0.40) as i32,
-            selector_right,
-            (height * 0.49) as i32,
+        self.panel(save_left, save_top, save_right, save_bottom, ink);
+        self.draw_text(
+            Point::new((microphone_left + 16) as f32, (microphone_top + 20) as f32),
+            &compact_text(&format!("MIC: {}", state.microphone_label()), 33),
+            2,
             ink,
         );
         self.draw_text(
-            Point::new((selector_left + 48) as f32, height * 0.315),
-            "MICROPHONE: WOER",
-            3,
+            Point::new((save_left + 16) as f32, (save_top + 20) as f32),
+            &compact_text(&format!("SAVE: {}", display_path(&state.save_dir)), 33),
+            2,
             ink,
         );
-        self.draw_text(
-            Point::new((selector_left + 48) as f32, height * 0.425),
-            "SAVE DIR: ~/DOWNLOADS",
-            3,
-            ink,
+        self.button(layout.prepare, "PREPARE", state.prepared, enabled);
+        self.button(
+            layout.transcribe,
+            "TRANSCRIBE",
+            state.recording_id.is_some() && state.model_ready && state.prepared,
+            enabled,
         );
 
-        let panel_left = (width * 0.06) as i32;
-        let panel_right = (width * 0.67) as i32;
-        let waveform_top = (height * 0.55) as i32;
-        let waveform_bottom = (height * 0.72) as i32;
-        let transcript_top = (height * 0.75) as i32;
+        let (panel_left, waveform_top, panel_right, waveform_bottom) = layout.waveform.as_i32();
+        let (_, transcript_top, transcript_right, transcript_bottom) = layout.transcript.as_i32();
         self.panel(panel_left, waveform_top, panel_right, waveform_bottom, ink);
         self.panel(
             panel_left,
             transcript_top,
-            panel_right,
-            height as i32 - 34,
-            ink,
+            transcript_right,
+            transcript_bottom,
+            if state.transcript_editing {
+                ACTIVE
+            } else {
+                ink
+            },
         );
 
         let center_y = (waveform_top + waveform_bottom) as f32 * 0.5;
-        let amplitude = (waveform_bottom - waveform_top) as f32 * 0.34;
+        let amplitude =
+            (waveform_bottom - waveform_top) as f32 * if state.recording { 0.42 } else { 0.16 };
         let mut previous = Point::new(panel_left as f32 + 12.0, center_y);
         for index in 1..=180 {
             let fraction = index as f32 / 180.0;
@@ -485,11 +1480,35 @@ impl Canvas {
             self.line(previous, current, ink);
             previous = current;
         }
-        self.draw_text(
-            Point::new((panel_left + 30) as f32, (transcript_top + 54) as f32),
-            &state.transcript,
-            4,
-            ink,
+        self.draw_wrapped_text(
+            Point::new((panel_left + 18) as f32, (transcript_top + 20) as f32),
+            state.transcript_display(),
+            transcript_right - panel_left - 36,
+            2,
+            if state.transcript_editing {
+                ACTIVE
+            } else {
+                ink
+            },
+        );
+        self.button(
+            layout.export,
+            "EXPORT",
+            false,
+            state.recording_id.is_some() && enabled,
+        );
+        self.button(layout.refresh_devices, "MIC LIST", false, enabled);
+        let status_top = (height * 0.49) as i32;
+        self.draw_wrapped_text(
+            Point::new(width * 0.70, status_top as f32),
+            &format!(
+                "{}\n{}",
+                state.model_status,
+                operation_label(state.operation)
+            ),
+            (width * 0.26) as i32,
+            2,
+            INACTIVE,
         );
     }
 }
@@ -1211,8 +2230,13 @@ fn find_memory_type(
 
 #[cfg(test)]
 mod tests {
-    use super::{GuiState, INITIAL_HEIGHT, INITIAL_WIDTH, glyph};
-    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use super::GuiAction;
+    use super::GuiState;
+    use super::INITIAL_HEIGHT;
+    use super::INITIAL_WIDTH;
+    use super::glyph;
+    use winit::dpi::PhysicalPosition;
+    use winit::dpi::PhysicalSize;
 
     #[test]
     fn reference_labels_have_bitmap_glyphs() {
@@ -1235,12 +2259,7 @@ mod tests {
             ..GuiState::default()
         };
 
-        state.click(size);
-        assert!(state.recording);
-        assert_eq!(state.transcript, "Recording...");
-
-        state.click(size);
-        assert!(!state.recording);
-        assert_eq!(state.transcript, "Testing, 1, 2");
+        assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
+        assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
     }
 }

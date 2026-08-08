@@ -1,5 +1,6 @@
 use facet::Facet;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
@@ -201,6 +202,21 @@ pub fn record_audio_input(
     windows_capture::record_audio_input(endpoint_id, output_path, duration)
 }
 
+/// Capture microphone input until the caller requests cancellation.
+///
+/// # Errors
+///
+/// Returns an error when the selected endpoint cannot be opened, no frames are
+/// captured, or the output cannot be written.
+#[cfg(windows)]
+pub fn record_audio_input_until_stopped(
+    endpoint_id: Option<&str>,
+    output_path: &Path,
+    stop_requested: &AtomicBool,
+) -> eyre::Result<AudioCaptureReport> {
+    windows_capture::record_audio_input_until_stopped(endpoint_id, output_path, stop_requested)
+}
+
 /// Capture is not implemented outside Windows yet.
 ///
 /// # Errors
@@ -215,12 +231,28 @@ pub fn record_audio_input(
     eyre::bail!("microphone capture is currently implemented for Windows only")
 }
 
+/// Microphone cancellation is not implemented outside Windows yet.
+///
+/// # Errors
+///
+/// Always returns an unsupported-platform diagnostic outside Windows.
+#[cfg(not(windows))]
+pub fn record_audio_input_until_stopped(
+    _endpoint_id: Option<&str>,
+    _output_path: &Path,
+    _stop_requested: &AtomicBool,
+) -> eyre::Result<AudioCaptureReport> {
+    eyre::bail!("microphone capture is currently implemented for Windows only")
+}
+
 #[cfg(windows)]
 mod windows_capture {
     use super::AudioCaptureReport;
     use eyre::Context;
     use std::ffi::c_void;
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::Duration;
     use std::time::Instant;
@@ -314,10 +346,6 @@ mod windows_capture {
         }
     }
 
-    #[expect(
-        clippy::undocumented_unsafe_blocks,
-        reason = "WASAPI capture setup reads the endpoint mix format and initializes a shared client"
-    )]
     pub fn record_audio_input(
         endpoint_id: Option<&str>,
         output_path: &Path,
@@ -326,6 +354,33 @@ mod windows_capture {
         if duration.is_zero() {
             eyre::bail!("capture duration must be greater than zero")
         }
+        let stop_requested = AtomicBool::new(false);
+        record_audio_input_inner(
+            endpoint_id,
+            output_path,
+            Some(Instant::now() + duration),
+            &stop_requested,
+        )
+    }
+
+    pub fn record_audio_input_until_stopped(
+        endpoint_id: Option<&str>,
+        output_path: &Path,
+        stop_requested: &AtomicBool,
+    ) -> eyre::Result<AudioCaptureReport> {
+        record_audio_input_inner(endpoint_id, output_path, None, stop_requested)
+    }
+
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "WASAPI capture setup reads the endpoint mix format and initializes a shared client"
+    )]
+    fn record_audio_input_inner(
+        endpoint_id: Option<&str>,
+        output_path: &Path,
+        stop_at: Option<Instant>,
+        stop_requested: &AtomicBool,
+    ) -> eyre::Result<AudioCaptureReport> {
         let _com = ComApartment::initialize()?;
         let enumerator: IMMDeviceEnumerator = unsafe {
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)
@@ -361,10 +416,13 @@ mod windows_capture {
         initialize_result?;
         let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService()? };
         unsafe { audio_client.Start()? };
-        let stop_at = Instant::now() + duration;
-        let capture_result = collect_samples(&capture_client, capture_format, stop_at);
+        let capture_result =
+            collect_samples(&capture_client, capture_format, stop_at, stop_requested);
         let _ = unsafe { audio_client.Stop() };
         let samples = capture_result?;
+        if samples.is_empty() {
+            eyre::bail!("microphone recording stopped before any audio frames were captured");
+        }
         write_capture_wav(output_path, capture_format.sample_rate_hz, &samples)?;
         let frame_count = u64::try_from(samples.len()).unwrap_or(u64::MAX);
         let duration_us = frame_count
@@ -386,10 +444,13 @@ mod windows_capture {
     fn collect_samples(
         capture_client: &IAudioCaptureClient,
         capture_format: AudioCaptureFormat,
-        stop_at: Instant,
+        stop_at: Option<Instant>,
+        stop_requested: &AtomicBool,
     ) -> eyre::Result<Vec<f32>> {
         let mut samples = Vec::new();
-        while Instant::now() < stop_at {
+        while !stop_requested.load(Ordering::Relaxed)
+            && stop_at.is_none_or(|deadline| Instant::now() < deadline)
+        {
             let mut packet_frames = unsafe { capture_client.GetNextPacketSize()? };
             while packet_frames > 0 {
                 let mut data = std::ptr::null_mut();

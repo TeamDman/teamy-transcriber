@@ -46,6 +46,38 @@ impl RecordingStore {
         self.recording_dir(recording_id).join("manifest.json")
     }
 
+    /// Load every recording whose manifest or event receipt is present.
+    ///
+    /// Directory names that are not recording UUIDs are ignored so cache and
+    /// temporary files cannot prevent the GUI from opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the recordings directory cannot be read or a
+    /// discovered recording is malformed.
+    pub fn list_recordings(&self) -> Result<Vec<Recording>, StorageError> {
+        let recordings_root = self.root.join("recordings");
+        if !recordings_root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut recordings = Vec::new();
+        for entry in std::fs::read_dir(recordings_root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(directory_name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Ok(recording_id) = RecordingId::parse(&directory_name) else {
+                continue;
+            };
+            recordings.push(self.load_recording(recording_id)?);
+        }
+        recordings.sort_by_key(|recording| recording.id);
+        Ok(recordings)
+    }
+
     /// Apply a command, append its event, and materialize the affected manifest.
     ///
     /// # Errors

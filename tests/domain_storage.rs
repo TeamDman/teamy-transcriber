@@ -18,6 +18,9 @@ use teamy_transcriber::transcription::FakeTranscriptionBackend;
 use teamy_transcriber::transcription::LocalModelInventory;
 use teamy_transcriber::transcription::TranscriptionBackend;
 use teamy_transcriber::transcription::TranscriptionRequest;
+use teamy_transcriber::workflow::commit_transcript_edit;
+use teamy_transcriber::workflow::create_recording;
+use teamy_transcriber::workflow::export_recording;
 
 #[test]
 fn domain_events_replay_to_the_same_state() {
@@ -97,6 +100,127 @@ fn domain_events_replay_to_the_same_state() {
 }
 
 #[test]
+fn user_transcript_edits_preserve_raw_text_and_mark_clip_edited() {
+    let recording_id = RecordingId::new();
+    let clip_id = ClipId::new();
+    let source = SourceAsset::new(AssetKind::AudioFile, PathBuf::from("fixture.wav"))
+        .expect("fixture path should be accepted");
+    let mut state = AppState::new();
+    state
+        .execute(Command::CreateRecording {
+            recording_id,
+            source,
+        })
+        .expect("recording creation should succeed");
+    state
+        .execute(Command::AddClip {
+            recording_id,
+            clip_id,
+            source_range: TimeRange::new(0, 1_000_000).expect("range should be valid"),
+        })
+        .expect("clip creation should succeed");
+    state
+        .execute(Command::BeginTranscription {
+            recording_id,
+            clip_id,
+        })
+        .expect("transcription should start");
+    state
+        .execute(Command::CommitTranscript {
+            recording_id,
+            clip_id,
+            transcript_id: TranscriptId::new(),
+            provenance: TranscriptProvenance::RawAsr,
+            text: "raw words".to_string(),
+        })
+        .expect("raw transcript should commit");
+    state
+        .execute(Command::CommitTranscript {
+            recording_id,
+            clip_id,
+            transcript_id: TranscriptId::new(),
+            provenance: TranscriptProvenance::UserEdit,
+            text: "edited words".to_string(),
+        })
+        .expect("user edit should commit as a new version");
+
+    let recording = state
+        .recording(recording_id)
+        .expect("recording should exist");
+    assert_eq!(recording.clips[0].status, ClipStatus::Edited);
+    assert_eq!(recording.transcripts.len(), 2);
+    assert_eq!(recording.transcripts[0].text, "raw words");
+    assert_eq!(recording.transcripts[1].text, "edited words");
+    assert_eq!(
+        recording.transcripts[1].provenance,
+        TranscriptProvenance::UserEdit
+    );
+}
+
+#[test]
+fn shared_workflow_persists_edit_and_exports_latest_transcript() {
+    let root = unique_temp_dir("teamy-transcriber-workflow");
+    let store = RecordingStore::new(&root);
+    let recording_id = create_recording(&store, AssetKind::AudioFile, "fixture.wav")
+        .expect("workflow should create the recording");
+    let clip_id = ClipId::new();
+    let mut state = store
+        .load_state(recording_id)
+        .expect("created recording should load");
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id,
+                source_range: TimeRange::new(0, 1_000_000).expect("range should be valid"),
+            },
+        )
+        .expect("clip should persist");
+    store
+        .apply_command(
+            &mut state,
+            Command::BeginTranscription {
+                recording_id,
+                clip_id,
+            },
+        )
+        .expect("transcription should start");
+    store
+        .apply_command(
+            &mut state,
+            Command::CommitTranscript {
+                recording_id,
+                clip_id,
+                transcript_id: TranscriptId::new(),
+                provenance: TranscriptProvenance::RawAsr,
+                text: "raw workflow text".to_string(),
+            },
+        )
+        .expect("raw transcript should persist");
+
+    commit_transcript_edit(
+        &store,
+        recording_id,
+        clip_id,
+        "edited workflow text".to_string(),
+    )
+    .expect("workflow edit should persist");
+    let output_path = root.join("exports").join("transcript.txt");
+    let report = export_recording(&store, recording_id, Some(output_path.clone()))
+        .expect("workflow export should succeed");
+
+    assert_eq!(report.transcript_count, 1);
+    assert_eq!(report.output_path, output_path);
+    let exported = std::fs::read_to_string(&output_path).expect("export should be readable");
+    assert!(exported.contains("user_edit"));
+    assert!(exported.contains("edited workflow text"));
+    assert!(!exported.contains("raw workflow text"));
+
+    std::fs::remove_dir_all(root).expect("test directory should be removable");
+}
+
+#[test]
 fn storage_writes_manifest_and_ndjson_receipt() {
     let root = unique_temp_dir("teamy-transcriber-storage");
     let store = RecordingStore::new(&root);
@@ -135,6 +259,13 @@ fn storage_writes_manifest_and_ndjson_receipt() {
     );
     assert!(store.events_path(recording_id).is_file());
     assert!(store.manifest_path(recording_id).is_file());
+    assert_eq!(
+        store
+            .list_recordings()
+            .expect("recordings should list")
+            .len(),
+        1
+    );
 
     std::fs::remove_dir_all(root).expect("test directory should be removable");
 }

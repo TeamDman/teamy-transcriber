@@ -14,6 +14,7 @@ pub mod storage;
 pub mod transcription;
 #[cfg(windows)]
 mod windows_startup;
+pub mod workflow;
 
 use crate::cli::Cli;
 use chrono::DateTime;

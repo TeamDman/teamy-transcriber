@@ -56,12 +56,23 @@ The renderer-neutral presentation model in `src/presentation.rs` keeps stable
 UI/action IDs, contextual key resolution, transcript projection, and diagnostics
 separate from the future window, tray, and GPU renderer.
 
-`cargo run -- gui` now creates the native Winit window, Ash/Vulkan surface and
+`cargo run -- gui` creates the native Winit window, Ash/Vulkan surface and
 swapchain, and a CPU-rasterized reference layout with a microphone control,
-microphone/save-directory selectors, waveform, and transcript panel. The first
-slice is intentionally renderer-focused: the microphone click changes the
-visible recording state, while capture, persistence, and transcription dispatch
-still need to be connected through the existing domain/action boundaries.
+microphone/save-directory selectors, waveform, and transcript panel. The GUI is
+the complete first workflow surface: choose a local model directory, import an
+audio/video file (which automatically prepares normalized audio), record from a
+selected microphone, transcribe locally, review/edit the committed transcript,
+and export it through native file dialogs. Long-running capture, preparation,
+transcription, edit, and export work runs off the window thread and reports
+success/failure back into the visible status line. Press Space to start/stop
+microphone capture, Escape to stop capture or cancel transcript editing, and
+Ctrl+E to open transcript export.
+
+The GUI and diagnostic CLI share the workflow orchestration in
+`src/workflow.rs`; both persist the same recording lifecycle and transcript
+provenance events. Restarting the GUI reopens the most recent persisted
+recording and restores the selected model, microphone, and export directory
+from its app-owned settings file.
 
 The native model package is assumed to be available locally for this
 implementation slice; the application does not download or convert it. The

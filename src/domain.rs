@@ -481,7 +481,10 @@ impl AppState {
                     .iter_mut()
                     .find(|clip| clip.id == *clip_id)
                     .ok_or(DomainError::ClipNotFound(*clip_id))?;
-                if clip.status != ClipStatus::Processing {
+                if !matches!(
+                    clip.status,
+                    ClipStatus::Processing | ClipStatus::Transcribed | ClipStatus::Edited
+                ) {
                     return Err(DomainError::InvalidClipTranscriptionTransition {
                         clip_id: *clip_id,
                         actual: clip.status,
@@ -569,7 +572,10 @@ impl AppState {
                 if clip.status == ClipStatus::Deleted {
                     return Err(DomainError::ClipDeleted(*clip_id));
                 }
-                if clip.status != ClipStatus::Processing {
+                if !matches!(
+                    clip.status,
+                    ClipStatus::Processing | ClipStatus::Transcribed | ClipStatus::Edited
+                ) {
                     return Err(DomainError::InvalidClipTranscriptionTransition {
                         clip_id: *clip_id,
                         actual: clip.status,
@@ -589,7 +595,11 @@ impl AppState {
                     provenance: *provenance,
                     text: text.clone(),
                 });
-                clip.status = ClipStatus::Transcribed;
+                clip.status = if *provenance == TranscriptProvenance::UserEdit {
+                    ClipStatus::Edited
+                } else {
+                    ClipStatus::Transcribed
+                };
                 clip.failure = None;
             }
         }

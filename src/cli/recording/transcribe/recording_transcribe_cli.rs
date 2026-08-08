@@ -1,21 +1,9 @@
 use crate::cli::output::CliOutput;
-use crate::domain::AppState;
-use crate::domain::Clip;
-use crate::domain::ClipId;
-use crate::domain::ClipStatus;
-use crate::domain::Command;
 use crate::domain::RecordingId;
-use crate::domain::TimeRange;
-use crate::domain::TranscriptId;
-use crate::media::MediaAdapter;
-use crate::media::WavMediaAdapter;
-use crate::media::plan_time_chunks;
 use crate::paths::ModelHome;
 use crate::storage::RecordingStore;
-use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
-use crate::transcription::TranscriptionBackend;
-use crate::transcription::TranscriptionRequest;
+use crate::workflow::transcribe_recording;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
@@ -73,19 +61,7 @@ impl RecordingTranscribeArgs {
             RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
         let app_home = crate::paths::AppHome::resolve()?;
         let store = RecordingStore::new(app_home.0);
-        let mut state = store
-            .load_state(recording_id)
-            .wrap_err("failed to load recording event state")?;
-        let normalized_path = store
-            .recording_dir(recording_id)
-            .join("audio")
-            .join("normalized-16khz-mono.wav");
-        let metadata = WavMediaAdapter
-            .inspect(&normalized_path)
-            .wrap_err("recording is not prepared; run recording prepare first")?;
-        let full_range = TimeRange::new(0, metadata.duration_us)
-            .wrap_err("prepared recording has no transcribable duration")?;
-        let chunk_ranges = self
+        let chunk_duration_us = self
             .chunk_duration_ms
             .map(|duration_ms| {
                 duration_ms
@@ -93,35 +69,30 @@ impl RecordingTranscribeArgs {
                     .ok_or_else(|| eyre::eyre!("--chunk-duration-ms is too large"))
             })
             .transpose()?;
-        let clips = if let Some(chunk_duration_us) = chunk_ranges {
-            let ranges = plan_time_chunks(metadata.duration_us, chunk_duration_us)?;
-            ensure_recording_chunks(&store, &mut state, recording_id, &ranges)?
-        } else {
-            vec![ensure_recording_clip(
-                &store,
-                &mut state,
-                recording_id,
-                full_range,
-            )?]
-        };
-        let backend = NativeWhisperBackend::new(self.native_whisper_config()?);
-        let backend_id = backend.capabilities().backend_id;
-        let mut chunks = Vec::with_capacity(clips.len());
-        for clip in clips {
-            chunks.push(transcribe_clip(
-                &store,
-                &mut state,
-                recording_id,
-                &clip,
-                full_range,
-                &normalized_path,
-                &backend,
-            )?);
-        }
+        let config = self.native_whisper_config()?;
+        let report = transcribe_recording(
+            &store,
+            recording_id,
+            config.model_dir,
+            config.max_decode_tokens,
+            chunk_duration_us,
+        )?;
+        let chunks = report
+            .chunks
+            .into_iter()
+            .map(|chunk| TranscribedChunkReport {
+                clip_id: chunk.clip_id.to_string(),
+                transcript_id: chunk.transcript_id.to_string(),
+                start_us: chunk.source_range.start_us,
+                end_us: chunk.source_range.end_us,
+                audio_path: chunk.audio_path.display().to_string(),
+                text: chunk.text,
+            })
+            .collect::<Vec<_>>();
 
         Ok(CliOutput::facet(RecordingTranscribeReport {
             recording_id: recording_id.to_string(),
-            backend_id,
+            backend_id: report.backend_id,
             chunk_count: chunks.len(),
             chunks,
         }))
@@ -139,171 +110,4 @@ impl RecordingTranscribeArgs {
                 .unwrap_or(crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS),
         })
     }
-}
-
-fn transcribe_clip(
-    store: &RecordingStore,
-    state: &mut AppState,
-    recording_id: RecordingId,
-    clip: &Clip,
-    full_range: TimeRange,
-    normalized_path: &std::path::Path,
-    backend: &NativeWhisperBackend,
-) -> Result<TranscribedChunkReport> {
-    store
-        .apply_command(
-            state,
-            Command::BeginTranscription {
-                recording_id,
-                clip_id: clip.id,
-            },
-        )
-        .wrap_err("failed to persist transcription start state")?;
-    let clip_audio_path = if clip.source_range == full_range {
-        normalized_path.to_path_buf()
-    } else {
-        WavMediaAdapter
-            .prepare_clip(
-                normalized_path,
-                &store
-                    .recording_dir(recording_id)
-                    .join("audio")
-                    .join("clips"),
-                clip.source_range,
-                clip.id,
-            )?
-            .path
-    };
-    let result = match backend.transcribe(&TranscriptionRequest {
-        recording_id,
-        clip_id: clip.id,
-        audio_path: clip_audio_path.clone(),
-    }) {
-        Ok(result) => result,
-        Err(error) => {
-            let reason = error.to_string();
-            store
-                .apply_command(
-                    state,
-                    Command::FailTranscription {
-                        recording_id,
-                        clip_id: clip.id,
-                        reason,
-                    },
-                )
-                .wrap_err("failed to persist transcription failure state")?;
-            return Err(eyre::eyre!("{error}")).wrap_err("native Whisper transcription failed");
-        }
-    };
-    let transcript_id = TranscriptId::new();
-    store
-        .apply_command(
-            state,
-            Command::CommitTranscript {
-                recording_id,
-                clip_id: clip.id,
-                transcript_id,
-                provenance: result.provenance,
-                text: result.text.clone(),
-            },
-        )
-        .wrap_err("failed to persist the transcript")?;
-    Ok(TranscribedChunkReport {
-        clip_id: clip.id.to_string(),
-        transcript_id: transcript_id.to_string(),
-        start_us: clip.source_range.start_us,
-        end_us: clip.source_range.end_us,
-        audio_path: clip_audio_path.display().to_string(),
-        text: result.text,
-    })
-}
-
-fn ensure_recording_clip(
-    store: &RecordingStore,
-    state: &mut AppState,
-    recording_id: RecordingId,
-    full_range: TimeRange,
-) -> Result<Clip> {
-    let existing_clip = state
-        .recording(recording_id)
-        .ok_or_else(|| eyre::eyre!("recording was not found in loaded state"))?
-        .clips
-        .iter()
-        .find(|clip| !matches!(clip.status, ClipStatus::Deleted))
-        .cloned();
-    if let Some(clip) = existing_clip {
-        return Ok(clip);
-    }
-
-    let clip_id = ClipId::new();
-    store
-        .apply_command(
-            state,
-            Command::AddClip {
-                recording_id,
-                clip_id,
-                source_range: full_range,
-            },
-        )
-        .wrap_err("failed to persist the full-recording clip")?;
-    state
-        .recording(recording_id)
-        .and_then(|recording| recording.clips.iter().find(|clip| clip.id == clip_id))
-        .cloned()
-        .ok_or_else(|| eyre::eyre!("new clip was not found after persistence"))
-}
-
-fn ensure_recording_chunks(
-    store: &RecordingStore,
-    state: &mut AppState,
-    recording_id: RecordingId,
-    ranges: &[TimeRange],
-) -> Result<Vec<Clip>> {
-    let mut active_clips = state
-        .recording(recording_id)
-        .ok_or_else(|| eyre::eyre!("recording was not found in loaded state"))?
-        .clips
-        .iter()
-        .filter(|clip| !matches!(clip.status, ClipStatus::Deleted))
-        .cloned()
-        .collect::<Vec<_>>();
-    active_clips.sort_by_key(|clip| clip.source_range.start_us);
-    let active_ranges = active_clips
-        .iter()
-        .map(|clip| clip.source_range)
-        .collect::<Vec<_>>();
-    if !active_clips.is_empty() {
-        if active_ranges != ranges {
-            return Err(eyre::eyre!(
-                "recording already has active clips that do not match --chunk-duration-ms"
-            ));
-        }
-        return Ok(active_clips);
-    }
-
-    let mut clip_ids = Vec::with_capacity(ranges.len());
-    for &source_range in ranges {
-        let clip_id = ClipId::new();
-        store
-            .apply_command(
-                state,
-                Command::AddClip {
-                    recording_id,
-                    clip_id,
-                    source_range,
-                },
-            )
-            .wrap_err("failed to persist a planned transcription chunk")?;
-        clip_ids.push(clip_id);
-    }
-    clip_ids
-        .into_iter()
-        .map(|clip_id| {
-            state
-                .recording(recording_id)
-                .and_then(|recording| recording.clips.iter().find(|clip| clip.id == clip_id))
-                .cloned()
-                .ok_or_else(|| eyre::eyre!("planned transcription chunk was not found"))
-        })
-        .collect()
 }
