@@ -81,6 +81,11 @@ mismatches and missing Whisper control tokens. Existing packages selected
 through MODEL now fail visibly before TRANSCRIBE can be enabled instead of
 waiting for a decoder-time token lookup or embedding failure.
 
+2026-08-08: Extended first-use recovery guidance for media preparation. When
+local `ffmpeg`/`ffprobe` execution fails, the GUI status panel now points the
+user to TOOLS to select the missing local executable rather than repeating an
+opaque PREPARE step.
+
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.

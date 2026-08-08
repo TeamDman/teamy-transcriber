@@ -2029,6 +2029,13 @@ fn next_gui_step(state: &GuiState) -> &'static str {
         GuiOperation::Editing => "WAIT: SAVING TRANSCRIPT EDIT",
         GuiOperation::Idle if state.transcript_editing => "ENTER SAVES EDIT; ESC CANCELS",
         GuiOperation::Idle if !state.model_ready => "CLICK MODEL TO SELECT LOCAL MODEL FILES",
+        GuiOperation::Idle
+            if !state.prepared
+                && (state.status_line.contains("ffmpeg")
+                    || state.status_line.contains("ffprobe")) =>
+        {
+            "CLICK TOOLS TO SELECT LOCAL FFMPEG"
+        }
         GuiOperation::Idle if state.recording_id.is_none() => {
             "CLICK IMPORT OR THE MICROPHONE TO START"
         }
@@ -3532,6 +3539,7 @@ mod tests {
     use super::INITIAL_WIDTH;
     use super::INK;
     use super::Point;
+    use super::RecordingId;
     use super::glyph;
     use super::missing_readiness;
     use super::model_status_text;
@@ -3704,6 +3712,18 @@ mod tests {
             next_gui_step(&state),
             "CLICK IMPORT OR THE MICROPHONE TO START"
         );
+    }
+
+    #[test]
+    fn media_preparation_failure_points_to_tools() {
+        let state = GuiState {
+            model_ready: true,
+            recording_id: Some(RecordingId::new()),
+            status_line: "ERROR: audio preparation: ffmpeg executable is unavailable".to_string(),
+            ..GuiState::default()
+        };
+
+        assert_eq!(next_gui_step(&state), "CLICK TOOLS TO SELECT LOCAL FFMPEG");
     }
 
     #[test]
