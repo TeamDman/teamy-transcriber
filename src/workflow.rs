@@ -19,10 +19,13 @@ use crate::domain::SourceAsset;
 use crate::domain::TimeRange;
 use crate::domain::TranscriptId;
 use crate::domain::TranscriptProvenance;
+use crate::media::AudioProfile;
 use crate::media::FfmpegMediaAdapter;
 use crate::media::MediaAdapter;
 use crate::media::MediaMetadata;
+use crate::media::PreparedAudio;
 use crate::media::WavMediaAdapter;
+use crate::media::apply_audio_profile;
 use crate::media::plan_time_chunks;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
@@ -32,6 +35,7 @@ use crate::transcription::TranscriptionRequest;
 use eyre::Context;
 use eyre::Result;
 use eyre::bail;
+use facet::Facet;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Write;
@@ -173,7 +177,12 @@ pub fn prepare_recording(
     store: &RecordingStore,
     recording_id: RecordingId,
 ) -> Result<PrepareReport> {
-    prepare_recording_with_tools(store, recording_id, &MediaToolConfig::from_environment())
+    prepare_recording_with_tools_and_profile(
+        store,
+        recording_id,
+        &MediaToolConfig::from_environment(),
+        AudioProfile::Original,
+    )
 }
 
 /// Normalize a recording using explicitly selected local media tools.
@@ -187,12 +196,28 @@ pub fn prepare_recording_with_tools(
     recording_id: RecordingId,
     tools: &MediaToolConfig,
 ) -> Result<PrepareReport> {
+    prepare_recording_with_tools_and_profile(store, recording_id, tools, AudioProfile::Original)
+}
+
+/// Normalize a recording and apply one explicit derived audio profile.
+///
+/// # Errors
+///
+/// Returns an error when the recording or source cannot be loaded, the
+/// selected media adapter cannot produce normalized audio, or the profile
+/// receipt cannot be written.
+pub fn prepare_recording_with_tools_and_profile(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    tools: &MediaToolConfig,
+    profile: AudioProfile,
+) -> Result<PrepareReport> {
     let recording = store
         .load_recording(recording_id)
         .wrap_err("failed to load recording manifest")?;
     let source = Path::new(&recording.source.path);
     let output_dir = store.recording_dir(recording_id).join("audio");
-    let prepared = match recording.source.kind {
+    let normalized = match recording.source.kind {
         AssetKind::AudioFile | AssetKind::MicrophoneRecording
             if source.extension().is_some_and(|extension| {
                 extension.to_string_lossy().eq_ignore_ascii_case("wav")
@@ -211,10 +236,60 @@ pub fn prepare_recording_with_tools(
             .wrap_err("failed to normalize source through ffmpeg")?
         }
     };
+    let prepared = apply_audio_profile(&normalized.path, &output_dir.join("profiles"), profile)
+        .wrap_err("failed to apply audio profile")?;
+    if profile != AudioProfile::Original {
+        write_audio_profile_receipt(&output_dir, &normalized, &prepared, profile)?;
+    }
     Ok(PrepareReport {
         normalized_path: prepared.path,
         metadata: prepared.metadata,
     })
+}
+
+/// Return the persisted derived audio path for a profile selection.
+#[must_use]
+pub fn audio_path_for_profile(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    profile: AudioProfile,
+) -> PathBuf {
+    let audio_dir = store.recording_dir(recording_id).join("audio");
+    profile.file_stem().map_or_else(
+        || audio_dir.join("normalized-16khz-mono.wav"),
+        |stem| audio_dir.join("profiles").join(format!("{stem}.wav")),
+    )
+}
+
+#[derive(Facet)]
+struct AudioProfileReceipt {
+    profile: AudioProfile,
+    source_path: String,
+    output_path: String,
+    duration_us: u64,
+    frame_count: u64,
+}
+
+fn write_audio_profile_receipt(
+    output_dir: &Path,
+    normalized: &PreparedAudio,
+    prepared: &PreparedAudio,
+    profile: AudioProfile,
+) -> Result<()> {
+    let profiles_dir = output_dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir)?;
+    let stem = profile
+        .file_stem()
+        .ok_or_else(|| eyre::eyre!("original audio has no profile receipt"))?;
+    let receipt = AudioProfileReceipt {
+        profile,
+        source_path: normalized.path.to_string_lossy().into_owned(),
+        output_path: prepared.path.to_string_lossy().into_owned(),
+        duration_us: prepared.metadata.duration_us,
+        frame_count: prepared.metadata.frame_count,
+    };
+    let contents = facet_json::to_string_pretty(&receipt)?;
+    write_atomic_text(&profiles_dir.join(format!("{stem}.json")), &contents)
 }
 
 /// Capture a microphone recording until the returned cancellation flag is set.
@@ -373,6 +448,7 @@ pub fn transcribe_recording(
         model_dir,
         max_decode_tokens,
         chunk_duration_us,
+        AudioProfile::Original,
         None,
     )
 }
@@ -401,6 +477,34 @@ pub fn transcribe_recording_with_cancellation(
         model_dir,
         max_decode_tokens,
         chunk_duration_us,
+        AudioProfile::Original,
+        Some(stop_requested.as_ref()),
+    )
+}
+
+/// Transcribe a prepared derived audio profile while allowing cooperative
+/// cancellation between clips.
+///
+/// # Errors
+///
+/// Returns an error when the recording is not prepared, the selected profile
+/// artifact or model is unavailable, inference fails, or persistence fails.
+pub fn transcribe_recording_with_profile_and_cancellation(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    model_dir: PathBuf,
+    max_decode_tokens: usize,
+    chunk_duration_us: Option<u64>,
+    profile: AudioProfile,
+    stop_requested: &Arc<AtomicBool>,
+) -> Result<TranscriptionReport> {
+    transcribe_recording_inner(
+        store,
+        recording_id,
+        model_dir,
+        max_decode_tokens,
+        chunk_duration_us,
+        profile,
         Some(stop_requested.as_ref()),
     )
 }
@@ -411,15 +515,13 @@ fn transcribe_recording_inner(
     model_dir: PathBuf,
     max_decode_tokens: usize,
     chunk_duration_us: Option<u64>,
+    profile: AudioProfile,
     stop_requested: Option<&AtomicBool>,
 ) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
         .wrap_err("failed to load recording event state")?;
-    let normalized_path = store
-        .recording_dir(recording_id)
-        .join("audio")
-        .join("normalized-16khz-mono.wav");
+    let normalized_path = audio_path_for_profile(store, recording_id, profile);
     let metadata = WavMediaAdapter
         .inspect(&normalized_path)
         .wrap_err("recording is not prepared; prepare it from the GUI first")?;

@@ -11,6 +11,59 @@ pub const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
 pub const FFMPEG_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFMPEG";
 pub const FFPROBE_ENV_VAR: &str = "TEAMY_TRANSCRIBER_FFPROBE";
 
+#[derive(Clone, Copy, Debug, Default, Eq, Facet, PartialEq)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum AudioProfile {
+    #[default]
+    Original,
+    Gain6Db,
+    NoiseGate,
+    VoiceEq,
+}
+
+impl AudioProfile {
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Original => Self::Gain6Db,
+            Self::Gain6Db => Self::NoiseGate,
+            Self::NoiseGate => Self::VoiceEq,
+            Self::VoiceEq => Self::Original,
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Original => "ORIGINAL",
+            Self::Gain6Db => "GAIN +6DB",
+            Self::NoiseGate => "NOISE GATE",
+            Self::VoiceEq => "VOICE EQ",
+        }
+    }
+
+    #[must_use]
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Original => "RAW",
+            Self::Gain6Db => "GAIN",
+            Self::NoiseGate => "GATE",
+            Self::VoiceEq => "EQ",
+        }
+    }
+
+    #[must_use]
+    pub const fn file_stem(self) -> Option<&'static str> {
+        match self {
+            Self::Original => None,
+            Self::Gain6Db => Some("gain-6db"),
+            Self::NoiseGate => Some("noise-gate"),
+            Self::VoiceEq => Some("voice-eq"),
+        }
+    }
+}
+
 /// Plan contiguous, non-overlapping source-time chunks for one recording.
 ///
 /// The final chunk is shorter when the duration is not an exact multiple of
@@ -286,6 +339,78 @@ impl MediaAdapter for FfmpegMediaAdapter {
     }
 }
 
+/// Apply one small, deterministic profile to already-normalized audio.
+///
+/// The original normalized WAV is never overwritten. Each non-original
+/// profile produces a separate derived WAV under `profiles/`; the caller owns
+/// the parameter receipt that accompanies it.
+///
+/// # Errors
+///
+/// Returns an error when the normalized source cannot be decoded or the
+/// derived WAV cannot be written.
+pub fn apply_audio_profile(
+    normalized_source: &Path,
+    output_dir: &Path,
+    profile: AudioProfile,
+) -> Result<PreparedAudio, MediaError> {
+    let source_metadata = WavMediaAdapter.inspect(normalized_source)?;
+    if source_metadata.sample_rate_hz != WHISPER_SAMPLE_RATE_HZ || source_metadata.channels != 1 {
+        return Err(MediaError::InvalidProfile(
+            "audio profiles require 16 kHz mono normalized audio".to_string(),
+        ));
+    }
+    if profile == AudioProfile::Original {
+        return Ok(PreparedAudio {
+            path: normalized_source.to_path_buf(),
+            metadata: source_metadata,
+        });
+    }
+    let reader = hound::WavReader::open(normalized_source)?;
+    let samples = decode_mono(reader)?;
+    let processed = match profile {
+        AudioProfile::Original => samples,
+        AudioProfile::Gain6Db => samples
+            .into_iter()
+            .map(|sample| (sample * 1.995_262_3).clamp(-1.0, 1.0))
+            .collect(),
+        AudioProfile::NoiseGate => samples
+            .into_iter()
+            .map(|sample| {
+                if sample.abs() < 0.02 {
+                    sample * 0.08
+                } else {
+                    sample
+                }
+            })
+            .collect(),
+        AudioProfile::VoiceEq => apply_voice_eq(&samples),
+    };
+    std::fs::create_dir_all(output_dir)?;
+    let stem = profile
+        .file_stem()
+        .ok_or_else(|| MediaError::InvalidProfile("profile has no derived file".to_string()))?;
+    let output_path = output_dir.join(format!("{stem}.wav"));
+    write_normalized_wav(&output_path, &processed)?;
+    Ok(PreparedAudio {
+        path: output_path,
+        metadata: normalized_metadata(processed.len()),
+    })
+}
+
+fn apply_voice_eq(samples: &[f32]) -> Vec<f32> {
+    let mut previous = 0.0;
+    samples
+        .iter()
+        .copied()
+        .map(|sample| {
+            let high_frequency = sample - previous * 0.995;
+            previous = sample;
+            (sample + high_frequency * 0.25).clamp(-1.0, 1.0)
+        })
+        .collect()
+}
+
 fn parse_probe_output(output: &str) -> Result<MediaMetadata, MediaError> {
     let fields: Vec<&str> = output.trim().split(',').map(str::trim).collect();
     if fields.len() < 4 {
@@ -492,6 +617,8 @@ pub enum MediaError {
     Probe(String),
     #[error("ffprobe returned invalid metadata: {0}")]
     InvalidProbe(String),
+    #[error("audio profile is invalid: {0}")]
+    InvalidProfile(String),
 }
 
 #[cfg(test)]

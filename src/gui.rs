@@ -13,6 +13,7 @@ use crate::domain::ClipId;
 use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
+use crate::media::AudioProfile;
 use crate::native_whisper::model::inspect_model_dir;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
@@ -27,13 +28,14 @@ use crate::workflow::MediaToolConfig;
 use crate::workflow::MicrophoneReport;
 use crate::workflow::PrepareReport;
 use crate::workflow::TranscriptionReport;
+use crate::workflow::audio_path_for_profile;
 use crate::workflow::commit_transcript_edit;
 use crate::workflow::create_recording;
 use crate::workflow::export_recording;
 use crate::workflow::move_clip;
-use crate::workflow::prepare_recording_with_tools;
+use crate::workflow::prepare_recording_with_tools_and_profile;
 use crate::workflow::record_microphone;
-use crate::workflow::transcribe_recording_with_cancellation;
+use crate::workflow::transcribe_recording_with_profile_and_cancellation;
 use ash::Entry;
 use ash::vk;
 use eyre::Context;
@@ -149,6 +151,7 @@ impl GuiApplication {
             save_dir,
             preferences.microphone_id.clone(),
             preferences.chunk_duration_ms,
+            preferences.audio_profile.unwrap_or_default(),
         );
         state.set_recording(current_recording.as_ref(), &store);
         let mut application = Self {
@@ -218,6 +221,7 @@ impl GuiApplication {
         self.preferences.save_dir = Some(self.state.save_dir.to_string_lossy().into_owned());
         self.preferences.microphone_id = self.state.selected_microphone.clone();
         self.preferences.chunk_duration_ms = self.state.chunk_duration_ms;
+        self.preferences.audio_profile = Some(self.state.audio_profile);
         self.preferences.recording_id = self.state.recording_id.map(|id| id.to_string());
         self.preferences.ffmpeg_path = Some(
             self.media_tools
@@ -256,6 +260,7 @@ impl GuiApplication {
             GuiAction::MoveClipLeft => self.move_selected_clip(-1),
             GuiAction::MoveClipRight => self.move_selected_clip(1),
             GuiAction::CycleChunkDuration => self.cycle_chunk_duration(),
+            GuiAction::CycleAudioProfile => self.cycle_audio_profile(),
             GuiAction::ToggleRecording => self.toggle_recording(),
             GuiAction::Prepare => self.start_prepare(),
             GuiAction::Transcribe => self.start_transcription(),
@@ -431,6 +436,24 @@ impl GuiApplication {
         );
     }
 
+    fn cycle_audio_profile(&mut self) {
+        self.state.audio_profile = self.state.audio_profile.next();
+        self.persist_preferences();
+        if self.state.recording_id.is_some() {
+            self.state.prepared = false;
+            self.state.status_line = format!(
+                "Audio profile {} selected; preparing derived audio...",
+                self.state.audio_profile.label()
+            );
+            self.start_prepare();
+        } else {
+            self.state.status_line = format!(
+                "Audio profile {} selected; apply it after importing audio",
+                self.state.audio_profile.label()
+            );
+        }
+    }
+
     fn cycle_clip(&mut self, direction: isize) {
         let Some(recording_id) = self.state.recording_id else {
             self.state.status_line = "Import or record audio first".to_string();
@@ -565,21 +588,27 @@ impl GuiApplication {
         let sender = self.message_tx.clone();
         let store = self.store.clone();
         let media_tools = self.media_tools.clone();
+        let audio_profile = self.state.audio_profile;
         self.state.operation = GuiOperation::Preparing;
         self.state.status_line = "Preparing audio to 16 kHz mono...".to_string();
         std::thread::spawn(move || {
-            let message = prepare_recording_with_tools(&store, recording_id, &media_tools)
-                .map_or_else(
-                    |error| GuiMessage::Failure {
-                        recording_id: Some(recording_id),
-                        operation: "audio preparation".to_string(),
-                        message: error.to_string(),
-                    },
-                    |report| GuiMessage::Prepared {
-                        recording_id,
-                        report,
-                    },
-                );
+            let message = prepare_recording_with_tools_and_profile(
+                &store,
+                recording_id,
+                &media_tools,
+                audio_profile,
+            )
+            .map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "audio preparation".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Prepared {
+                    recording_id,
+                    report,
+                },
+            );
             let _ = sender.send(message);
         });
     }
@@ -608,18 +637,20 @@ impl GuiApplication {
             .state
             .chunk_duration_ms
             .map(|duration_ms| duration_ms.saturating_mul(1_000));
+        let audio_profile = self.state.audio_profile;
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
         self.operation_cancel = Some(stop_requested);
         self.state.operation = GuiOperation::Transcribing;
         self.state.status_line = "Transcribing locally with native Whisper...".to_string();
         std::thread::spawn(move || {
-            let message = transcribe_recording_with_cancellation(
+            let message = transcribe_recording_with_profile_and_cancellation(
                 &store,
                 recording_id,
                 model_dir,
                 crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
                 chunk_duration_us,
+                audio_profile,
                 &worker_stop,
             )
             .map_or_else(
@@ -982,6 +1013,7 @@ struct GuiPreferences {
     save_dir: Option<String>,
     microphone_id: Option<String>,
     chunk_duration_ms: Option<u64>,
+    audio_profile: Option<AudioProfile>,
     recording_id: Option<String>,
     ffmpeg_path: Option<String>,
     ffprobe_path: Option<String>,
@@ -1027,6 +1059,7 @@ enum GuiAction {
     MoveClipLeft,
     MoveClipRight,
     CycleChunkDuration,
+    CycleAudioProfile,
     ToggleRecording,
     Prepare,
     Transcribe,
@@ -1107,6 +1140,7 @@ struct GuiLayout {
     move_clip_left: Rect,
     move_clip_right: Rect,
     chunk_duration: Rect,
+    audio_profile: Rect,
 }
 
 impl GuiLayout {
@@ -1133,7 +1167,8 @@ impl GuiLayout {
             next_clip: Rect::new(width * 0.76, height * 0.66, width * 0.81, height * 0.75),
             move_clip_left: Rect::new(width * 0.84, height * 0.66, width * 0.90, height * 0.75),
             move_clip_right: Rect::new(width * 0.91, height * 0.66, width * 0.96, height * 0.75),
-            chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.96, height * 0.87),
+            chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.81, height * 0.87),
+            audio_profile: Rect::new(width * 0.84, height * 0.78, width * 0.96, height * 0.87),
         }
     }
 }
@@ -1167,6 +1202,7 @@ struct GuiState {
     selected_clip_id: Option<ClipId>,
     clip_ids: Vec<ClipId>,
     chunk_duration_ms: Option<u64>,
+    audio_profile: AudioProfile,
     prepared: bool,
 }
 
@@ -1176,6 +1212,7 @@ impl GuiState {
         save_dir: PathBuf,
         selected_microphone: Option<String>,
         chunk_duration_ms: Option<u64>,
+        audio_profile: AudioProfile,
     ) -> Self {
         Self {
             cursor: PhysicalPosition::new(0.0, 0.0),
@@ -1201,6 +1238,7 @@ impl GuiState {
             selected_clip_id: None,
             clip_ids: Vec::new(),
             chunk_duration_ms,
+            audio_profile,
             prepared: false,
         }
     }
@@ -1261,11 +1299,7 @@ impl GuiState {
         self.selected_clip_id = preferred_clip
             .filter(|clip_id| self.clip_ids.contains(clip_id))
             .or_else(|| self.clip_ids.first().copied());
-        self.prepared = store
-            .recording_dir(recording.id)
-            .join("audio")
-            .join("normalized-16khz-mono.wav")
-            .is_file();
+        self.prepared = audio_path_for_profile(store, recording.id, self.audio_profile).is_file();
         if !self.transcript_editing {
             let transcript = self
                 .selected_clip_id
@@ -1392,6 +1426,9 @@ impl GuiState {
         if layout.chunk_duration.contains(cursor) {
             return Some(GuiAction::CycleChunkDuration);
         }
+        if layout.audio_profile.contains(cursor) {
+            return Some(GuiAction::CycleAudioProfile);
+        }
         if layout.transcript.contains(cursor) {
             if !self.transcript_editable {
                 self.status_line = "Transcribe a clip before editing its text".to_string();
@@ -1426,7 +1463,13 @@ impl GuiState {
 
 impl Default for GuiState {
     fn default() -> Self {
-        Self::new(PathBuf::new(), PathBuf::new(), None, None)
+        Self::new(
+            PathBuf::new(),
+            PathBuf::new(),
+            None,
+            None,
+            AudioProfile::Original,
+        )
     }
 }
 
@@ -1928,6 +1971,12 @@ impl Canvas {
             layout.chunk_duration,
             &format!("CHUNK {}", state.chunk_duration_label()),
             state.chunk_duration_ms.is_some(),
+            enabled,
+        );
+        self.button(
+            layout.audio_profile,
+            &format!("AUDIO {}", state.audio_profile.short_label()),
+            state.audio_profile != AudioProfile::Original,
             enabled,
         );
         self.button(
@@ -2745,6 +2794,17 @@ mod tests {
         state.selected_clip_id = state.clip_ids.get(1).copied();
 
         assert_eq!(state.click(size), Some(GuiAction::MoveClipLeft));
+    }
+
+    #[test]
+    fn audio_profile_hit_cycles_processing_profile() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(1030.0, 630.0),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::CycleAudioProfile));
     }
 
     #[test]

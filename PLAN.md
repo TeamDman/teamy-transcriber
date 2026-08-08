@@ -49,6 +49,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
 
+2026-08-08: Added GUI-selectable reversible audio profiles. `AUDIO` cycles the original normalized signal, +6 dB gain, a conservative amplitude noise gate, and a simple voice-EQ filter; derived WAVs and JSON parameter receipts remain separate from the authoritative normalized artifact, and GUI transcription uses the selected derived path.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

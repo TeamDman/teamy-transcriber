@@ -75,6 +75,9 @@ Ctrl+E to open transcript export. The GUI also exposes full-recording or
 10/30/60-second chunk presets, previous/next clip review, and cycling through
 persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
+`AUDIO` cycles the original normalized signal, gain, a conservative noise gate,
+and a simple voice-EQ profile. Derived WAVs are written beside the original
+normalized artifact with a JSON parameter receipt.
 
 The GUI and diagnostic CLI share the workflow orchestration in
 `src/workflow.rs`; both persist the same recording lifecycle and transcript

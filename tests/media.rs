@@ -4,11 +4,13 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use teamy_transcriber::domain::ClipId;
 use teamy_transcriber::domain::TimeRange;
+use teamy_transcriber::media::AudioProfile;
 use teamy_transcriber::media::FfmpegMediaAdapter;
 use teamy_transcriber::media::MediaAdapter;
 use teamy_transcriber::media::MediaError;
 use teamy_transcriber::media::WHISPER_SAMPLE_RATE_HZ;
 use teamy_transcriber::media::WavMediaAdapter;
+use teamy_transcriber::media::apply_audio_profile;
 use teamy_transcriber::media::plan_time_chunks;
 
 #[test]
@@ -88,6 +90,35 @@ fn ffprobe_adapter_reports_missing_tool_explicitly() {
         .inspect(Path::new("missing-source.mp4"))
         .expect_err("missing ffprobe should be reported");
     assert!(matches!(error, MediaError::Probe(detail) if detail.contains("could not be launched")));
+}
+
+#[test]
+fn audio_profiles_write_separate_derived_wavs() {
+    let root = unique_temp_dir("teamy-transcriber-profiles");
+    std::fs::create_dir_all(&root).expect("fixture directory should be creatable");
+    let source = root.join("source.wav");
+    write_fixture(&source);
+    let normalized = WavMediaAdapter
+        .prepare_audio(&source, &root.join("audio"))
+        .expect("source should normalize");
+
+    for profile in [
+        AudioProfile::Gain6Db,
+        AudioProfile::NoiseGate,
+        AudioProfile::VoiceEq,
+    ] {
+        let derived = apply_audio_profile(&normalized.path, &root.join("profiles"), profile)
+            .expect("profile should produce a derived WAV");
+        assert_ne!(derived.path, normalized.path);
+        assert_eq!(derived.metadata, normalized.metadata);
+        assert!(derived.path.is_file());
+    }
+
+    assert!(
+        normalized.path.is_file(),
+        "original normalized WAV must remain"
+    );
+    std::fs::remove_dir_all(root).expect("test directory should be removable");
 }
 
 fn write_fixture(path: &Path) {
