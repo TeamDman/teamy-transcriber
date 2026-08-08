@@ -69,6 +69,7 @@ use winit::event::ElementState;
 use winit::event::Ime;
 use winit::event::KeyEvent;
 use winit::event::MouseButton;
+use winit::event::MouseScrollDelta;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::ControlFlow;
@@ -994,6 +995,10 @@ impl GuiApplication {
         }
         if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
             self.cancel_active_operation();
+        } else if matches!(&event.logical_key, Key::Named(NamedKey::PageUp)) {
+            self.state.scroll_transcript(-6);
+        } else if matches!(&event.logical_key, Key::Named(NamedKey::PageDown)) {
+            self.state.scroll_transcript(6);
         } else if matches!(&event.logical_key, Key::Named(NamedKey::Space)) {
             self.toggle_recording();
         } else if modifiers.control_key()
@@ -1057,6 +1062,24 @@ impl ApplicationHandler for GuiApplication {
             WindowEvent::CursorMoved { position, .. } => {
                 self.state.cursor = position;
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if GuiLayout::new(self.window_size())
+                    .transcript
+                    .contains(Point::new(
+                        self.state.cursor.x as f32,
+                        self.state.cursor.y as f32,
+                    ))
+                    && !self.state.transcript_editing
+                {
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -y.round() as isize,
+                        MouseScrollDelta::PixelDelta(position) => {
+                            -(position.y / 24.0).round() as isize
+                        }
+                    };
+                    self.state.scroll_transcript(lines);
+                }
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.state.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 self.handle_key(&event, self.state.modifiers);
@@ -1091,6 +1114,13 @@ impl ApplicationHandler for GuiApplication {
 }
 
 impl GuiApplication {
+    fn window_size(&self) -> PhysicalSize<u32> {
+        self.window.as_ref().map_or(
+            PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT),
+            Window::inner_size,
+        )
+    }
+
     fn draw(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(window), Some(renderer)) = (self.window.as_ref(), self.renderer.as_mut()) else {
             return;
@@ -1305,6 +1335,7 @@ struct GuiState {
     transcript_draft: String,
     transcript_editable: bool,
     transcript_editing: bool,
+    transcript_scroll_lines: usize,
     status_line: String,
     model_dir: PathBuf,
     model_readiness: NativeWhisperReadiness,
@@ -1342,6 +1373,7 @@ impl GuiState {
             transcript_draft: String::new(),
             transcript_editable: false,
             transcript_editing: false,
+            transcript_scroll_lines: 0,
             status_line: "Choose a model, import media, or record from the microphone".to_string(),
             model_dir,
             model_readiness: missing_readiness(),
@@ -1393,6 +1425,7 @@ impl GuiState {
             self.waveform_peaks.clear();
             self.prepared = false;
             self.transcript_editable = false;
+            self.transcript_scroll_lines = 0;
             if !self.transcript_editing {
                 self.transcript = "No transcript yet. Import or record audio.".to_string();
                 self.transcript_draft = self.transcript.clone();
@@ -1420,6 +1453,7 @@ impl GuiState {
         self.selected_clip_id = preferred_clip
             .filter(|clip_id| self.clip_ids.contains(clip_id))
             .or_else(|| self.clip_ids.first().copied());
+        self.transcript_scroll_lines = 0;
         self.prepared = audio_path_for_profile(store, recording.id, self.audio_profile).is_file();
         self.waveform_peaks = if self.prepared {
             read_waveform_peaks(
@@ -1584,6 +1618,17 @@ impl GuiState {
 
     fn backspace(&mut self) {
         self.transcript_draft.pop();
+    }
+
+    fn scroll_transcript(&mut self, lines: isize) {
+        if lines.is_negative() {
+            self.transcript_scroll_lines = self
+                .transcript_scroll_lines
+                .saturating_sub(lines.unsigned_abs());
+        } else {
+            self.transcript_scroll_lines =
+                self.transcript_scroll_lines.saturating_add(lines as usize);
+        }
     }
 
     fn transcript_display(&self) -> &str {
@@ -2070,26 +2115,65 @@ impl Canvas {
         scale: i32,
         color: Rgba,
     ) {
+        self.draw_wrapped_text_scrolled(
+            origin,
+            text,
+            max_width,
+            self.height as i32,
+            scale,
+            color,
+            0,
+        );
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The reference text rasterizer keeps origin, bounds, style, and scroll together"
+    )]
+    fn draw_wrapped_text_scrolled(
+        &mut self,
+        origin: Point,
+        text: &str,
+        max_width: i32,
+        max_height: i32,
+        scale: i32,
+        color: Rgba,
+        scroll_lines: usize,
+    ) {
         let character_width = self
             .font
             .as_ref()
             .map_or(6 * scale, |font| font.advance_width(scale))
             .max(1);
         let max_chars = usize::try_from((max_width / character_width).max(1)).unwrap_or(1);
-        let mut wrapped = String::new();
-        for line in text.lines() {
+        let mut wrapped = Vec::new();
+        for line in text.split('\n') {
             let characters = line.chars().collect::<Vec<_>>();
-            for chunk in characters.chunks(max_chars) {
-                if !wrapped.is_empty() {
-                    wrapped.push('\n');
+            if characters.is_empty() {
+                wrapped.push(String::new());
+            } else {
+                for chunk in characters.chunks(max_chars) {
+                    wrapped.push(chunk.iter().collect());
                 }
-                wrapped.extend(chunk);
             }
         }
         if wrapped.is_empty() {
-            wrapped.push(' ');
+            wrapped.push(" ".to_string());
         }
-        self.draw_text(origin, &wrapped, scale, color);
+        let line_height = self
+            .font
+            .as_ref()
+            .map_or(8 * scale.max(1), |font| font.line_height(scale))
+            .max(1);
+        let visible_lines = usize::try_from((max_height / line_height).max(1)).unwrap_or(1);
+        let start_line = scroll_lines.min(wrapped.len().saturating_sub(visible_lines));
+        let end_line = (start_line + visible_lines).min(wrapped.len());
+        self.draw_text(
+            origin,
+            &wrapped[start_line..end_line].join("\n"),
+            scale,
+            color,
+        );
     }
 
     #[expect(
@@ -2244,16 +2328,18 @@ impl Canvas {
                 previous = current;
             }
         }
-        self.draw_wrapped_text(
+        self.draw_wrapped_text_scrolled(
             Point::new((panel_left + 18) as f32, (transcript_top + 20) as f32),
             state.transcript_display(),
             transcript_right - panel_left - 36,
+            transcript_bottom - transcript_top - 28,
             2,
             if state.transcript_editing {
                 ACTIVE
             } else {
                 ink
             },
+            state.transcript_scroll_lines,
         );
         self.button(
             layout.export,
@@ -3187,5 +3273,17 @@ mod tests {
         assert_eq!(state.chunk_duration_label(), "FULL");
         state.chunk_duration_ms = Some(30_000);
         assert_eq!(state.chunk_duration_label(), "30S");
+    }
+
+    #[test]
+    fn transcript_scroll_is_bounded_at_the_top() {
+        let mut state = GuiState::default();
+
+        state.scroll_transcript(6);
+        assert_eq!(state.transcript_scroll_lines, 6);
+        state.scroll_transcript(-2);
+        assert_eq!(state.transcript_scroll_lines, 4);
+        state.scroll_transcript(-100);
+        assert_eq!(state.transcript_scroll_lines, 0);
     }
 }

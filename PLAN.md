@@ -65,6 +65,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Retested WASAPI with the endpoint's exact `GetMixFormat()` pointer, a valid closest-match output pointer, and the standard one-second shared buffer. `IsFormatSupported` returned `S_OK`, but `Initialize` still returned `E_INVALIDARG` on the active default endpoint; the capture error now explains the privacy/exclusive-control recovery checks instead of implying a format conversion failure.
 
+2026-08-08: Added bounded transcript scrolling to the GUI. Mouse-wheel input over the transcript panel and PageUp/PageDown now select visible wrapped lines without changing the committed transcript or edit provenance; headless state coverage verifies the scroll position cannot move above the beginning.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

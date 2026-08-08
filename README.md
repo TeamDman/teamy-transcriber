@@ -74,7 +74,9 @@ bounded preparation/transcription progress and success/failure back into the
 visible status line. Press Space to start/stop
 microphone capture, Escape to stop capture, cancel transcription, or cancel
 transcript editing, and
-Ctrl+E to open transcript export. The GUI also exposes full-recording or
+Ctrl+E to open transcript export. Mouse-wheel or PageUp/PageDown scrolling
+keeps long transcripts reviewable inside the text panel. The GUI also exposes
+full-recording or
 10/30/60-second chunk presets, previous/next clip review, and cycling through
 persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
