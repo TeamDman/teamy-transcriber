@@ -88,6 +88,11 @@ normalized its audio to 16 kHz mono (981,312 microseconds, 15,701 frames) with
 the same ffmpeg binary supplied for both tool paths. The temporary video and
 recording home were removed after the smoke.
 
+2026-08-08: Made the GUI ffprobe selection optional after selecting ffmpeg.
+Cancelling that second dialog now persists the same ffmpeg path as the probe
+path and reports that the metadata fallback is enabled, so the local video
+workflow remains discoverable without a CLI step.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

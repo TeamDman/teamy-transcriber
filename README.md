@@ -48,7 +48,8 @@ audio/video sources through local `ffmpeg` into 16 kHz mono audio. In the GUI,
 `TOOLS` opens file pickers for local `ffmpeg` and `ffprobe` executables; those
 paths are persisted with the other GUI settings. If the selected `ffprobe`
 executable is unavailable or rejects the probe request, the adapter falls back
-to parsing the selected `ffmpeg` binary's stream diagnostics.
+to parsing the selected `ffmpeg` binary's stream diagnostics; cancelling the
+GUI's optional ffprobe picker selects that fallback explicitly.
 `recording transcribe` invokes the native Burn Whisper encoder/decoder and
 commits raw ASR text through the same event receipt; persisted partial clips are
 materialized as separate normalized WAV artifacts first. `--chunk-duration-ms`

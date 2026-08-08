@@ -370,23 +370,29 @@ impl GuiApplication {
         let Some(ffmpeg) = FileDialog::new().set_file_name("ffmpeg.exe").pick_file() else {
             return;
         };
-        let Some(ffprobe) = FileDialog::new()
+        let ffprobe = FileDialog::new()
             .set_directory(ffmpeg.parent().unwrap_or_else(|| Path::new(".")))
             .set_file_name("ffprobe.exe")
             .pick_file()
-        else {
-            return;
-        };
+            .unwrap_or_else(|| ffmpeg.clone());
+        let using_ffmpeg_probe_fallback = ffprobe == ffmpeg;
         self.media_tools = MediaToolConfig {
             ffmpeg_executable: ffmpeg,
             ffprobe_executable: ffprobe,
         };
         self.persist_preferences();
-        self.state.status_line = format!(
-            "Media tools: {} / {}",
-            display_path(&self.media_tools.ffmpeg_executable),
-            display_path(&self.media_tools.ffprobe_executable)
-        );
+        self.state.status_line = if using_ffmpeg_probe_fallback {
+            format!(
+                "Media tools: {}; ffmpeg metadata fallback enabled",
+                display_path(&self.media_tools.ffmpeg_executable)
+            )
+        } else {
+            format!(
+                "Media tools: {} / {}",
+                display_path(&self.media_tools.ffmpeg_executable),
+                display_path(&self.media_tools.ffprobe_executable)
+            )
+        };
     }
 
     fn choose_save_directory(&mut self) {
