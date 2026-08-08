@@ -59,6 +59,11 @@ pub struct ClipMoveReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipDeleteReport {
+    pub clip_id: ClipId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaToolConfig {
     pub ffmpeg_executable: PathBuf,
     pub ffprobe_executable: PathBuf,
@@ -173,6 +178,35 @@ pub fn move_clip(
         clip_id,
         target_index,
     })
+}
+
+/// Mark an existing clip deleted in the replayable recording history.
+///
+/// The source and derived audio artifacts are retained so deletion is a
+/// reversible-history operation rather than an irreversible filesystem erase.
+///
+/// # Errors
+///
+/// Returns an error when the recording or clip is missing, or the delete event
+/// cannot be persisted.
+pub fn delete_clip(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    clip_id: ClipId,
+) -> Result<ClipDeleteReport> {
+    let mut state = store
+        .load_state(recording_id)
+        .wrap_err("failed to load recording event state")?;
+    store
+        .apply_command(
+            &mut state,
+            Command::DeleteClip {
+                recording_id,
+                clip_id,
+            },
+        )
+        .wrap_err("failed to persist clip deletion")?;
+    Ok(ClipDeleteReport { clip_id })
 }
 
 /// Normalize an imported or captured source into the Whisper audio format.

@@ -23,6 +23,7 @@ use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
 use crate::transcription::NativeWhisperReadiness;
 use crate::transcription::RuntimeAssetStatus;
+use crate::workflow::ClipDeleteReport;
 use crate::workflow::ClipMoveReport;
 use crate::workflow::ExportReport;
 use crate::workflow::MediaToolConfig;
@@ -33,6 +34,7 @@ use crate::workflow::TranscriptionReport;
 use crate::workflow::audio_path_for_profile;
 use crate::workflow::commit_transcript_edit;
 use crate::workflow::create_recording;
+use crate::workflow::delete_clip;
 use crate::workflow::export_recording;
 use crate::workflow::move_clip;
 use crate::workflow::prepare_recording_with_tools_and_profile;
@@ -47,6 +49,10 @@ use facet::Facet;
 use raw_window_handle::HasDisplayHandle;
 use raw_window_handle::HasWindowHandle;
 use rfd::FileDialog;
+use rfd::MessageButtons;
+use rfd::MessageDialog;
+use rfd::MessageDialogResult;
+use rfd::MessageLevel;
 use std::ffi::CString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -261,6 +267,7 @@ impl GuiApplication {
             GuiAction::NextClip => self.cycle_clip(1),
             GuiAction::MoveClipLeft => self.move_selected_clip(-1),
             GuiAction::MoveClipRight => self.move_selected_clip(1),
+            GuiAction::DeleteClip => self.delete_selected_clip(),
             GuiAction::CycleChunkDuration => self.cycle_chunk_duration(),
             GuiAction::CycleAudioProfile => self.cycle_audio_profile(),
             GuiAction::ToggleRecording => self.toggle_recording(),
@@ -518,6 +525,52 @@ impl GuiApplication {
                     message: error.to_string(),
                 },
                 |report| GuiMessage::Moved {
+                    recording_id,
+                    report,
+                },
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn delete_selected_clip(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let Some(clip_id) = self.state.selected_clip_id else {
+            self.state.status_line = "Select a clip before deleting it".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let clip_label = self.state.clip_label();
+        let confirmed = MessageDialog::new()
+            .set_level(MessageLevel::Warning)
+            .set_title("Delete selected clip?")
+            .set_description(format!(
+                "{clip_label} will be removed from the active clip list. Source and derived audio remain recoverable."
+            ))
+            .set_buttons(MessageButtons::OkCancel)
+            .show()
+            == MessageDialogResult::Ok;
+        if !confirmed {
+            return;
+        }
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::DeletingClip;
+        self.state.status_line = format!("Deleting {clip_label}...");
+        std::thread::spawn(move || {
+            let message = delete_clip(&store, recording_id, clip_id).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "clip deletion".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Deleted {
                     recording_id,
                     report,
                 },
@@ -809,6 +862,20 @@ impl GuiApplication {
                     );
                 }
             }
+            GuiMessage::Deleted {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line = format!("ERROR: deleted but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Deleted clip {}; source and derived audio retained",
+                        report.clip_id
+                    );
+                }
+            }
             GuiMessage::Recorded(report) => {
                 self.stop_recording = None;
                 self.state.recording = false;
@@ -1057,6 +1124,10 @@ enum GuiMessage {
         recording_id: RecordingId,
         report: ClipMoveReport,
     },
+    Deleted {
+        recording_id: RecordingId,
+        report: ClipDeleteReport,
+    },
     Recorded(MicrophoneReport),
     Transcribed {
         recording_id: RecordingId,
@@ -1090,6 +1161,7 @@ enum GuiAction {
     NextClip,
     MoveClipLeft,
     MoveClipRight,
+    DeleteClip,
     CycleChunkDuration,
     CycleAudioProfile,
     ToggleRecording,
@@ -1108,6 +1180,7 @@ enum GuiOperation {
     Idle,
     Preparing,
     MovingClip,
+    DeletingClip,
     Recording,
     Stopping,
     Transcribing,
@@ -1171,6 +1244,7 @@ struct GuiLayout {
     next_clip: Rect,
     move_clip_left: Rect,
     move_clip_right: Rect,
+    delete_clip: Rect,
     chunk_duration: Rect,
     audio_profile: Rect,
 }
@@ -1199,6 +1273,7 @@ impl GuiLayout {
             next_clip: Rect::new(width * 0.76, height * 0.66, width * 0.81, height * 0.75),
             move_clip_left: Rect::new(width * 0.84, height * 0.66, width * 0.90, height * 0.75),
             move_clip_right: Rect::new(width * 0.91, height * 0.66, width * 0.96, height * 0.75),
+            delete_clip: Rect::new(width * 0.84, height * 0.54, width * 0.96, height * 0.64),
             chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.81, height * 0.87),
             audio_profile: Rect::new(width * 0.84, height * 0.78, width * 0.96, height * 0.87),
         }
@@ -1417,7 +1492,8 @@ impl GuiState {
         let layout = GuiLayout::new(size);
         let cursor = Point::new(self.cursor.x as f32, self.cursor.y as f32);
         if cursor.distance_squared(layout.mic_center) <= layout.mic_radius.powi(2) {
-            return Some(GuiAction::ToggleRecording);
+            return matches!(self.operation, GuiOperation::Idle | GuiOperation::Recording)
+                .then_some(GuiAction::ToggleRecording);
         }
         if !matches!(self.operation, GuiOperation::Idle) {
             if layout.cancel.contains(cursor) {
@@ -1466,6 +1542,9 @@ impl GuiState {
         }
         if layout.move_clip_right.contains(cursor) {
             return Some(GuiAction::MoveClipRight);
+        }
+        if layout.delete_clip.contains(cursor) {
+            return Some(GuiAction::DeleteClip);
         }
         if layout.chunk_duration.contains(cursor) {
             return Some(GuiAction::CycleChunkDuration);
@@ -1582,6 +1661,7 @@ fn operation_label(operation: GuiOperation) -> &'static str {
         GuiOperation::Idle => "IDLE",
         GuiOperation::Preparing => "PREPARING AUDIO",
         GuiOperation::MovingClip => "MOVING CLIP",
+        GuiOperation::DeletingClip => "DELETING CLIP",
         GuiOperation::Recording => "RECORDING",
         GuiOperation::Stopping => "SAVING RECORDING",
         GuiOperation::Transcribing => "TRANSCRIBING LOCALLY",
@@ -2160,6 +2240,12 @@ impl Canvas {
             "RIGHT",
             false,
             state.clip_ids.len() > 1 && enabled,
+        );
+        self.button(
+            layout.delete_clip,
+            "DELETE",
+            false,
+            state.selected_clip_id.is_some() && enabled,
         );
         self.button(
             layout.chunk_duration,
@@ -3014,6 +3100,18 @@ mod tests {
         state.selected_clip_id = state.clip_ids.get(1).copied();
 
         assert_eq!(state.click(size), Some(GuiAction::MoveClipLeft));
+    }
+
+    #[test]
+    fn clip_delete_hit_targets_selected_clip_action() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(1_080.0, 450.0),
+            selected_clip_id: Some(ClipId::new()),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::DeleteClip));
     }
 
     #[test]

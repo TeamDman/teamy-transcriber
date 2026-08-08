@@ -59,6 +59,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Added bounded per-clip transcription progress to the shared workflow. The GUI now reports `completed/total` clip progress while native Whisper runs, retains the existing cooperative cancellation boundary, and keeps the callback non-blocking and separate from persisted transcript state.
 
+2026-08-08: Added a confirmation-gated GUI `DELETE` action for the selected clip. Deletion is a replayable soft-delete through the shared domain workflow; source and derived audio stay on disk, and the GUI reloads the active clip projection after the event.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
@@ -539,7 +541,7 @@ Completion: Text artifacts are below the documented tolerance or the affected pa
 
 #### W19 [~] Add reversible audio preparation profiles
 
-Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append as derived operations. Preserve original source and parameter receipts. The current slice implements GUI-selectable gain, a conservative noise gate, voice EQ, and replayable clip movement; split/append and richer profile quality validation remain open.
+Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append/delete as derived operations. Preserve original source and parameter receipts. The current slice implements GUI-selectable gain, a conservative noise gate, voice EQ, replayable clip movement, and confirmation-gated soft deletion; split/append and richer profile quality validation remain open.
 
 Validation: Golden audio metadata and transcript comparisons cover each profile; processing failure leaves the prior artifact usable.
 

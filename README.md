@@ -78,6 +78,8 @@ Ctrl+E to open transcript export. The GUI also exposes full-recording or
 10/30/60-second chunk presets, previous/next clip review, and cycling through
 persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
+`DELETE` removes the selected clip from the active manifest after confirmation
+while retaining its source and derived audio for recovery.
 `AUDIO` cycles the original normalized signal, gain, a conservative noise gate,
 and a simple voice-EQ profile. Derived WAVs are written beside the original
 normalized artifact with a JSON parameter receipt. Prepared recordings render a
