@@ -1088,12 +1088,14 @@ impl GuiApplication {
                 self.state.model_dir = model_dir;
                 self.inspect_model();
                 self.persist_preferences();
-                self.state.status_line = if self.state.model_ready {
-                    "Native model prepared and ready for local transcription".to_string()
-                } else {
-                    "Model preparation finished but validation failed; choose another model"
-                        .to_string()
-                };
+                if self.state.model_ready {
+                    self.state.status_line =
+                        "Native model prepared and ready for local transcription".to_string();
+                } else if !self.state.status_line.starts_with("ERROR") {
+                    self.state.status_line =
+                        "Model preparation finished but validation failed; choose another model"
+                            .to_string();
+                }
             }
             GuiMessage::Prepared {
                 recording_id,
@@ -2775,8 +2777,9 @@ impl Canvas {
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
             &format!(
-                "{}\nMODEL PATH {}\n{}\n{}\nNEXT {}\n{}\nSOURCE {}",
+                "{}\nSTATUS {}\nMODEL PATH {}\n{}\n{}\nNEXT {}\n{}\nSOURCE {}",
                 state.model_status,
+                state.status_line,
                 display_path(&state.model_dir),
                 operation_label(state.operation),
                 state.clip_label(),
@@ -2786,7 +2789,11 @@ impl Canvas {
             ),
             (width * 0.26) as i32,
             2,
-            INACTIVE,
+            if state.status_line.starts_with("ERROR") {
+                ACTIVE
+            } else {
+                INACTIVE
+            },
         );
     }
 }

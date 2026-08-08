@@ -19,6 +19,7 @@ use eyre::WrapErr;
 use eyre::bail;
 use serde::Deserialize;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Deserialize)]
 struct CheckpointDims {
@@ -32,6 +33,32 @@ struct CheckpointDims {
     n_text_state: usize,
     n_text_head: usize,
     n_text_layer: usize,
+}
+
+struct PartialModelDirectory {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl PartialModelDirectory {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PartialModelDirectory {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 impl CheckpointDims {
@@ -83,6 +110,13 @@ pub fn convert_pytorch_checkpoint(
     if !tokenizer.is_file() {
         bail!("Whisper tokenizer is missing: {}", tokenizer.display());
     }
+    tokenizers::Tokenizer::from_file(tokenizer).map_err(|error| {
+        eyre::eyre!(
+            "failed to read Whisper tokenizer {}: {}",
+            tokenizer.display(),
+            error
+        )
+    })?;
     if output_dir.exists() {
         bail!(
             "refusing to overwrite an existing model directory: {}",
@@ -157,6 +191,7 @@ pub fn convert_pytorch_checkpoint(
 
     std::fs::create_dir_all(output_dir)
         .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
+    let mut partial_output = PartialModelDirectory::new(output_dir);
     let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
     std::fs::write(
         &dims_path,
@@ -211,5 +246,41 @@ pub fn convert_pytorch_checkpoint(
     let artifacts = inspect_model_dir(output_dir)?;
     let _ = load_whisper_model_from_artifacts(&artifacts)
         .wrap_err("native Burnpack validation failed after model preparation")?;
+    partial_output.commit();
     Ok(artifacts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PartialModelDirectory;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn test_directory(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("teamy-transcriber-{name}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn uncommitted_model_directory_is_removed() {
+        let path = test_directory("partial-model");
+        std::fs::create_dir_all(&path).expect("test model directory should be creatable");
+        {
+            let _partial = PartialModelDirectory::new(&path);
+            std::fs::write(path.join("partial"), b"not a complete model")
+                .expect("partial marker should be writable");
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn committed_model_directory_is_retained() {
+        let path = test_directory("committed-model");
+        std::fs::create_dir_all(&path).expect("test model directory should be creatable");
+        {
+            let mut partial = PartialModelDirectory::new(&path);
+            partial.commit();
+        }
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(&path).expect("test model directory should be removable");
+    }
 }

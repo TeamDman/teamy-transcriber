@@ -70,6 +70,12 @@ the result, and selects it as the active model. Existing output directories
 are never overwritten, no network access is used, and CTranslate2/faster-
 whisper `model.bin` remains explicitly unsupported.
 
+2026-08-08: Hardened GUI model preparation as a transaction boundary. Invalid
+tokenizers are rejected before checkpoint import, generated packages are
+loaded back through the native Burn runtime before activation, and failed
+preparations remove only their own newly created partial directory so a retry
+does not inherit misleading artifacts.
+
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
