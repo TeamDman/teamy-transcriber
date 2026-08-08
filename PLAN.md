@@ -142,6 +142,11 @@ initialization with `0x80070057`; the exclusive-mode format probe returns
 `0x88890008`. The GUI therefore preserves a recoverable failure with explicit
 diagnostics; this environment still provides no saved microphone fixture.
 
+2026-08-08: Widened GUI-driven Whisper checkpoint preparation to accept the
+two common local weight-container keys, `model_state_dict` and `state_dict`.
+Each candidate is loaded into a fresh Burn model, validated for missing/unused
+tensors, and only then allowed to create the transactional native package.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

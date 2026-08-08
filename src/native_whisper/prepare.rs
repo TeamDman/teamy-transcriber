@@ -84,9 +84,10 @@ impl CheckpointDims {
 
 /// Convert a local `PyTorch` Whisper checkpoint into the native model directory.
 ///
-/// The checkpoint must contain the Whisper dimensions under `dims` and a
-/// `model_state_dict` compatible with the Burn Whisper module. The tokenizer is
-/// copied explicitly so this operation never downloads model assets.
+/// The checkpoint must contain the Whisper dimensions under `dims` and weights
+/// under either `model_state_dict` or `state_dict`, compatible with the Burn
+/// Whisper module. The tokenizer is copied explicitly so this operation never
+/// downloads model assets.
 ///
 /// # Errors
 ///
@@ -131,63 +132,51 @@ pub fn convert_pytorch_checkpoint(
             )
         })?
         .into_whisper_dims();
-    let device = Default::default();
     let config = WhisperModelConfig {
         audio: WhisperAudioEncoderConfig::from_dims(&dims.audio),
         text: WhisperTextDecoderConfig::from_dims(&dims.text),
     };
-    let mut model = config.init::<WhisperCpuBackend>(&device);
-    let mut store = PytorchStore::from_file(checkpoint)
-        .with_top_level_key("model_state_dict")
-        .with_key_remapping(
-            r"^encoder\.blocks\.(\d+)\.mlp\.0\.",
-            "encoder.blocks.$1.mlp.lin1.",
-        )
-        .with_key_remapping(
-            r"^encoder\.blocks\.(\d+)\.mlp\.2\.",
-            "encoder.blocks.$1.mlp.lin2.",
-        )
-        .with_key_remapping(
-            r"^decoder\.blocks\.(\d+)\.mlp\.0\.",
-            "decoder.blocks.$1.mlp.lin1.",
-        )
-        .with_key_remapping(
-            r"^decoder\.blocks\.(\d+)\.mlp\.2\.",
-            "decoder.blocks.$1.mlp.lin2.",
-        )
-        .with_key_remapping(r"^(.*\.attn_ln)\.weight$", "$1.gamma")
-        .with_key_remapping(r"^(.*\.attn_ln)\.bias$", "$1.beta")
-        .with_key_remapping(r"^(.*\.cross_attn_ln)\.weight$", "$1.gamma")
-        .with_key_remapping(r"^(.*\.cross_attn_ln)\.bias$", "$1.beta")
-        .with_key_remapping(r"^(.*\.mlp_ln)\.weight$", "$1.gamma")
-        .with_key_remapping(r"^(.*\.mlp_ln)\.bias$", "$1.beta")
-        .with_key_remapping(r"^encoder\.ln_post\.weight$", "encoder.ln_post.gamma")
-        .with_key_remapping(r"^encoder\.ln_post\.bias$", "encoder.ln_post.beta")
-        .with_key_remapping(r"^decoder\.ln\.weight$", "decoder.ln.gamma")
-        .with_key_remapping(r"^decoder\.ln\.bias$", "decoder.ln.beta")
-        .allow_partial(true);
-    let load_result = model.load_from(&mut store).wrap_err_with(|| {
-        format!(
-            "failed to import Whisper checkpoint {}",
-            checkpoint.display()
-        )
-    })?;
-    let allowed_missing = ["decoder.mask"];
-    let unexpected_missing = load_result
-        .missing
-        .iter()
-        .filter(|path| !allowed_missing.iter().any(|allowed| path == allowed))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !unexpected_missing.is_empty() {
-        bail!("checkpoint import left unexpected missing tensors: {unexpected_missing:?}");
+    let mut import_errors = Vec::new();
+    let mut model = None;
+    for top_level_key in ["model_state_dict", "state_dict"] {
+        let device = Default::default();
+        let mut candidate = config.init::<WhisperCpuBackend>(&device);
+        let mut store = checkpoint_store(checkpoint, top_level_key);
+        match candidate.load_from(&mut store) {
+            Ok(load_result) => {
+                let allowed_missing = ["decoder.mask"];
+                let unexpected_missing = load_result
+                    .missing
+                    .iter()
+                    .filter(|path| !allowed_missing.iter().any(|allowed| path == allowed))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !unexpected_missing.is_empty() {
+                    import_errors.push(format!(
+                        "{top_level_key}: unexpected missing tensors {unexpected_missing:?}"
+                    ));
+                    continue;
+                }
+                if !load_result.unused.is_empty() {
+                    import_errors.push(format!(
+                        "{top_level_key}: unused tensors {:?}",
+                        load_result.unused
+                    ));
+                    continue;
+                }
+                model = Some(candidate);
+                break;
+            }
+            Err(error) => import_errors.push(format!("{top_level_key}: {error}")),
+        }
     }
-    if !load_result.unused.is_empty() {
+    let Some(model) = model else {
         bail!(
-            "checkpoint import left unused tensors: {:?}",
-            load_result.unused
+            "failed to import Whisper checkpoint {} using model_state_dict or state_dict: {:?}",
+            checkpoint.display(),
+            import_errors
         );
-    }
+    };
 
     std::fs::create_dir(output_dir)
         .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
@@ -248,6 +237,38 @@ pub fn convert_pytorch_checkpoint(
         .wrap_err("native Burnpack validation failed after model preparation")?;
     partial_output.commit();
     Ok(artifacts)
+}
+
+fn checkpoint_store(checkpoint: &Path, top_level_key: &str) -> PytorchStore {
+    PytorchStore::from_file(checkpoint)
+        .with_top_level_key(top_level_key)
+        .with_key_remapping(
+            r"^encoder\.blocks\.(\d+)\.mlp\.0\.",
+            "encoder.blocks.$1.mlp.lin1.",
+        )
+        .with_key_remapping(
+            r"^encoder\.blocks\.(\d+)\.mlp\.2\.",
+            "encoder.blocks.$1.mlp.lin2.",
+        )
+        .with_key_remapping(
+            r"^decoder\.blocks\.(\d+)\.mlp\.0\.",
+            "decoder.blocks.$1.mlp.lin1.",
+        )
+        .with_key_remapping(
+            r"^decoder\.blocks\.(\d+)\.mlp\.2\.",
+            "decoder.blocks.$1.mlp.lin2.",
+        )
+        .with_key_remapping(r"^(.*\.attn_ln)\.weight$", "$1.gamma")
+        .with_key_remapping(r"^(.*\.attn_ln)\.bias$", "$1.beta")
+        .with_key_remapping(r"^(.*\.cross_attn_ln)\.weight$", "$1.gamma")
+        .with_key_remapping(r"^(.*\.cross_attn_ln)\.bias$", "$1.beta")
+        .with_key_remapping(r"^(.*\.mlp_ln)\.weight$", "$1.gamma")
+        .with_key_remapping(r"^(.*\.mlp_ln)\.bias$", "$1.beta")
+        .with_key_remapping(r"^encoder\.ln_post\.weight$", "encoder.ln_post.gamma")
+        .with_key_remapping(r"^encoder\.ln_post\.bias$", "encoder.ln_post.beta")
+        .with_key_remapping(r"^decoder\.ln\.weight$", "decoder.ln.gamma")
+        .with_key_remapping(r"^decoder\.ln\.bias$", "decoder.ln.beta")
+        .allow_partial(true)
 }
 
 #[cfg(test)]
