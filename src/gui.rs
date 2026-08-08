@@ -1472,6 +1472,8 @@ struct GuiLayout {
     transcript: Rect,
     export: Rect,
     refresh_devices: Rect,
+    split_clip: Rect,
+    append_clip: Rect,
     cancel: Rect,
     previous_clip: Rect,
     next_clip: Rect,
@@ -1501,6 +1503,8 @@ impl GuiLayout {
             transcript: Rect::new(width * 0.05, height * 0.74, width * 0.67, height * 0.95),
             export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
             refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
+            split_clip: Rect::new(width * 0.69, height * 0.89, width * 0.81, height * 0.97),
+            append_clip: Rect::new(width * 0.84, height * 0.89, width * 0.96, height * 0.97),
             cancel: Rect::new(width * 0.69, height * 0.89, width * 0.96, height * 0.97),
             previous_clip: Rect::new(width * 0.69, height * 0.66, width * 0.75, height * 0.75),
             next_clip: Rect::new(width * 0.76, height * 0.66, width * 0.81, height * 0.75),
@@ -1782,6 +1786,12 @@ impl GuiState {
         }
         if layout.delete_clip.contains(cursor) {
             return Some(GuiAction::DeleteClip);
+        }
+        if layout.split_clip.contains(cursor) {
+            return Some(GuiAction::SplitClip);
+        }
+        if layout.append_clip.contains(cursor) {
+            return Some(GuiAction::AppendClip);
         }
         if layout.chunk_duration.contains(cursor) {
             return Some(GuiAction::CycleChunkDuration);
@@ -2584,15 +2594,30 @@ impl Canvas {
             state.audio_profile != AudioProfile::Original,
             enabled,
         );
-        self.button(
-            layout.cancel,
-            "CANCEL",
-            false,
-            matches!(
-                state.operation,
-                GuiOperation::Recording | GuiOperation::Transcribing
-            ),
-        );
+        if enabled {
+            self.button(
+                layout.split_clip,
+                "SPLIT",
+                false,
+                state.selected_clip_id.is_some(),
+            );
+            self.button(
+                layout.append_clip,
+                "APPEND",
+                false,
+                state.clip_ids.len() > 1 && state.selected_clip_id.is_some(),
+            );
+        } else {
+            self.button(
+                layout.cancel,
+                "CANCEL",
+                false,
+                matches!(
+                    state.operation,
+                    GuiOperation::Recording | GuiOperation::Transcribing
+                ),
+            );
+        }
         let status_top = (height * 0.49) as i32;
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
@@ -3438,6 +3463,23 @@ mod tests {
         };
 
         assert_eq!(state.click(size), Some(GuiAction::DeleteClip));
+    }
+
+    #[test]
+    fn clip_editing_buttons_hit_split_and_append_actions() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let first = ClipId::new();
+        let second = ClipId::new();
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(900.0, 700.0),
+            clip_ids: vec![first, second],
+            selected_clip_id: Some(first),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::SplitClip));
+        state.cursor = PhysicalPosition::new(1_080.0, 700.0);
+        assert_eq!(state.click(size), Some(GuiAction::AppendClip));
     }
 
     #[test]

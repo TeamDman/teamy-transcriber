@@ -554,11 +554,11 @@ Completion: Text artifacts are below the documented tolerance or the affected pa
 
 #### W19 [~] Add reversible audio preparation profiles
 
-Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append/delete as derived operations. Preserve original source and parameter receipts. The current slice implements GUI-selectable gain, a conservative noise gate, voice EQ, replayable clip movement, and confirmation-gated soft deletion; split/append and richer profile quality validation remain open.
+Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append/delete as derived operations. Preserve original source and parameter receipts. The current slice implements GUI-selectable gain, a conservative noise gate, voice EQ, replayable clip movement, midpoint split, adjacent append, and confirmation-gated soft deletion; richer profile quality validation remains open.
 
 Validation: Golden audio metadata and transcript comparisons cover each profile; processing failure leaves the prior artifact usable.
 
-Completion: Convenience processing is predictable, inspectable, and never changes the authoritative source silently.
+Completion: Convenience processing is predictable, inspectable, and never changes the authoritative source silently. The active GUI path now exposes the complete move/split/append/delete clip operation set and retains replaced artifacts in replayable history.
 
 #### W20 [ ] Add optional local LLM actions
 
