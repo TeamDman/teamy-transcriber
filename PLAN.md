@@ -177,6 +177,13 @@ status line; `EXPORT` remains the explicit persisted output path.
 and centering text at the 720-pixel minimum window size so the compact
 COPY/EXPORT/DELETE output row remains usable after resize.
 
+2026-08-08: Added a CPAL/WASAPI recovery route after the direct endpoint
+capture path fails. It preserves friendly-name endpoint selection, converts
+the device's native sample format to mono f32, and keeps the same bounded or
+stop-controlled WAV artifact contract. A rebuilt capture smoke exercised the
+fallback here; CPAL also receives `0x80070057` during stream creation, so this
+managed session still cannot provide a saved microphone fixture.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

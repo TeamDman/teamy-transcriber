@@ -365,7 +365,7 @@ mod windows_capture {
             eyre::bail!("capture duration must be greater than zero")
         }
         let stop_requested = AtomicBool::new(false);
-        record_audio_input_inner(
+        capture_with_recovery(
             endpoint_id,
             output_path,
             Some(Instant::now() + duration),
@@ -378,7 +378,27 @@ mod windows_capture {
         output_path: &Path,
         stop_requested: &AtomicBool,
     ) -> eyre::Result<AudioCaptureReport> {
-        record_audio_input_inner(endpoint_id, output_path, None, stop_requested)
+        capture_with_recovery(endpoint_id, output_path, None, stop_requested)
+    }
+
+    fn capture_with_recovery(
+        endpoint_id: Option<&str>,
+        output_path: &Path,
+        stop_at: Option<Instant>,
+        stop_requested: &AtomicBool,
+    ) -> eyre::Result<AudioCaptureReport> {
+        match record_audio_input_inner(endpoint_id, output_path, stop_at, stop_requested) {
+            Ok(report) => Ok(report),
+            Err(direct_error) => {
+                let direct_message = format!("{direct_error:#}");
+                record_audio_input_cpal(endpoint_id, output_path, stop_at, stop_requested)
+                    .map_err(|cpal_error| {
+                        eyre::eyre!(
+                            "direct WASAPI capture failed: {direct_message}; CPAL recovery also failed: {cpal_error:#}"
+                        )
+                    })
+            }
+        }
     }
 
     #[expect(
@@ -473,6 +493,182 @@ mod windows_capture {
             frame_count,
             duration_us,
         })
+    }
+
+    fn record_audio_input_cpal(
+        endpoint_id: Option<&str>,
+        output_path: &Path,
+        stop_at: Option<Instant>,
+        stop_requested: &AtomicBool,
+    ) -> eyre::Result<AudioCaptureReport> {
+        use cpal::traits::DeviceTrait;
+        use cpal::traits::HostTrait;
+        use cpal::traits::StreamTrait;
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let host = cpal::default_host();
+        let desired_name = endpoint_id.and_then(|endpoint_id| {
+            super::list_audio_input_devices()
+                .ok()?
+                .into_iter()
+                .find(|device| device.id == endpoint_id)
+                .map(|device| device.name)
+        });
+        let device = if let Some(desired_name) = desired_name {
+            host.input_devices()
+                .wrap_err("CPAL could not enumerate input devices")?
+                .find(|device| {
+                    device
+                        .name()
+                        .ok()
+                        .is_some_and(|name| name == desired_name)
+                })
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "CPAL could not find the selected microphone `{desired_name}` by friendly name"
+                    )
+                })?
+        } else {
+            host.default_input_device()
+                .ok_or_else(|| eyre::eyre!("CPAL could not resolve a default input device"))?
+        };
+        let supported_config = device
+            .default_input_config()
+            .wrap_err("CPAL could not read the microphone input format")?;
+        let config = supported_config.config();
+        let sample_format = supported_config.sample_format();
+        let sample_rate_hz = config.sample_rate.0;
+        let channels = usize::from(config.channels).max(1);
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let stream_error = Arc::new(Mutex::new(None));
+        let stream = build_cpal_input_stream(
+            &device,
+            &config,
+            sample_format,
+            channels,
+            &samples,
+            &stream_error,
+        )?;
+        stream
+            .play()
+            .wrap_err("CPAL could not start the microphone stream")?;
+
+        while !stop_requested.load(Ordering::Relaxed)
+            && stop_at.is_none_or(|deadline| Instant::now() < deadline)
+        {
+            if stream_error
+                .lock()
+                .ok()
+                .and_then(|error| error.clone())
+                .is_some()
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(stream);
+
+        if let Some(error) = stream_error.lock().ok().and_then(|error| error.clone()) {
+            eyre::bail!("CPAL microphone stream reported an error: {error}");
+        }
+        let samples = samples
+            .lock()
+            .map_err(|error| eyre::eyre!("CPAL microphone samples were poisoned: {error}"))?
+            .clone();
+        if samples.is_empty() {
+            eyre::bail!("CPAL microphone recording stopped before any audio frames were captured");
+        }
+        write_capture_wav(output_path, sample_rate_hz, &samples)?;
+        let frame_count = u64::try_from(samples.len()).unwrap_or(u64::MAX);
+        let duration_us = frame_count
+            .saturating_mul(1_000_000)
+            .checked_div(u64::from(sample_rate_hz))
+            .unwrap_or(0);
+        Ok(AudioCaptureReport {
+            output_path: output_path.display().to_string(),
+            sample_rate_hz,
+            frame_count,
+            duration_us,
+        })
+    }
+
+    fn build_cpal_input_stream(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        sample_format: cpal::SampleFormat,
+        channels: usize,
+        samples: &std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+        stream_error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> eyre::Result<cpal::Stream> {
+        use cpal::traits::DeviceTrait;
+
+        macro_rules! build_stream {
+            ($sample_type:ty) => {{
+                let samples = std::sync::Arc::clone(samples);
+                device
+                    .build_input_stream(
+                        config,
+                        move |data: &[$sample_type], _| {
+                            append_cpal_samples(data, channels, &samples);
+                        },
+                        cpal_error_callback(std::sync::Arc::clone(stream_error)),
+                        None,
+                    )
+                    .wrap_err("CPAL could not build the microphone input stream")
+            }};
+        }
+
+        match sample_format {
+            cpal::SampleFormat::I8 => build_stream!(i8),
+            cpal::SampleFormat::I16 => build_stream!(i16),
+            cpal::SampleFormat::I32 => build_stream!(i32),
+            cpal::SampleFormat::I64 => build_stream!(i64),
+            cpal::SampleFormat::U8 => build_stream!(u8),
+            cpal::SampleFormat::U16 => build_stream!(u16),
+            cpal::SampleFormat::U32 => build_stream!(u32),
+            cpal::SampleFormat::U64 => build_stream!(u64),
+            cpal::SampleFormat::F32 => build_stream!(f32),
+            cpal::SampleFormat::F64 => build_stream!(f64),
+            format => eyre::bail!("CPAL returned unsupported microphone sample format {format}"),
+        }
+    }
+
+    fn cpal_error_callback(
+        stream_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> impl FnMut(cpal::StreamError) + Send + 'static {
+        move |error| {
+            if let Ok(mut slot) = stream_error.lock()
+                && slot.is_none()
+            {
+                *slot = Some(error.to_string());
+            }
+        }
+    }
+
+    fn append_cpal_samples<T>(
+        input: &[T],
+        channels: usize,
+        samples: &std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    ) where
+        T: cpal::Sample,
+        f32: cpal::FromSample<T>,
+    {
+        let Ok(mut output) = samples.lock() else {
+            return;
+        };
+        for frame in input.chunks(channels.max(1)) {
+            if frame.is_empty() {
+                continue;
+            }
+            let sum = frame
+                .iter()
+                .copied()
+                .map(<f32 as cpal::FromSample<T>>::from_sample_)
+                .sum::<f32>();
+            let frame_length = u16::try_from(frame.len()).unwrap_or(u16::MAX);
+            output.push((sum / f32::from(frame_length)).clamp(-1.0, 1.0));
+        }
     }
 
     #[expect(
