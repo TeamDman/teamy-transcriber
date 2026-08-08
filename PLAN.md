@@ -55,6 +55,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Re-ran the Ash/Vulkan GUI startup smoke after the workflow controls were added. Under a temporary writable app home, the executable remained responsive for three seconds and exposed a nonzero native window handle; this verifies startup/event-loop/window creation, not a human-operated file-picker or model-backed inference session.
 
+2026-08-08: Added a fontdue-backed CPU text path to the GUI canvas. It rasterizes the visible transcript/status strings through a runtime system-font candidate and retains the deterministic bitmap alphabet as a bounded fallback when no supported font is available. A headless test covers non-ASCII text; embedded-font fixtures, artifact manifests, and the optional Slug GPU path remain open.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
@@ -501,7 +503,7 @@ Completion: A headless presentation test can drive the first slice without depen
 
 Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions. The Ash/Vulkan/Winit shell now owns the GUI-only first workflow: local model selection/readiness, media import/prepare, microphone capture, native transcription, transcript edit, and export, with asynchronous status/error reporting and persisted preferences.
 
-Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bounded waveform, bitmap glyph, microphone hit-test, clip navigation/reordering, chunk/profile controls, and cancellation paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, profile artifacts, reordering, and export. A human-operated file-picker/model/capture/transcription run, accessibility/narration, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
+Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bounded waveform, fontdue CPU text path with bitmap fallback, microphone hit-test, clip navigation/reordering, chunk/profile controls, and cancellation paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, profile artifacts, reordering, and export. A human-operated file-picker/model/capture/transcription run, accessibility/narration, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
 
 Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
 
@@ -515,7 +517,7 @@ Completion: Tray and hotkeys are convenience projections of the same action mode
 
 ### Phase 6: text rendering correctness
 
-#### W17 [ ] Define text rendering contracts and evidence
+#### W17 [~] Define text rendering contracts and evidence
 
 Work: Specify glyph origin, atlas/texture layout, band/glyph metadata, clipping, baseline, generation, transport, pixel format, and bounds. Add known artifact fixtures.
 
@@ -523,9 +525,9 @@ Validation: CPU fontdue output is the reference for selected cases; renderer tes
 
 Completion: A failing render can be classified as semantic, transport, rasterization, or presentation error.
 
-#### W18 [ ] Integrate CPU reference and optional Slug GPU path
+#### W18 [~] Integrate CPU reference and optional Slug GPU path
 
-Work: Implement the CPU reference and then the Ash/Vulkan/Slug path if G1 selects it. Use complete renderer/transport tuples, fresh generations, full resync, and bounded push-based delivery.
+Work: Implement the CPU reference and then the Ash/Vulkan/Slug path if G1 selects it. The GUI now uses fontdue for CPU reference rasterization with a bitmap fallback; complete renderer/transport tuples, fresh generations, full resync, artifact fixtures, and the optional Slug path remain open. Use bounded push-based delivery.
 
 Validation: Compare fixtures at multiple sizes, scripts, clipping cases, and stale-generation transitions. Measure end-to-end latency before any speed claim.
 

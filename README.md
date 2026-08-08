@@ -61,8 +61,10 @@ UI/action IDs, contextual key resolution, transcript projection, and diagnostics
 separate from the future window, tray, and GPU renderer.
 
 `cargo run -- gui` creates the native Winit window, Ash/Vulkan surface and
-swapchain, and a CPU-rasterized reference layout with a microphone control,
-microphone/save-directory selectors, waveform, and transcript panel. The GUI is
+swapchain, and a CPU-rasterized reference layout with fontdue text (falling back
+to a small deterministic bitmap alphabet when no supported system font is
+available), a microphone control, microphone/save-directory selectors, waveform,
+and transcript panel. The GUI is
 the complete first workflow surface: choose a local model directory, import an
 audio/video file (which automatically prepares normalized audio), record from a
 selected microphone, transcribe locally, review/edit the committed transcript,

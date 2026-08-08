@@ -1610,16 +1610,81 @@ impl Point {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
+struct GuiFont {
+    font: Arc<fontdue::Font>,
+}
+
+impl std::fmt::Debug for GuiFont {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuiFont")
+            .field("name", &self.font.name())
+            .finish()
+    }
+}
+
+impl GuiFont {
+    fn load() -> Option<Self> {
+        let mut candidates = Vec::new();
+        if let Some(windows_directory) = std::env::var_os("WINDIR") {
+            let fonts = PathBuf::from(windows_directory).join("Fonts");
+            candidates.push(fonts.join("consola.ttf"));
+            candidates.push(fonts.join("segoeui.ttf"));
+        }
+        candidates.extend([
+            PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+            PathBuf::from("/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf"),
+        ]);
+        candidates.into_iter().find_map(|path| {
+            let bytes = std::fs::read(path).ok()?;
+            let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()?;
+            Some(Self {
+                font: Arc::new(font),
+            })
+        })
+    }
+
+    fn pixel_size(scale: i32) -> f32 {
+        (8 * scale.max(1)) as f32
+    }
+
+    fn line_height(&self, scale: i32) -> i32 {
+        self.font
+            .horizontal_line_metrics(Self::pixel_size(scale))
+            .map_or(8 * scale.max(1), |metrics| {
+                metrics.new_line_size.ceil() as i32
+            })
+            .max(1)
+    }
+
+    fn advance_width(&self, scale: i32) -> i32 {
+        let (metrics, _) = self.font.rasterize('M', Self::pixel_size(scale));
+        metrics.advance_width.ceil() as i32
+    }
+}
+
 struct Canvas {
     width: u32,
     height: u32,
     bgra: bool,
     pixels: Vec<u8>,
+    font: Option<GuiFont>,
+}
+
+impl std::fmt::Debug for Canvas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Canvas")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bgra", &self.bgra)
+            .field("pixel_bytes", &self.pixels.len())
+            .field("font", &self.font)
+            .finish()
+    }
 }
 
 impl Canvas {
-    fn new(width: u32, height: u32, format: vk::Format) -> Result<Self> {
+    fn new(width: u32, height: u32, format: vk::Format, font: Option<GuiFont>) -> Result<Self> {
         let pixel_count = usize::try_from(width)
             .ok()
             .and_then(|width| {
@@ -1638,6 +1703,7 @@ impl Canvas {
             height,
             bgra,
             pixels: vec![0; pixel_count],
+            font,
         };
         canvas.clear(BACKGROUND);
         Ok(canvas)
@@ -1661,6 +1727,30 @@ impl Canvas {
         } else {
             self.pixels[index..index + 4].copy_from_slice(&[color.r, color.g, color.b, color.a]);
         }
+    }
+
+    fn blend_pixel(&mut self, x: i32, y: i32, color: Rgba, coverage: u8) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 || coverage == 0 {
+            return;
+        }
+        let index = (y as usize * self.width as usize + x as usize) * 4;
+        let source_alpha = u16::from(color.a) * u16::from(coverage) / 255;
+        let inverse_alpha = 255_u16.saturating_sub(source_alpha);
+        let (red_index, green_index, blue_index) = if self.bgra {
+            (index + 2, index + 1, index)
+        } else {
+            (index, index + 1, index + 2)
+        };
+        self.pixels[red_index] = ((u16::from(color.r) * source_alpha
+            + u16::from(self.pixels[red_index]) * inverse_alpha)
+            / 255) as u8;
+        self.pixels[green_index] = ((u16::from(color.g) * source_alpha
+            + u16::from(self.pixels[green_index]) * inverse_alpha)
+            / 255) as u8;
+        self.pixels[blue_index] = ((u16::from(color.b) * source_alpha
+            + u16::from(self.pixels[blue_index]) * inverse_alpha)
+            / 255) as u8;
+        self.pixels[index + 3] = 255;
     }
 
     fn line(&mut self, start: Point, end: Point, color: Rgba) {
@@ -1728,6 +1818,43 @@ impl Canvas {
     }
 
     fn draw_text(&mut self, origin: Point, text: &str, scale: i32, color: Rgba) {
+        if self.font.is_some() {
+            self.draw_fontdue_text(origin, text, scale, color);
+        } else {
+            self.draw_bitmap_text(origin, text, scale, color);
+        }
+    }
+
+    fn draw_fontdue_text(&mut self, origin: Point, text: &str, scale: i32, color: Rgba) {
+        let Some(font) = self.font.clone() else {
+            return;
+        };
+        let pixel_size = GuiFont::pixel_size(scale);
+        let line_metrics = font.font.horizontal_line_metrics(pixel_size);
+        let ascent = line_metrics.map_or(pixel_size, |metrics| metrics.ascent.ceil());
+        let line_height = font.line_height(scale);
+        let mut cursor_x = origin.x;
+        let mut baseline_y = origin.y + ascent;
+        for character in text.chars() {
+            if character == '\n' {
+                cursor_x = origin.x;
+                baseline_y += line_height as f32;
+                continue;
+            }
+            let (metrics, bitmap) = font.font.rasterize(character, pixel_size);
+            let left = cursor_x.round() as i32 + metrics.xmin;
+            let top = baseline_y.round() as i32 - metrics.ymin - metrics.height as i32;
+            for row in 0..metrics.height {
+                for column in 0..metrics.width {
+                    let coverage = bitmap[row * metrics.width + column];
+                    self.blend_pixel(left + column as i32, top + row as i32, color, coverage);
+                }
+            }
+            cursor_x += metrics.advance_width;
+        }
+    }
+
+    fn draw_bitmap_text(&mut self, origin: Point, text: &str, scale: i32, color: Rgba) {
         let mut x = origin.x as i32;
         let mut y = origin.y as i32;
         for character in text.chars() {
@@ -1787,7 +1914,12 @@ impl Canvas {
         scale: i32,
         color: Rgba,
     ) {
-        let max_chars = usize::try_from((max_width / (6 * scale).max(1)).max(1)).unwrap_or(1);
+        let character_width = self
+            .font
+            .as_ref()
+            .map_or(6 * scale, |font| font.advance_width(scale))
+            .max(1);
+        let max_chars = usize::try_from((max_width / character_width).max(1)).unwrap_or(1);
         let mut wrapped = String::new();
         for line in text.lines() {
             let characters = line.chars().collect::<Vec<_>>();
@@ -1806,7 +1938,7 @@ impl Canvas {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "The reference layout is kept together so the first GUI slice mirrors the supplied sketch"
+        reason = "Keeping the fixed first-window layout together makes the renderer auditable"
     )]
     fn render_ui(&mut self, state: &GuiState) {
         self.clear(BACKGROUND);
@@ -2179,6 +2311,7 @@ struct VulkanRenderer {
     fence: vk::Fence,
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
+    font: Option<GuiFont>,
 }
 
 impl VulkanRenderer {
@@ -2312,6 +2445,7 @@ impl VulkanRenderer {
             fence,
             image_available,
             render_finished,
+            font: GuiFont::load(),
         })
     }
 
@@ -2367,7 +2501,12 @@ impl VulkanRenderer {
                 .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
         }
         .wrap_err("failed to reset GUI command buffer")?;
-        let mut canvas = Canvas::new(self.extent.width, self.extent.height, self.format)?;
+        let mut canvas = Canvas::new(
+            self.extent.width,
+            self.extent.height,
+            self.format,
+            self.font.clone(),
+        )?;
         canvas.render_ui(state);
         let (staging_buffer, staging_memory) = self.create_staging_buffer(&canvas.pixels)?;
         let command_result =
@@ -2754,13 +2893,18 @@ fn find_memory_type(
 
 #[cfg(test)]
 mod tests {
+    use super::Canvas;
     use super::ClipId;
     use super::GuiAction;
+    use super::GuiFont;
     use super::GuiOperation;
     use super::GuiState;
     use super::INITIAL_HEIGHT;
     use super::INITIAL_WIDTH;
+    use super::INK;
+    use super::Point;
     use super::glyph;
+    use ash::vk;
     use winit::dpi::PhysicalPosition;
     use winit::dpi::PhysicalSize;
 
@@ -2775,6 +2919,20 @@ mod tests {
                 "missing glyph for {character:?}"
             );
         }
+    }
+
+    #[test]
+    fn fontdue_canvas_rasterizes_unicode_text_when_a_system_font_is_available() {
+        let Some(font) = GuiFont::load() else {
+            return;
+        };
+        let mut canvas = Canvas::new(320, 64, vk::Format::R8G8B8A8_UNORM, Some(font))
+            .expect("headless canvas allocation should succeed");
+        let before = canvas.pixels.clone();
+
+        canvas.draw_text(Point::new(4.0, 4.0), "Café — transcription", 2, INK);
+
+        assert_ne!(canvas.pixels, before);
     }
 
     #[test]
