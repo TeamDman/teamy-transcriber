@@ -45,6 +45,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Closed the GUI media-tool configuration gap. `TOOLS` now lets a user select local `ffmpeg` and `ffprobe` executables, persists those paths, and routes GUI non-WAV/video preparation through the same explicit adapter configuration as the CLI. No model CDN or download flow is added yet; local model files remain an intentional prerequisite.
 
+2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

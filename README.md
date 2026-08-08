@@ -51,8 +51,10 @@ paths are persisted with the other GUI settings.
 commits raw ASR text through the same event receipt; persisted partial clips are
 materialized as separate normalized WAV artifacts first. `--chunk-duration-ms`
 creates contiguous, non-overlapping clip records and resumes from their stable
-IDs after a failure. Video decoding, GUI controls, runtime installation, and
-model/CDN acquisition remain later slices.
+IDs after a failure. Video fixture verification, runtime installation, and
+model/CDN acquisition remain later slices. During
+chunked transcription, `CANCEL`/`Escape` cooperatively stop after the active
+clip and retain completed clip transcripts.
 
 The renderer-neutral presentation model in `src/presentation.rs` keeps stable
 UI/action IDs, contextual key resolution, transcript projection, and diagnostics
@@ -67,7 +69,8 @@ selected microphone, transcribe locally, review/edit the committed transcript,
 and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
 success/failure back into the visible status line. Press Space to start/stop
-microphone capture, Escape to stop capture or cancel transcript editing, and
+microphone capture, Escape to stop capture, cancel transcription, or cancel
+transcript editing, and
 Ctrl+E to open transcript export. The GUI also exposes full-recording or
 10/30/60-second chunk presets, previous/next clip review, and cycling through
 persisted recordings; those choices survive restart.

@@ -78,6 +78,7 @@ pub struct TranscribedChunk {
 pub struct TranscriptionReport {
     pub backend_id: String,
     pub chunks: Vec<TranscribedChunk>,
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,6 +330,52 @@ pub fn transcribe_recording(
     max_decode_tokens: usize,
     chunk_duration_us: Option<u64>,
 ) -> Result<TranscriptionReport> {
+    transcribe_recording_inner(
+        store,
+        recording_id,
+        model_dir,
+        max_decode_tokens,
+        chunk_duration_us,
+        None,
+    )
+}
+
+/// Transcribe a recording while allowing the caller to stop between clips.
+///
+/// The current native backend is a synchronous per-clip operation, so a stop
+/// request is observed at the next safe clip boundary. Any clips completed
+/// before that boundary remain committed and are included in the report.
+///
+/// # Errors
+///
+/// Returns an error when the recording is not prepared, model assets are not
+/// ready, inference fails, or a lifecycle/transcript event cannot be saved.
+pub fn transcribe_recording_with_cancellation(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    model_dir: PathBuf,
+    max_decode_tokens: usize,
+    chunk_duration_us: Option<u64>,
+    stop_requested: &Arc<AtomicBool>,
+) -> Result<TranscriptionReport> {
+    transcribe_recording_inner(
+        store,
+        recording_id,
+        model_dir,
+        max_decode_tokens,
+        chunk_duration_us,
+        Some(stop_requested.as_ref()),
+    )
+}
+
+fn transcribe_recording_inner(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    model_dir: PathBuf,
+    max_decode_tokens: usize,
+    chunk_duration_us: Option<u64>,
+    stop_requested: Option<&AtomicBool>,
+) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
         .wrap_err("failed to load recording event state")?;
@@ -358,7 +405,15 @@ pub fn transcribe_recording(
     });
     let backend_id = backend.capabilities().backend_id;
     let mut chunks = Vec::with_capacity(clips.len());
+    let mut cancelled = false;
     for clip in clips {
+        if stop_requested
+            .as_ref()
+            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            cancelled = true;
+            break;
+        }
         chunks.push(transcribe_clip(
             store,
             &mut state,
@@ -368,8 +423,19 @@ pub fn transcribe_recording(
             &normalized_path,
             &backend,
         )?);
+        if stop_requested
+            .as_ref()
+            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            cancelled = true;
+            break;
+        }
     }
-    Ok(TranscriptionReport { backend_id, chunks })
+    Ok(TranscriptionReport {
+        backend_id,
+        chunks,
+        cancelled,
+    })
 }
 
 /// Commit a user-edited transcript as a new provenance-preserving version.

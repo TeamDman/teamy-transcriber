@@ -16,6 +16,7 @@ struct RecordingTranscribeReport {
     recording_id: String,
     backend_id: String,
     chunk_count: usize,
+    cancelled: bool,
     chunks: Vec<TranscribedChunkReport>,
 }
 
@@ -94,6 +95,7 @@ impl RecordingTranscribeArgs {
             recording_id: recording_id.to_string(),
             backend_id: report.backend_id,
             chunk_count: chunks.len(),
+            cancelled: report.cancelled,
             chunks,
         }))
     }

@@ -31,7 +31,7 @@ use crate::workflow::create_recording;
 use crate::workflow::export_recording;
 use crate::workflow::prepare_recording_with_tools;
 use crate::workflow::record_microphone;
-use crate::workflow::transcribe_recording;
+use crate::workflow::transcribe_recording_with_cancellation;
 use ash::Entry;
 use ash::vk;
 use eyre::Context;
@@ -104,6 +104,7 @@ struct GuiApplication {
     message_tx: Sender<GuiMessage>,
     message_rx: Receiver<GuiMessage>,
     stop_recording: Option<Arc<AtomicBool>>,
+    operation_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl GuiApplication {
@@ -159,6 +160,7 @@ impl GuiApplication {
             message_tx,
             message_rx,
             stop_recording: None,
+            operation_cancel: None,
         };
         application.inspect_model();
         application.refresh_devices();
@@ -256,6 +258,7 @@ impl GuiApplication {
             GuiAction::Export => self.start_export(),
             GuiAction::CommitTranscriptEdit => self.commit_edit(),
             GuiAction::RefreshDevices => self.refresh_devices(),
+            GuiAction::CancelOperation => self.cancel_active_operation(),
             GuiAction::CancelEdit => {
                 self.state.transcript_editing = false;
                 self.state.transcript_draft = self.state.transcript.clone();
@@ -484,6 +487,18 @@ impl GuiApplication {
         }
     }
 
+    fn cancel_active_operation(&mut self) {
+        if matches!(self.state.operation, GuiOperation::Recording) {
+            self.request_recording_stop();
+        } else if let Some(stop_requested) = &self.operation_cancel {
+            stop_requested.store(true, Ordering::Relaxed);
+            self.state.status_line =
+                "Cancellation requested; finishing the current clip...".to_string();
+        } else if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "This operation cannot be cancelled yet".to_string();
+        }
+    }
+
     fn start_prepare(&mut self) {
         let Some(recording_id) = self.state.recording_id else {
             self.state.status_line = "Import or record audio first".to_string();
@@ -539,15 +554,19 @@ impl GuiApplication {
             .state
             .chunk_duration_ms
             .map(|duration_ms| duration_ms.saturating_mul(1_000));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_requested);
+        self.operation_cancel = Some(stop_requested);
         self.state.operation = GuiOperation::Transcribing;
         self.state.status_line = "Transcribing locally with native Whisper...".to_string();
         std::thread::spawn(move || {
-            let message = transcribe_recording(
+            let message = transcribe_recording_with_cancellation(
                 &store,
                 recording_id,
                 model_dir,
                 crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
                 chunk_duration_us,
+                &worker_stop,
             )
             .map_or_else(
                 |error| GuiMessage::Failure {
@@ -692,10 +711,16 @@ impl GuiApplication {
                 recording_id,
                 report,
             } => {
+                self.operation_cancel = None;
                 self.state.operation = GuiOperation::Idle;
                 if let Err(error) = self.reload_recording(recording_id) {
                     self.state.status_line =
                         format!("ERROR: transcribed but reload failed: {error}");
+                } else if report.cancelled {
+                    self.state.status_line = format!(
+                        "Transcription cancelled after {} completed chunk(s); partial work retained",
+                        report.chunks.len()
+                    );
                 } else {
                     self.state.status_line = format!(
                         "Transcription complete: {} chunk(s), {}",
@@ -729,6 +754,7 @@ impl GuiApplication {
                 message,
             } => {
                 self.stop_recording = None;
+                self.operation_cancel = None;
                 self.state.recording = false;
                 self.state.operation = GuiOperation::Idle;
                 let reload_message = recording_id.and_then(|recording_id| {
@@ -762,9 +788,7 @@ impl GuiApplication {
             return;
         }
         if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
-            if matches!(self.state.operation, GuiOperation::Recording) {
-                self.toggle_recording();
-            }
+            self.cancel_active_operation();
         } else if matches!(&event.logical_key, Key::Named(NamedKey::Space)) {
             self.toggle_recording();
         } else if modifiers.control_key()
@@ -810,7 +834,7 @@ impl ApplicationHandler for GuiApplication {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                self.request_recording_stop();
+                self.cancel_active_operation();
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -934,6 +958,7 @@ enum GuiAction {
     Export,
     CommitTranscriptEdit,
     RefreshDevices,
+    CancelOperation,
     CancelEdit,
 }
 
@@ -1000,6 +1025,7 @@ struct GuiLayout {
     transcript: Rect,
     export: Rect,
     refresh_devices: Rect,
+    cancel: Rect,
     previous_clip: Rect,
     next_clip: Rect,
     chunk_duration: Rect,
@@ -1024,6 +1050,7 @@ impl GuiLayout {
             transcript: Rect::new(width * 0.05, height * 0.74, width * 0.67, height * 0.95),
             export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
             refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
+            cancel: Rect::new(width * 0.69, height * 0.89, width * 0.96, height * 0.97),
             previous_clip: Rect::new(width * 0.69, height * 0.66, width * 0.81, height * 0.75),
             next_clip: Rect::new(width * 0.84, height * 0.66, width * 0.96, height * 0.75),
             chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.96, height * 0.87),
@@ -1235,6 +1262,9 @@ impl GuiState {
             return Some(GuiAction::ToggleRecording);
         }
         if !matches!(self.operation, GuiOperation::Idle) {
+            if layout.cancel.contains(cursor) {
+                return Some(GuiAction::CancelOperation);
+            }
             return None;
         }
         if layout.import.contains(cursor) {
@@ -1800,6 +1830,15 @@ impl Canvas {
             &format!("CHUNK {}", state.chunk_duration_label()),
             state.chunk_duration_ms.is_some(),
             enabled,
+        );
+        self.button(
+            layout.cancel,
+            "CANCEL",
+            false,
+            matches!(
+                state.operation,
+                GuiOperation::Recording | GuiOperation::Transcribing
+            ),
         );
         let status_top = (height * 0.49) as i32;
         self.draw_wrapped_text(
@@ -2538,6 +2577,7 @@ fn find_memory_type(
 mod tests {
     use super::ClipId;
     use super::GuiAction;
+    use super::GuiOperation;
     use super::GuiState;
     use super::INITIAL_HEIGHT;
     use super::INITIAL_WIDTH;
@@ -2579,6 +2619,18 @@ mod tests {
         };
 
         assert_eq!(state.click(size), Some(GuiAction::ChooseMediaTools));
+    }
+
+    #[test]
+    fn cancel_hit_is_available_during_transcription() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(850.0, 690.0),
+            operation: GuiOperation::Transcribing,
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::CancelOperation));
     }
 
     #[test]
