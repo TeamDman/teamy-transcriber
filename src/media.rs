@@ -275,19 +275,34 @@ impl MediaAdapter for FfmpegMediaAdapter {
             ])
             .arg(source)
             .stdin(Stdio::null())
-            .output()
-            .map_err(|error| {
-                MediaError::Probe(format!(
-                    "{} could not be launched: {error}",
-                    self.ffprobe_executable.display()
-                ))
-            })?;
-        if !output.status.success() {
-            return Err(MediaError::Probe(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-        parse_probe_output(&String::from_utf8_lossy(&output.stdout))
+            .output();
+        let output = match output {
+            Ok(output) if output.status.success() => {
+                return parse_probe_output(&String::from_utf8_lossy(&output.stdout));
+            }
+            Ok(output) => {
+                let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                format!(
+                    "{} exited unsuccessfully: {}",
+                    self.ffprobe_executable.display(),
+                    if details.is_empty() {
+                        "no diagnostic output"
+                    } else {
+                        details.as_str()
+                    }
+                )
+            }
+            Err(error) => format!(
+                "{} could not be launched: {error}",
+                self.ffprobe_executable.display()
+            ),
+        };
+        let fallback = inspect_with_ffmpeg(&self.ffmpeg_executable, source);
+        fallback.map_err(|fallback_error| {
+            MediaError::Probe(format!(
+                "ffprobe failed ({output}); ffmpeg metadata fallback failed ({fallback_error})"
+            ))
+        })
     }
 
     fn prepare_audio(&self, source: &Path, output_dir: &Path) -> Result<PreparedAudio, MediaError> {
@@ -337,6 +352,23 @@ impl MediaAdapter for FfmpegMediaAdapter {
     ) -> Result<PreparedAudio, MediaError> {
         WavMediaAdapter.prepare_clip(normalized_source, output_dir, source_range, clip_id)
     }
+}
+
+fn inspect_with_ffmpeg(executable: &Path, source: &Path) -> Result<MediaMetadata, MediaError> {
+    let output = Command::new(executable)
+        .args(["-hide_banner", "-nostdin", "-i"])
+        .arg(source)
+        .args(["-map", "0:a:0", "-t", "0", "-f", "null", "NUL"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            MediaError::Probe(format!(
+                "{} could not be launched: {error}",
+                executable.display()
+            ))
+        })?;
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    parse_ffmpeg_probe_output(&diagnostics)
 }
 
 /// Apply one small, deterministic profile to already-normalized audio.
@@ -499,6 +531,102 @@ fn parse_probe_output(output: &str) -> Result<MediaMetadata, MediaError> {
         channels,
         frame_count,
     })
+}
+
+fn parse_ffmpeg_probe_output(output: &str) -> Result<MediaMetadata, MediaError> {
+    let duration = output
+        .lines()
+        .find_map(|line| line.split_once("Duration: ").map(|(_, value)| value))
+        .and_then(|value| value.split(',').next())
+        .ok_or_else(|| {
+            MediaError::InvalidProbe("ffmpeg output did not contain a duration".to_string())
+        })?
+        .trim();
+    let duration_us = parse_clock_duration_us(duration)?;
+    let audio_line = output
+        .lines()
+        .find(|line| line.contains("Audio:"))
+        .ok_or_else(|| {
+            MediaError::InvalidProbe("ffmpeg output did not contain an audio stream".to_string())
+        })?;
+    let audio_details = audio_line
+        .split_once("Audio:")
+        .map_or(audio_line, |(_, details)| details);
+    let mut sample_rate_hz = None;
+    let mut channels = None;
+    for field in audio_details.split(',').map(str::trim) {
+        if let Some(value) = field.strip_suffix(" Hz") {
+            sample_rate_hz = Some(value.parse::<u32>().map_err(|error| {
+                MediaError::InvalidProbe(format!("invalid ffmpeg sample rate: {error}"))
+            })?);
+        } else if field == "mono" {
+            channels = Some(1);
+        } else if field == "stereo" {
+            channels = Some(2);
+        } else if let Some(value) = field.strip_suffix(" channels") {
+            channels = Some(value.parse::<u16>().map_err(|error| {
+                MediaError::InvalidProbe(format!("invalid ffmpeg channel count: {error}"))
+            })?);
+        } else if let Some(channel_count) = ffmpeg_channel_layout_count(field) {
+            channels = Some(channel_count);
+        }
+    }
+    let sample_rate_hz = sample_rate_hz.ok_or_else(|| {
+        MediaError::InvalidProbe("ffmpeg output omitted the sample rate".to_string())
+    })?;
+    let channels = channels.ok_or_else(|| {
+        MediaError::InvalidProbe("ffmpeg output omitted the channel layout".to_string())
+    })?;
+    let frame_count = u128::from(duration_us)
+        .saturating_mul(u128::from(sample_rate_hz))
+        .checked_div(u128::from(1_000_000_u32))
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| MediaError::InvalidProbe("frame count overflowed".to_string()))?;
+    Ok(MediaMetadata {
+        duration_us,
+        sample_rate_hz,
+        channels,
+        frame_count,
+    })
+}
+
+fn ffmpeg_channel_layout_count(layout: &str) -> Option<u16> {
+    match layout {
+        "quad" => Some(4),
+        value if value.starts_with("2.1") => Some(3),
+        value if value.starts_with("3.0") => Some(3),
+        value if value.starts_with("4.0") => Some(4),
+        value if value.starts_with("5.1") => Some(6),
+        value if value.starts_with("6.1") => Some(7),
+        value if value.starts_with("7.1") => Some(8),
+        _ => None,
+    }
+}
+
+fn parse_clock_duration_us(value: &str) -> Result<u64, MediaError> {
+    let fields = value.split(':').collect::<Vec<_>>();
+    if fields.len() != 3 {
+        return Err(MediaError::InvalidProbe(format!(
+            "invalid ffmpeg duration: {value:?}"
+        )));
+    }
+    let hours = fields[0]
+        .parse::<u64>()
+        .map_err(|error| MediaError::InvalidProbe(format!("invalid ffmpeg hours: {error}")))?;
+    let minutes = fields[1]
+        .parse::<u64>()
+        .map_err(|error| MediaError::InvalidProbe(format!("invalid ffmpeg minutes: {error}")))?;
+    let seconds_value = if fields[2].contains('.') {
+        fields[2].to_string()
+    } else {
+        format!("{}.0", fields[2])
+    };
+    let seconds_us = parse_decimal_seconds_us(&seconds_value)?;
+    hours
+        .checked_mul(3_600_000_000)
+        .and_then(|value| value.checked_add(minutes.saturating_mul(60_000_000)))
+        .and_then(|value| value.checked_add(seconds_us))
+        .ok_or_else(|| MediaError::InvalidProbe("ffmpeg duration overflowed".to_string()))
 }
 
 fn parse_decimal_seconds_us(value: &str) -> Result<u64, MediaError> {
@@ -680,6 +808,7 @@ pub enum MediaError {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_ffmpeg_probe_output;
     use super::parse_probe_output;
 
     #[test]
@@ -695,5 +824,15 @@ mod tests {
     #[test]
     fn rejects_malformed_ffprobe_output() {
         assert!(parse_probe_output("not,a,probe").is_err());
+    }
+
+    #[test]
+    fn parses_ffmpeg_fallback_metadata() {
+        let output = "Input #0, wav, from 'fixture.wav':\n  Duration: 00:00:02.050000, bitrate: 512 kb/s\n  Stream #0:0: Audio: pcm_f32le, 48000 Hz, stereo, flt, 3072 kb/s\n";
+        let metadata = parse_ffmpeg_probe_output(output).expect("ffmpeg metadata should parse");
+        assert_eq!(metadata.duration_us, 2_050_000);
+        assert_eq!(metadata.sample_rate_hz, 48_000);
+        assert_eq!(metadata.channels, 2);
+        assert_eq!(metadata.frame_count, 98_400);
     }
 }

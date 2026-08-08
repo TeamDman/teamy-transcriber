@@ -80,6 +80,14 @@ or transcription receives its stop/cancel request and the event loop waits
 for the terminal worker message before exiting; this preserves the persisted
 completion/failure receipt during window shutdown.
 
+2026-08-08: Added an ffmpeg metadata fallback for media inspection when the
+selected ffprobe executable is missing or fails. Using the local VCTK
+`p225_001.wav` speech sample, ShareX's local ffmpeg generated a temporary MP4;
+the shared recording-prepare workflow then successfully extracted and
+normalized its audio to 16 kHz mono (981,312 microseconds, 15,701 frames) with
+the same ffmpeg binary supplied for both tool paths. The temporary video and
+recording home were removed after the smoke.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
@@ -424,9 +432,9 @@ Completion: The application can show exactly which source and clip produced a tr
 
 #### W6 [~] Add media import and normalization
 
-Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping. The bounded implementation now includes a WAV adapter and an ffmpeg/ffprobe adapter for non-WAV audio/video; support remains dependent on local tool availability and fixture coverage.
+Work: Define the media adapter, supported-format matrix, ffmpeg/ffprobe or library integration, mono/sample-rate policy, and source-time to normalized-time mapping. The bounded implementation now includes a WAV adapter and an ffmpeg/ffprobe adapter with an ffmpeg diagnostic fallback for non-WAV audio/video; support remains dependent on local tool availability and fixture coverage.
 
-Validation: The generated WAV fixture and VCTK sample compare duration, channels, sample count, and normalized output metadata. ffprobe parser tests and missing-tool diagnostics pass; actual audio/video fixture execution and offset checks remain pending local ffmpeg/ffprobe availability.
+Validation: The generated WAV fixture and VCTK sample compare duration, channels, sample count, and normalized output metadata. ffprobe parser tests, ffmpeg-fallback parser tests, missing-tool diagnostics, and one local video normalization smoke pass; source-time offset fixtures and broader format coverage remain pending.
 
 Completion: Imported audio and video produce normalized clips with deterministic metadata and no model dependency.
 
@@ -615,7 +623,7 @@ Completion: The repository tells a user how to use the product and an agent how 
 | ID | Criterion | Required evidence |
 |---|---|---|
 | A1 | Audio file import works locally. | Fixture receipt, transcript provenance, timing, and failure case. |
-| A2 | Video file import works locally. | Fixture receipt showing extracted/normalized audio and source-time mapping. |
+| A2 | Video file import works locally. | Empirical local MP4 receipt showing extracted/normalized audio; broader source-time mapping fixtures remain pending. |
 | A3 | Microphone recording works. | Device identity, saved artifact, replayable manifest, disconnect/permission diagnostics. |
 | A4 | WhisperX runs locally. | Runtime/model/device receipt and raw transcript from at least one fixture. |
 | A5 | New-device model/runtime setup is understandable and repeatable. | Doctor/prepare output and clean-machine rehearsal. |
