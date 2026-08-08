@@ -73,6 +73,12 @@ format support returns `0x88890008` after reporting a 100,000 100-ns default
 period and 30,000 100-ns minimum period. The GUI preserves this as a
 recoverable recording failure; a saved microphone fixture remains unverified.
 
+2026-08-08: Confirmed Windows microphone consent is `Allow`, but the local
+DirectShow inventory reports no audio-only devices in this managed session.
+This strengthens the interpretation that the missing saved microphone fixture
+is an environment/device capability gap, not a GUI action that silently needs
+the CLI.
+
 2026-08-08: Added bounded transcript scrolling to the GUI. Mouse-wheel input over the transcript panel and PageUp/PageDown now select visible wrapped lines without changing the committed transcript or edit provenance; headless state coverage verifies the scroll position cannot move above the beginning.
 
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
