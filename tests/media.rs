@@ -30,8 +30,8 @@ fn chunk_plan_covers_duration_without_gaps_or_overlap() {
         chunks[2],
         TimeRange::new(2_000_000, 2_500_000).expect("range should be valid")
     );
-    assert!(plan_time_chunks(0, 1).is_err());
-    assert!(plan_time_chunks(1, 0).is_err());
+    plan_time_chunks(0, 1).unwrap_err();
+    plan_time_chunks(1, 0).unwrap_err();
 }
 
 #[test]

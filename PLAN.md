@@ -122,6 +122,13 @@ the CLI.
 
 2026-08-08: Added bounded transcript scrolling to the GUI. Mouse-wheel input over the transcript panel and PageUp/PageDown now select visible wrapped lines without changing the committed transcript or edit provenance; headless state coverage verifies the scroll position cannot move above the beginning.
 
+2026-08-08: Implemented the Windows convenience projection for tray and hotkey
+behavior. The GUI now owns a tray icon, restores it after `TaskbarCreated`,
+routes `Ctrl+Shift+Space` and tray start/stop/show/exit actions through the
+existing reducer, exposes a persisted `HOTKEY ON/OFF` control, and reports
+registration conflicts without blocking startup. Runtime interaction with a
+human-operated tray menu and a conflict/restart matrix remains open.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
@@ -602,11 +609,11 @@ Validation: Window lifecycle and first-frame Vulkan startup are empirically veri
 
 Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
 
-#### W16 [ ] Add tray and hotkey behavior
+#### W16 [~] Add tray and hotkey behavior
 
-Work: Add tray presence, explicit global hotkey registration, notification policy, and a compact action menu only after W14/W15 are stable.
+Work: Add tray presence, explicit global hotkey registration, notification policy, and a compact action menu only after W14/W15 are stable. The Windows implementation now creates a hidden tray window, installs the embedded icon, restores it after Explorer restart, routes tray and `Ctrl+Shift+Space` actions through the GUI reducer, and persists the hotkey-enabled preference.
 
-Validation: Hotkeys respect app state and context, can be disabled, do not capture unexpectedly, and survive restart without losing recording state.
+Validation: Headless hit-testing covers the GUI toggle and compile/clippy gates cover the Win32 boundary. A human-operated tray-menu/hotkey check, conflict behavior, and restart persistence without losing an active recording remain open.
 
 Completion: Tray and hotkeys are convenience projections of the same action model, not a second control path.
 

@@ -243,21 +243,21 @@ mod tests {
         assert_eq!(pad_or_trim(&waveform, N_SAMPLES).len(), N_SAMPLES);
 
         let reference_points = [
-            ((0, 0), 0.8327637910842896_f32),
-            ((0, 1), 0.32075560092926025_f32),
-            ((0, 2), -0.7123103141784668_f32),
-            ((10, 0), 1.1857260465621948_f32),
-            ((10, 1), 1.199681043624878_f32),
-            ((10, 10), 1.1982228755950928_f32),
-            ((40, 100), 0.11720395088195801_f32),
-            ((79, 2999), -0.7123103141784668_f32),
+            ((0, 0), 0.832_764_f32),
+            ((0, 1), 0.320_756_f32),
+            ((0, 2), -0.712_310_3_f32),
+            ((10, 0), 1.185_726_f32),
+            ((10, 1), 1.199_681_f32),
+            ((10, 10), 1.198_222_9_f32),
+            ((40, 100), 0.117_203_95_f32),
+            ((79, 2999), -0.712_310_3_f32),
         ];
 
         for ((mel_bin, frame), expected) in reference_points {
             assert_close(spectrogram.at(mel_bin, frame), expected, 1e-3);
         }
 
-        assert_close(spectrogram.min_value(), -0.7123103141784668_f32, 1e-3);
-        assert_close(spectrogram.max_value(), 1.2876896858215332_f32, 1e-3);
+        assert_close(spectrogram.min_value(), -0.712_310_3_f32, 1e-3);
+        assert_close(spectrogram.max_value(), 1.287_689_7_f32, 1e-3);
     }
 }

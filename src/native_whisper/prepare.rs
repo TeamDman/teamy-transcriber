@@ -268,7 +268,7 @@ mod tests {
             let _partial = PartialModelDirectory::new(&path);
             std::fs::write(path.join("partial"), b"not a complete model")
                 .expect("partial marker should be writable");
-        }
+        };
         assert!(!path.exists());
     }
 
@@ -279,7 +279,7 @@ mod tests {
         {
             let mut partial = PartialModelDirectory::new(&path);
             partial.commit();
-        }
+        };
         assert!(path.is_dir());
         std::fs::remove_dir_all(&path).expect("test model directory should be removable");
     }

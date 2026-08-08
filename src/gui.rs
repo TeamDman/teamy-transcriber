@@ -85,6 +85,10 @@ use winit::keyboard::NamedKey;
 use winit::window::Window;
 use winit::window::WindowId;
 
+#[cfg(windows)]
+#[path = "gui_tray.rs"]
+mod tray;
+
 const INITIAL_WIDTH: u32 = 1_200;
 const INITIAL_HEIGHT: u32 = 760;
 const BACKGROUND: Rgba = Rgba::new(0x00, 0x4d, 0x2a, 0xff);
@@ -124,6 +128,8 @@ struct GuiApplication {
     stop_recording: Option<Arc<AtomicBool>>,
     operation_cancel: Option<Arc<AtomicBool>>,
     close_requested: bool,
+    #[cfg(windows)]
+    tray: Option<tray::TrayController>,
 }
 
 impl GuiApplication {
@@ -179,6 +185,7 @@ impl GuiApplication {
             preferences.chunk_duration_ms,
             preferences.audio_profile.unwrap_or_default(),
         );
+        state.global_hotkey_enabled = preferences.global_hotkey_enabled.unwrap_or(true);
         state.set_recording(current_recording.as_ref(), &store);
         let mut application = Self {
             window: None,
@@ -193,7 +200,22 @@ impl GuiApplication {
             stop_recording: None,
             operation_cancel: None,
             close_requested: false,
+            #[cfg(windows)]
+            tray: None,
         };
+        #[cfg(windows)]
+        {
+            let hotkey_enabled = application
+                .preferences
+                .global_hotkey_enabled
+                .unwrap_or(true);
+            match tray::TrayController::start(application.message_tx.clone(), hotkey_enabled) {
+                Ok(tray) => application.tray = Some(tray),
+                Err(error) => {
+                    application.state.status_line = format!("WARNING: tray unavailable: {error}");
+                }
+            }
+        }
         application.inspect_model();
         application.refresh_devices();
         Ok(application)
@@ -313,7 +335,24 @@ impl GuiApplication {
                 self.state.transcript_draft = self.state.transcript.clone();
                 self.state.status_line = "Transcript edit cancelled".to_string();
             }
+            GuiAction::ToggleHotkey => self.toggle_hotkey(),
         }
+    }
+
+    fn toggle_hotkey(&mut self) {
+        let enabled = !self.preferences.global_hotkey_enabled.unwrap_or(true);
+        self.preferences.global_hotkey_enabled = Some(enabled);
+        self.state.global_hotkey_enabled = enabled;
+        #[cfg(windows)]
+        if let Some(tray) = &self.tray {
+            tray.set_hotkey_enabled(enabled);
+        }
+        self.persist_preferences();
+        self.state.status_line = if enabled {
+            "Global hotkey enabled: Ctrl+Shift+Space".to_string()
+        } else {
+            "Global hotkey disabled".to_string()
+        };
     }
 
     fn import_file(&mut self) {
@@ -1083,6 +1122,36 @@ impl GuiApplication {
                     format!("{} microphone(s) available", self.state.microphones.len())
                 };
             }
+            GuiMessage::Tray(action) => match action {
+                TrayAction::ShowWindow => {
+                    if let Some(window) = self.window.as_ref() {
+                        window.set_visible(true);
+                        window.request_redraw();
+                    }
+                }
+                TrayAction::ToggleRecording => self.handle_action(GuiAction::ToggleRecording),
+                TrayAction::Exit => {
+                    self.close_requested = true;
+                    if matches!(self.state.operation, GuiOperation::Idle) {
+                        self.state.status_line = "Exiting from tray...".to_string();
+                    } else {
+                        self.cancel_active_operation();
+                    }
+                }
+            },
+            GuiMessage::TrayHotkeyChanged(enabled) => {
+                self.preferences.global_hotkey_enabled = Some(enabled);
+                self.state.global_hotkey_enabled = enabled;
+                self.persist_preferences();
+                self.state.status_line = if enabled {
+                    "Global hotkey enabled: Ctrl+Shift+Space".to_string()
+                } else {
+                    "Global hotkey disabled".to_string()
+                };
+            }
+            GuiMessage::TrayStatus { message } => {
+                self.state.status_line = format!("WARNING: {message}");
+            }
             GuiMessage::ModelPrepared { model_dir } => {
                 self.state.operation = GuiOperation::Idle;
                 self.state.model_dir = model_dir;
@@ -1458,11 +1527,17 @@ struct GuiPreferences {
     recording_id: Option<String>,
     ffmpeg_path: Option<String>,
     ffprobe_path: Option<String>,
+    global_hotkey_enabled: Option<bool>,
 }
 
 #[derive(Debug)]
 enum GuiMessage {
     Devices(Vec<AudioInputDevice>),
+    Tray(TrayAction),
+    TrayHotkeyChanged(bool),
+    TrayStatus {
+        message: String,
+    },
     ModelPrepared {
         model_dir: PathBuf,
     },
@@ -1532,6 +1607,14 @@ enum GuiAction {
     RefreshDevices,
     CancelOperation,
     CancelEdit,
+    ToggleHotkey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrayAction {
+    ShowWindow,
+    ToggleRecording,
+    Exit,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1592,6 +1675,7 @@ struct GuiLayout {
     mic_radius: f32,
     import: Rect,
     model: Rect,
+    hotkey: Rect,
     recording: Rect,
     microphone: Rect,
     save_directory: Rect,
@@ -1623,6 +1707,7 @@ impl GuiLayout {
             mic_radius: (height * 0.115).max(58.0),
             import: Rect::new(width * 0.69, 16.0, width * 0.80, 94.0),
             model: Rect::new(width * 0.81, 16.0, width * 0.96, 94.0),
+            hotkey: Rect::new(width * 0.42, 16.0, width * 0.54, 94.0),
             recording: Rect::new(width * 0.56, 16.0, width * 0.68, 94.0),
             microphone: Rect::new(width * 0.27, height * 0.26, width * 0.63, height * 0.35),
             save_directory: Rect::new(width * 0.27, height * 0.37, width * 0.63, height * 0.46),
@@ -1663,6 +1748,7 @@ struct GuiState {
     transcript_editing: bool,
     transcript_scroll_lines: usize,
     status_line: String,
+    global_hotkey_enabled: bool,
     model_dir: PathBuf,
     model_readiness: NativeWhisperReadiness,
     model_ready: bool,
@@ -1701,6 +1787,7 @@ impl GuiState {
             transcript_editing: false,
             transcript_scroll_lines: 0,
             status_line: "Choose a model, import media, or record from the microphone".to_string(),
+            global_hotkey_enabled: true,
             model_dir,
             model_readiness: missing_readiness(),
             model_ready: false,
@@ -1874,6 +1961,9 @@ impl GuiState {
         }
         if layout.import.contains(cursor) {
             return Some(GuiAction::ImportFile);
+        }
+        if layout.hotkey.contains(cursor) {
+            return Some(GuiAction::ToggleHotkey);
         }
         if layout.model.contains(cursor) {
             return Some(GuiAction::ChooseModel);
@@ -2574,6 +2664,16 @@ impl Canvas {
         );
         self.button(layout.recording, "RECENT", false, enabled);
         self.button(layout.import, "IMPORT", false, enabled);
+        self.button(
+            layout.hotkey,
+            if state.global_hotkey_enabled {
+                "HOTKEY ON"
+            } else {
+                "HOTKEY OFF"
+            },
+            state.global_hotkey_enabled,
+            enabled,
+        );
         self.button(layout.model, "MODEL", state.model_ready, enabled);
 
         self.circle(layout.mic_center, layout.mic_radius, ink);
@@ -3585,6 +3685,17 @@ mod tests {
 
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
+    }
+
+    #[test]
+    fn hotkey_hit_toggles_global_hotkey_action() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(576.0, 55.0),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::ToggleHotkey));
     }
 
     #[test]

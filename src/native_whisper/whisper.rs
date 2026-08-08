@@ -1166,6 +1166,10 @@ fn load_packed_float_tensor<B: Backend, const D: usize>(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "the private decoder helpers are kept below the fixture-heavy tests"
+)]
 mod tests {
     use super::AudioEncoderDims;
     use super::TextDecoderDims;
@@ -1256,13 +1260,13 @@ mod tests {
         let mask = attn_decoder_mask::<WhisperCpuBackend>(4, &device);
         let values = mask.to_data().to_vec::<f32>().expect("mask should be f32");
 
-        assert_eq!(values[0], 0.0);
+        assert_eq!(values[0].to_bits(), 0.0_f32.to_bits());
         assert!(values[1].is_infinite() && values[1].is_sign_negative());
         assert!(values[2].is_infinite() && values[2].is_sign_negative());
         assert!(values[3].is_infinite() && values[3].is_sign_negative());
-        assert_eq!(values[5], 0.0);
-        assert_eq!(values[10], 0.0);
-        assert_eq!(values[15], 0.0);
+        assert_eq!(values[5].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(values[10].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(values[15].to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

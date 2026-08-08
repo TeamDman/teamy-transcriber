@@ -97,6 +97,13 @@ normalized artifact with a JSON parameter receipt. Prepared recordings render a
 bounded peak envelope from the selected WAV; live capture keeps a level view
 until the recording is saved.
 
+On Windows, the GUI also installs a tray icon and enables `Ctrl+Shift+Space`
+by default. The hotkey starts or stops the same microphone action as the main
+window; the `HOTKEY ON/OFF` control and tray menu can disable it, and the
+setting is persisted. A registration conflict is reported in the GUI status
+line instead of preventing the window from starting. Tray exit follows the
+same close/cancellation lifecycle as the window.
+
 The GUI and diagnostic CLI share the workflow orchestration in
 `src/workflow.rs`; both persist the same recording lifecycle and transcript
 provenance events. Restarting the GUI reopens the selected persisted recording

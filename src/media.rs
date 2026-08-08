@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_ffprobe_output() {
-        assert!(parse_probe_output("not,a,probe").is_err());
+        parse_probe_output("not,a,probe").unwrap_err();
     }
 
     #[test]

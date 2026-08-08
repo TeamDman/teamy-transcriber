@@ -27,6 +27,10 @@ use teamy_transcriber::workflow::move_clip;
 use teamy_transcriber::workflow::split_clip_at;
 
 #[test]
+#[expect(
+    clippy::vec_init_then_push,
+    reason = "each event must execute against the state produced by the previous event"
+)]
 fn domain_events_replay_to_the_same_state() {
     let recording_id = RecordingId::new();
     let first_clip = ClipId::new();
@@ -309,8 +313,8 @@ fn local_model_inventory_does_not_download_or_modify() {
 
 #[test]
 fn invalid_time_ranges_are_rejected_before_events_exist() {
-    assert!(TimeRange::new(10, 10).is_err());
-    assert!(TimeRange::new(20, 10).is_err());
+    TimeRange::new(10, 10).unwrap_err();
+    TimeRange::new(20, 10).unwrap_err();
 }
 
 #[test]
@@ -342,6 +346,10 @@ fn active_clip_ranges_must_not_overlap() {
 }
 
 #[test]
+#[expect(
+    clippy::vec_init_then_push,
+    reason = "each event must execute against the state produced by the previous event"
+)]
 fn recording_capture_lifecycle_is_typed_and_replayable() {
     let recording_id = RecordingId::new();
     let source = SourceAsset::new(AssetKind::MicrophoneRecording, PathBuf::from("mic.wav"))
