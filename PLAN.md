@@ -67,6 +67,13 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Added bounded transcript scrolling to the GUI. Mouse-wheel input over the transcript panel and PageUp/PageDown now select visible wrapped lines without changing the committed transcript or edit provenance; headless state coverage verifies the scroll position cannot move above the beginning.
 
+2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
+selected active clip with two midpoint source ranges; `A` replaces the selected
+clip and its next active source-time-adjacent clip with one combined range.
+Both operations retain replaced clips and derived artifacts, start the new
+clip(s) pending, reload the active projection, and require explicit
+re-transcription. Shared workflow tests cover split-then-append replay.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

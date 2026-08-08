@@ -64,6 +64,22 @@ pub struct ClipDeleteReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipSplitReport {
+    pub original_clip_id: ClipId,
+    pub left_clip_id: ClipId,
+    pub right_clip_id: ClipId,
+    pub split_at_us: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipAppendReport {
+    pub first_clip_id: ClipId,
+    pub second_clip_id: ClipId,
+    pub appended_clip_id: ClipId,
+    pub source_range: TimeRange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaToolConfig {
     pub ffmpeg_executable: PathBuf,
     pub ffprobe_executable: PathBuf,
@@ -207,6 +223,165 @@ pub fn delete_clip(
         )
         .wrap_err("failed to persist clip deletion")?;
     Ok(ClipDeleteReport { clip_id })
+}
+
+/// Replace one active clip with two adjacent source-time clips.
+///
+/// The original clip is soft-deleted and its source and derived artifacts are
+/// retained. The new clips intentionally start without a transcript so the
+/// caller can transcribe the revised boundaries explicitly.
+///
+/// # Errors
+///
+/// Returns an error when the recording or clip is missing, the split point is
+/// outside the clip, or one of the replayable events cannot be persisted.
+pub fn split_clip_at(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    clip_id: ClipId,
+    split_at_us: u64,
+) -> Result<ClipSplitReport> {
+    let mut state = store
+        .load_state(recording_id)
+        .wrap_err("failed to load recording event state")?;
+    let original = state
+        .recording(recording_id)
+        .and_then(|recording| {
+            recording
+                .clips
+                .iter()
+                .find(|clip| clip.id == clip_id && clip.status != ClipStatus::Deleted)
+        })
+        .cloned()
+        .ok_or_else(|| eyre::eyre!("active clip {clip_id} was not found"))?;
+    if split_at_us <= original.source_range.start_us || split_at_us >= original.source_range.end_us
+    {
+        bail!(
+            "split point {split_at_us} is outside clip range {}..{}",
+            original.source_range.start_us,
+            original.source_range.end_us
+        );
+    }
+    let left_range = TimeRange::new(original.source_range.start_us, split_at_us)?;
+    let right_range = TimeRange::new(split_at_us, original.source_range.end_us)?;
+    let left_clip_id = ClipId::new();
+    let right_clip_id = ClipId::new();
+    store
+        .apply_command(
+            &mut state,
+            Command::DeleteClip {
+                recording_id,
+                clip_id,
+            },
+        )
+        .wrap_err("failed to persist the original clip deletion for split")?;
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: left_clip_id,
+                source_range: left_range,
+            },
+        )
+        .wrap_err("failed to persist the left split clip")?;
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: right_clip_id,
+                source_range: right_range,
+            },
+        )
+        .wrap_err("failed to persist the right split clip")?;
+    Ok(ClipSplitReport {
+        original_clip_id: clip_id,
+        left_clip_id,
+        right_clip_id,
+        split_at_us,
+    })
+}
+
+/// Replace two source-time-adjacent active clips with one combined clip.
+///
+/// The two inputs may be supplied in either order; the resulting range is
+/// always ordered by source time. The original clips and their derived audio
+/// remain in replayable history, while the combined clip starts pending and
+/// can be transcribed as one unit.
+///
+/// # Errors
+///
+/// Returns an error when either clip is missing/deleted, the clips are not
+/// adjacent in source time, or one of the replayable events cannot be
+/// persisted.
+pub fn append_adjacent_clips(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    first_clip_id: ClipId,
+    second_clip_id: ClipId,
+) -> Result<ClipAppendReport> {
+    if first_clip_id == second_clip_id {
+        bail!("cannot append a clip to itself");
+    }
+    let mut state = store
+        .load_state(recording_id)
+        .wrap_err("failed to load recording event state")?;
+    let recording = state
+        .recording(recording_id)
+        .ok_or_else(|| eyre::eyre!("recording {recording_id} was not found"))?;
+    let first = recording
+        .clips
+        .iter()
+        .find(|clip| clip.id == first_clip_id && clip.status != ClipStatus::Deleted)
+        .cloned()
+        .ok_or_else(|| eyre::eyre!("active clip {first_clip_id} was not found"))?;
+    let second = recording
+        .clips
+        .iter()
+        .find(|clip| clip.id == second_clip_id && clip.status != ClipStatus::Deleted)
+        .cloned()
+        .ok_or_else(|| eyre::eyre!("active clip {second_clip_id} was not found"))?;
+    let (source_first, source_second) = if first.source_range.end_us == second.source_range.start_us
+    {
+        (first, second)
+    } else if second.source_range.end_us == first.source_range.start_us {
+        (second, first)
+    } else {
+        bail!("clips {first_clip_id} and {second_clip_id} are not adjacent in source time");
+    };
+    let source_range = TimeRange::new(
+        source_first.source_range.start_us,
+        source_second.source_range.end_us,
+    )?;
+    let appended_clip_id = ClipId::new();
+    for clip_id in [source_first.id, source_second.id] {
+        store
+            .apply_command(
+                &mut state,
+                Command::DeleteClip {
+                    recording_id,
+                    clip_id,
+                },
+            )
+            .wrap_err("failed to persist an original clip deletion for append")?;
+    }
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: appended_clip_id,
+                source_range,
+            },
+        )
+        .wrap_err("failed to persist the appended clip")?;
+    Ok(ClipAppendReport {
+        first_clip_id: source_first.id,
+        second_clip_id: source_second.id,
+        appended_clip_id,
+        source_range,
+    })
 }
 
 /// Normalize an imported or captured source into the Whisper audio format.

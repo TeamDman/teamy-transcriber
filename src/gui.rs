@@ -23,14 +23,17 @@ use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
 use crate::transcription::NativeWhisperReadiness;
 use crate::transcription::RuntimeAssetStatus;
+use crate::workflow::ClipAppendReport;
 use crate::workflow::ClipDeleteReport;
 use crate::workflow::ClipMoveReport;
+use crate::workflow::ClipSplitReport;
 use crate::workflow::ExportReport;
 use crate::workflow::MediaToolConfig;
 use crate::workflow::MicrophoneReport;
 use crate::workflow::PrepareReport;
 use crate::workflow::TranscriptionOptions;
 use crate::workflow::TranscriptionReport;
+use crate::workflow::append_adjacent_clips;
 use crate::workflow::audio_path_for_profile;
 use crate::workflow::commit_transcript_edit;
 use crate::workflow::create_recording;
@@ -39,6 +42,7 @@ use crate::workflow::export_recording;
 use crate::workflow::move_clip;
 use crate::workflow::prepare_recording_with_tools_and_profile;
 use crate::workflow::record_microphone;
+use crate::workflow::split_clip_at;
 use crate::workflow::transcribe_recording_with_profile_and_cancellation_and_progress;
 use ash::Entry;
 use ash::vk;
@@ -261,8 +265,18 @@ impl GuiApplication {
     }
 
     fn reload_recording(&mut self, recording_id: RecordingId) -> Result<()> {
+        self.reload_recording_with_clip(recording_id, None)
+    }
+
+    fn reload_recording_with_clip(
+        &mut self,
+        recording_id: RecordingId,
+        preferred_clip: Option<ClipId>,
+    ) -> Result<()> {
         let recording = self.store.load_recording(recording_id)?;
-        self.state.set_recording(Some(&recording), &self.store);
+        let preferred_clip = preferred_clip.or(self.state.selected_clip_id);
+        self.state
+            .set_recording_with_clip(Some(&recording), &self.store, preferred_clip);
         self.persist_preferences();
         Ok(())
     }
@@ -280,6 +294,8 @@ impl GuiApplication {
             GuiAction::MoveClipLeft => self.move_selected_clip(-1),
             GuiAction::MoveClipRight => self.move_selected_clip(1),
             GuiAction::DeleteClip => self.delete_selected_clip(),
+            GuiAction::SplitClip => self.split_selected_clip(),
+            GuiAction::AppendClip => self.append_selected_clip(),
             GuiAction::CycleChunkDuration => self.cycle_chunk_duration(),
             GuiAction::CycleAudioProfile => self.cycle_audio_profile(),
             GuiAction::ToggleRecording => self.toggle_recording(),
@@ -591,6 +607,127 @@ impl GuiApplication {
         });
     }
 
+    fn split_selected_clip(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let Some(clip_id) = self.state.selected_clip_id else {
+            self.state.status_line = "Select a clip before splitting it".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let Some(split_at_us) =
+            self.store
+                .load_recording(recording_id)
+                .ok()
+                .and_then(|recording| {
+                    recording
+                        .clips
+                        .iter()
+                        .find(|clip| {
+                            clip.id == clip_id && clip.status != crate::domain::ClipStatus::Deleted
+                        })
+                        .map(|clip| {
+                            clip.source_range.start_us
+                                + (clip.source_range.end_us - clip.source_range.start_us) / 2
+                        })
+                })
+        else {
+            self.state.status_line = "Selected clip is no longer active".to_string();
+            return;
+        };
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::SplittingClip;
+        self.state.status_line = format!(
+            "Splitting {} at {:.2}s; new clips need transcription...",
+            self.state.clip_label(),
+            split_at_us as f64 / 1_000_000.0
+        );
+        std::thread::spawn(move || {
+            let message = split_clip_at(&store, recording_id, clip_id, split_at_us).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "clip split".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Split {
+                    recording_id,
+                    report,
+                },
+            );
+            let _ = sender.send(message);
+        });
+    }
+
+    fn append_selected_clip(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let Some(first_clip_id) = self.state.selected_clip_id else {
+            self.state.status_line = "Select a clip before appending it".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let Some(index) = self
+            .state
+            .clip_ids
+            .iter()
+            .position(|clip_id| *clip_id == first_clip_id)
+        else {
+            self.state.status_line = "Selected clip is no longer active".to_string();
+            return;
+        };
+        let Some(second_clip_id) = self.state.clip_ids.get(index + 1).copied() else {
+            self.state.status_line =
+                "APPEND combines the selected clip with the next clip".to_string();
+            return;
+        };
+        let confirmed = MessageDialog::new()
+            .set_level(MessageLevel::Info)
+            .set_title("Append selected clips?")
+            .set_description(
+                "The two active clips will be replaced by one adjacent source-time clip. Their source and derived audio remain recoverable.",
+            )
+            .set_buttons(MessageButtons::OkCancel)
+            .show()
+            == MessageDialogResult::Ok;
+        if !confirmed {
+            return;
+        }
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::AppendingClips;
+        self.state.status_line = format!(
+            "Appending {} with the next clip; new clip needs transcription...",
+            self.state.clip_label()
+        );
+        std::thread::spawn(move || {
+            let message =
+                append_adjacent_clips(&store, recording_id, first_clip_id, second_clip_id)
+                    .map_or_else(
+                        |error| GuiMessage::Failure {
+                            recording_id: Some(recording_id),
+                            operation: "clip append".to_string(),
+                            message: error.to_string(),
+                        },
+                        |report| GuiMessage::Appended {
+                            recording_id,
+                            report,
+                        },
+                    );
+            let _ = sender.send(message);
+        });
+    }
+
     fn toggle_recording(&mut self) {
         if matches!(self.state.operation, GuiOperation::Recording) {
             self.request_recording_stop();
@@ -874,6 +1011,41 @@ impl GuiApplication {
                     );
                 }
             }
+            GuiMessage::Split {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                self.state.transcript_editing = false;
+                if let Err(error) =
+                    self.reload_recording_with_clip(recording_id, Some(report.left_clip_id))
+                {
+                    self.state.status_line = format!("ERROR: split but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Split clip {} at {:.2}s; select TRANSCRIBE to process the new clips",
+                        report.original_clip_id,
+                        report.split_at_us as f64 / 1_000_000.0
+                    );
+                }
+            }
+            GuiMessage::Appended {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                self.state.transcript_editing = false;
+                if let Err(error) =
+                    self.reload_recording_with_clip(recording_id, Some(report.appended_clip_id))
+                {
+                    self.state.status_line = format!("ERROR: appended but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Appended clips {} and {}; select TRANSCRIBE to process the combined clip",
+                        report.first_clip_id, report.second_clip_id
+                    );
+                }
+            }
             GuiMessage::Deleted {
                 recording_id,
                 report,
@@ -1001,6 +1173,14 @@ impl GuiApplication {
             self.state.scroll_transcript(6);
         } else if matches!(&event.logical_key, Key::Named(NamedKey::Space)) {
             self.toggle_recording();
+        } else if !modifiers.control_key()
+            && matches!(&event.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("s"))
+        {
+            self.handle_action(GuiAction::SplitClip);
+        } else if !modifiers.control_key()
+            && matches!(&event.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("a"))
+        {
+            self.handle_action(GuiAction::AppendClip);
         } else if modifiers.control_key()
             && matches!(&event.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("e"))
         {
@@ -1165,6 +1345,14 @@ enum GuiMessage {
         recording_id: RecordingId,
         report: ClipMoveReport,
     },
+    Split {
+        recording_id: RecordingId,
+        report: ClipSplitReport,
+    },
+    Appended {
+        recording_id: RecordingId,
+        report: ClipAppendReport,
+    },
     Deleted {
         recording_id: RecordingId,
         report: ClipDeleteReport,
@@ -1203,6 +1391,8 @@ enum GuiAction {
     MoveClipLeft,
     MoveClipRight,
     DeleteClip,
+    SplitClip,
+    AppendClip,
     CycleChunkDuration,
     CycleAudioProfile,
     ToggleRecording,
@@ -1222,6 +1412,8 @@ enum GuiOperation {
     Preparing,
     MovingClip,
     DeletingClip,
+    SplittingClip,
+    AppendingClips,
     Recording,
     Stopping,
     Transcribing,
@@ -1752,6 +1944,8 @@ fn operation_label(operation: GuiOperation) -> &'static str {
         GuiOperation::Preparing => "PREPARING AUDIO",
         GuiOperation::MovingClip => "MOVING CLIP",
         GuiOperation::DeletingClip => "DELETING CLIP",
+        GuiOperation::SplittingClip => "SPLITTING CLIP",
+        GuiOperation::AppendingClips => "APPENDING CLIPS",
         GuiOperation::Recording => "RECORDING",
         GuiOperation::Stopping => "SAVING RECORDING",
         GuiOperation::Transcribing => "TRANSCRIBING LOCALLY",
@@ -2403,11 +2597,12 @@ impl Canvas {
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
             &format!(
-                "{}\nMODEL PATH {}\n{}\n{}\nSOURCE {}",
+                "{}\nMODEL PATH {}\n{}\n{}\n{}\nSOURCE {}",
                 state.model_status,
                 display_path(&state.model_dir),
                 operation_label(state.operation),
                 state.clip_label(),
+                "KEYS S:SPLIT A:APPEND",
                 &state.recording_source,
             ),
             (width * 0.26) as i32,

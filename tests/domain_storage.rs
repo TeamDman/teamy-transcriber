@@ -18,11 +18,13 @@ use teamy_transcriber::transcription::FakeTranscriptionBackend;
 use teamy_transcriber::transcription::LocalModelInventory;
 use teamy_transcriber::transcription::TranscriptionBackend;
 use teamy_transcriber::transcription::TranscriptionRequest;
+use teamy_transcriber::workflow::append_adjacent_clips;
 use teamy_transcriber::workflow::commit_transcript_edit;
 use teamy_transcriber::workflow::create_recording;
 use teamy_transcriber::workflow::delete_clip;
 use teamy_transcriber::workflow::export_recording;
 use teamy_transcriber::workflow::move_clip;
+use teamy_transcriber::workflow::split_clip_at;
 
 #[test]
 fn domain_events_replay_to_the_same_state() {
@@ -557,6 +559,74 @@ fn shared_workflow_persists_replayable_soft_clip_deletion() {
         .find(|clip| clip.id == clip_id)
         .expect("deleted clip should remain in replayed history");
     assert_eq!(deleted.status, ClipStatus::Deleted);
+
+    std::fs::remove_dir_all(root).expect("test directory should be removable");
+}
+
+#[test]
+fn shared_workflow_splits_and_appends_clips_with_replayable_history() {
+    let root = unique_temp_dir("teamy-transcriber-split-append");
+    let store = RecordingStore::new(root.clone());
+    let recording_id = create_recording(&store, AssetKind::AudioFile, "fixture.wav")
+        .expect("recording should be created");
+    let original = ClipId::new();
+    let mut state = store
+        .load_state(recording_id)
+        .expect("recording state should load");
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: original,
+                source_range: TimeRange::new(0, 2_000_000).expect("range should be valid"),
+            },
+        )
+        .expect("original clip should persist");
+
+    let split =
+        split_clip_at(&store, recording_id, original, 1_000_000).expect("clip should split");
+    assert_eq!(split.split_at_us, 1_000_000);
+    let split_recording = store
+        .load_recording(recording_id)
+        .expect("split recording should reload");
+    assert_eq!(
+        split_recording
+            .clips
+            .iter()
+            .find(|clip| clip.id == original)
+            .expect("original should remain in history")
+            .status,
+        ClipStatus::Deleted
+    );
+
+    let append = append_adjacent_clips(
+        &store,
+        recording_id,
+        split.left_clip_id,
+        split.right_clip_id,
+    )
+    .expect("adjacent clips should append");
+    assert_eq!(
+        append.source_range,
+        TimeRange::new(0, 2_000_000).expect("combined range should be valid")
+    );
+    let loaded = store
+        .load_recording(recording_id)
+        .expect("appended recording should reload");
+    let appended = loaded
+        .clips
+        .iter()
+        .find(|clip| clip.id == append.appended_clip_id)
+        .expect("appended clip should be active");
+    assert_eq!(appended.status, ClipStatus::Pending);
+    assert!(
+        loaded
+            .clips
+            .iter()
+            .filter(|clip| clip.id == split.left_clip_id || clip.id == split.right_clip_id)
+            .all(|clip| clip.status == ClipStatus::Deleted)
+    );
 
     std::fs::remove_dir_all(root).expect("test directory should be removable");
 }

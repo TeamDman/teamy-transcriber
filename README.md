@@ -82,6 +82,10 @@ persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
 `DELETE` removes the selected clip from the active manifest after confirmation
 while retaining its source and derived audio for recovery.
+Press `S` to replace the selected clip with two midpoint-split source ranges,
+or `A` to append it with the next active source-time-adjacent clip; both
+operations retain the replaced clips and require the resulting clip(s) to be
+transcribed again.
 `AUDIO` cycles the original normalized signal, gain, a conservative noise gate,
 and a simple voice-EQ profile. Derived WAVs are written beside the original
 normalized artifact with a JSON parameter receipt. Prepared recordings render a
