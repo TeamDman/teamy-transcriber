@@ -70,7 +70,8 @@ audio/video file (which automatically prepares normalized audio), record from a
 selected microphone, transcribe locally, review/edit the committed transcript,
 and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
-success/failure back into the visible status line. Press Space to start/stop
+bounded preparation/transcription progress and success/failure back into the
+visible status line. Press Space to start/stop
 microphone capture, Escape to stop capture, cancel transcription, or cancel
 transcript editing, and
 Ctrl+E to open transcript export. The GUI also exposes full-recording or

@@ -76,6 +76,14 @@ impl MediaToolConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptionOptions {
+    pub model_dir: PathBuf,
+    pub max_decode_tokens: usize,
+    pub chunk_duration_us: Option<u64>,
+    pub profile: AudioProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscribedChunk {
     pub clip_id: ClipId,
     pub transcript_id: TranscriptId,
@@ -445,10 +453,13 @@ pub fn transcribe_recording(
     transcribe_recording_inner(
         store,
         recording_id,
-        model_dir,
-        max_decode_tokens,
-        chunk_duration_us,
-        AudioProfile::Original,
+        TranscriptionOptions {
+            model_dir,
+            max_decode_tokens,
+            chunk_duration_us,
+            profile: AudioProfile::Original,
+        },
+        None,
         None,
     )
 }
@@ -474,11 +485,14 @@ pub fn transcribe_recording_with_cancellation(
     transcribe_recording_inner(
         store,
         recording_id,
-        model_dir,
-        max_decode_tokens,
-        chunk_duration_us,
-        AudioProfile::Original,
+        TranscriptionOptions {
+            model_dir,
+            max_decode_tokens,
+            chunk_duration_us,
+            profile: AudioProfile::Original,
+        },
         Some(stop_requested.as_ref()),
+        None,
     )
 }
 
@@ -498,36 +512,65 @@ pub fn transcribe_recording_with_profile_and_cancellation(
     profile: AudioProfile,
     stop_requested: &Arc<AtomicBool>,
 ) -> Result<TranscriptionReport> {
+    let mut no_progress = |_: usize, _: usize| {};
+    transcribe_recording_with_profile_and_cancellation_and_progress(
+        store,
+        recording_id,
+        TranscriptionOptions {
+            model_dir,
+            max_decode_tokens,
+            chunk_duration_us,
+            profile,
+        },
+        stop_requested,
+        &mut no_progress,
+    )
+}
+
+/// Transcribe a prepared derived audio profile with cooperative cancellation
+/// and bounded per-clip progress callbacks.
+///
+/// The callback receives `(completed_clips, total_clips)` after each committed
+/// clip and once before work begins with `(0, total_clips)`. It runs on the
+/// calling thread, so callers should keep it non-blocking.
+///
+/// # Errors
+///
+/// Returns an error when the recording is not prepared, the selected profile
+/// artifact or model is unavailable, or persistence/inference fails.
+pub fn transcribe_recording_with_profile_and_cancellation_and_progress(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    options: TranscriptionOptions,
+    stop_requested: &Arc<AtomicBool>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<TranscriptionReport> {
     transcribe_recording_inner(
         store,
         recording_id,
-        model_dir,
-        max_decode_tokens,
-        chunk_duration_us,
-        profile,
+        options,
         Some(stop_requested.as_ref()),
+        Some(progress),
     )
 }
 
 fn transcribe_recording_inner(
     store: &RecordingStore,
     recording_id: RecordingId,
-    model_dir: PathBuf,
-    max_decode_tokens: usize,
-    chunk_duration_us: Option<u64>,
-    profile: AudioProfile,
+    options: TranscriptionOptions,
     stop_requested: Option<&AtomicBool>,
+    mut progress: Option<&mut dyn FnMut(usize, usize)>,
 ) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
         .wrap_err("failed to load recording event state")?;
-    let normalized_path = audio_path_for_profile(store, recording_id, profile);
+    let normalized_path = audio_path_for_profile(store, recording_id, options.profile);
     let metadata = WavMediaAdapter
         .inspect(&normalized_path)
         .wrap_err("recording is not prepared; prepare it from the GUI first")?;
     let full_range = TimeRange::new(0, metadata.duration_us)
         .wrap_err("prepared recording has no transcribable duration")?;
-    let clips = if let Some(chunk_duration_us) = chunk_duration_us {
+    let clips = if let Some(chunk_duration_us) = options.chunk_duration_us {
         let ranges = plan_time_chunks(metadata.duration_us, chunk_duration_us)?;
         ensure_recording_chunks(store, &mut state, recording_id, &ranges)?
     } else {
@@ -539,13 +582,17 @@ fn transcribe_recording_inner(
         )?]
     };
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
-        model_dir,
-        max_decode_tokens,
+        model_dir: options.model_dir,
+        max_decode_tokens: options.max_decode_tokens,
     });
     let backend_id = backend.capabilities().backend_id;
+    let total_clips = clips.len();
+    if let Some(progress) = progress.as_deref_mut() {
+        progress(0, total_clips);
+    }
     let mut chunks = Vec::with_capacity(clips.len());
     let mut cancelled = false;
-    for clip in clips {
+    for (clip_index, clip) in clips.into_iter().enumerate() {
         if stop_requested
             .as_ref()
             .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
@@ -562,6 +609,9 @@ fn transcribe_recording_inner(
             &normalized_path,
             &backend,
         )?);
+        if let Some(progress) = progress.as_deref_mut() {
+            progress(clip_index + 1, total_clips);
+        }
         if stop_requested
             .as_ref()
             .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))

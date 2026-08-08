@@ -28,6 +28,7 @@ use crate::workflow::ExportReport;
 use crate::workflow::MediaToolConfig;
 use crate::workflow::MicrophoneReport;
 use crate::workflow::PrepareReport;
+use crate::workflow::TranscriptionOptions;
 use crate::workflow::TranscriptionReport;
 use crate::workflow::audio_path_for_profile;
 use crate::workflow::commit_transcript_edit;
@@ -36,7 +37,7 @@ use crate::workflow::export_recording;
 use crate::workflow::move_clip;
 use crate::workflow::prepare_recording_with_tools_and_profile;
 use crate::workflow::record_microphone;
-use crate::workflow::transcribe_recording_with_profile_and_cancellation;
+use crate::workflow::transcribe_recording_with_profile_and_cancellation_and_progress;
 use ash::Entry;
 use ash::vk;
 use eyre::Context;
@@ -643,16 +644,28 @@ impl GuiApplication {
         let worker_stop = Arc::clone(&stop_requested);
         self.operation_cancel = Some(stop_requested);
         self.state.operation = GuiOperation::Transcribing;
-        self.state.status_line = "Transcribing locally with native Whisper...".to_string();
+        self.state.status_line =
+            "Transcribing locally with native Whisper: starting...".to_string();
         std::thread::spawn(move || {
-            let message = transcribe_recording_with_profile_and_cancellation(
+            let progress_sender = sender.clone();
+            let mut progress = move |completed, total| {
+                let _ = progress_sender.send(GuiMessage::TranscriptionProgress {
+                    recording_id,
+                    completed,
+                    total,
+                });
+            };
+            let message = transcribe_recording_with_profile_and_cancellation_and_progress(
                 &store,
                 recording_id,
-                model_dir,
-                crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
-                chunk_duration_us,
-                audio_profile,
+                TranscriptionOptions {
+                    model_dir,
+                    max_decode_tokens: crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
+                    chunk_duration_us,
+                    profile: audio_profile,
+                },
                 &worker_stop,
+                &mut progress,
             )
             .map_or_else(
                 |error| GuiMessage::Failure {
@@ -827,6 +840,19 @@ impl GuiApplication {
                         "Transcription complete: {} chunk(s), {}",
                         report.chunks.len(),
                         report.backend_id
+                    );
+                }
+            }
+            GuiMessage::TranscriptionProgress {
+                recording_id,
+                completed,
+                total,
+            } => {
+                if self.state.recording_id == Some(recording_id)
+                    && matches!(self.state.operation, GuiOperation::Transcribing)
+                {
+                    self.state.status_line = format!(
+                        "Transcribing locally with native Whisper: {completed}/{total} clip(s)"
                     );
                 }
             }
@@ -1035,6 +1061,11 @@ enum GuiMessage {
     Transcribed {
         recording_id: RecordingId,
         report: TranscriptionReport,
+    },
+    TranscriptionProgress {
+        recording_id: RecordingId,
+        completed: usize,
+        total: usize,
     },
     Exported(ExportReport),
     Edited {
