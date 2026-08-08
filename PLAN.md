@@ -1,6 +1,6 @@
 # teamy-transcriber implementation plan
 
-Status: active implementation slice; the GUI now owns the first end-to-end local workflow, while real model-backed inference and human-operated GUI evidence still await a supplied native model fixture and explicit runs.
+Status: active implementation slice; the GUI now owns the first end-to-end local workflow, while real model-backed inference and human-operated file-picker/capture evidence still await a supplied native model fixture and explicit runs.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
@@ -53,6 +53,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Replaced the prepared-media synthetic waveform with a bounded streaming peak envelope from the selected derived WAV. Live microphone capture retains the animated level view until its artifact is available; media tests cover deterministic peak extraction without loading the whole file.
 
+2026-08-08: Re-ran the Ash/Vulkan GUI startup smoke after the workflow controls were added. Under a temporary writable app home, the executable remained responsive for three seconds and exposed a nonzero native window handle; this verifies startup/event-loop/window creation, not a human-operated file-picker or model-backed inference session.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,
@@ -74,6 +76,14 @@ dialog. Settings and the most recent recording are restored on restart. The CLI
 transcription/export/bounded-capture commands now call the same workflow module;
 shared workflow/domain/export tests pass. A real GUI capture and model-backed
 inference run remain explicit empirical evidence gaps.
+
+2026-08-08: Exercised bounded capture against both enumerated active microphone
+endpoints. Each advertises a 48 kHz, two-channel float mix format and passes the
+shared-engine format probe, but WASAPI initialization returns `0x80070057` in
+this managed audio session. A temporary CPAL probe reproduced the same failure
+on both devices, so this is recorded as an unverified device/session limitation
+rather than a successful capture claim; native errors now include activation,
+format, initialization, and stream-start context.
 
 2026-08-08: The repository's `check-all.ps1` quality gate passes after the
 cancellable WASAPI helper was moved under the correct unsafe-lint boundary. The
@@ -491,7 +501,7 @@ Completion: A headless presentation test can drive the first slice without depen
 
 Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions. The Ash/Vulkan/Winit shell now owns the GUI-only first workflow: local model selection/readiness, media import/prepare, microphone capture, native transcription, transcript edit, and export, with asynchronous status/error reporting and persisted preferences.
 
-Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bitmap glyph, microphone hit-test, clip navigation, and chunk-label paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, and export. A human-operated file-picker/model/capture/transcription run, true waveform data, accessibility/narration, operation cancellation beyond capture, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
+Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bounded waveform, bitmap glyph, microphone hit-test, clip navigation/reordering, chunk/profile controls, and cancellation paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, profile artifacts, reordering, and export. A human-operated file-picker/model/capture/transcription run, accessibility/narration, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
 
 Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
 
@@ -523,9 +533,9 @@ Completion: Text artifacts are below the documented tolerance or the affected pa
 
 ### Phase 7: convenience processing and local LLM
 
-#### W19 [ ] Add reversible audio preparation profiles
+#### W19 [~] Add reversible audio preparation profiles
 
-Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append as derived operations. Preserve original source and parameter receipts.
+Work: Implement gain, noise reduction, equalization, resampling, and clip move/split/append as derived operations. Preserve original source and parameter receipts. The current slice implements GUI-selectable gain, a conservative noise gate, voice EQ, and replayable clip movement; split/append and richer profile quality validation remain open.
 
 Validation: Golden audio metadata and transcript comparisons cover each profile; processing failure leaves the prior artifact usable.
 
