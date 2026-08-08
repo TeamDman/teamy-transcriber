@@ -13,6 +13,7 @@ use crate::domain::ClipId;
 use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
+use crate::native_whisper::model::inspect_model_dir;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
 use crate::storage::RecordingStore;
@@ -119,9 +120,24 @@ impl GuiApplication {
             .as_deref()
             .map_or_else(|| default_save_dir(&app_home), PathBuf::from);
         let recordings = store.list_recordings()?;
-        let current_recording = recordings.last().cloned();
+        let preferred_recording = preferences
+            .recording_id
+            .as_deref()
+            .and_then(|value| RecordingId::parse(value).ok())
+            .and_then(|recording_id| {
+                recordings
+                    .iter()
+                    .find(|recording| recording.id == recording_id)
+                    .cloned()
+            });
+        let current_recording = preferred_recording.or_else(|| recordings.last().cloned());
         let (message_tx, message_rx) = channel();
-        let mut state = GuiState::new(model_dir, save_dir, preferences.microphone_id.clone());
+        let mut state = GuiState::new(
+            model_dir,
+            save_dir,
+            preferences.microphone_id.clone(),
+            preferences.chunk_duration_ms,
+        );
         state.set_recording(current_recording.as_ref(), &store);
         let mut application = Self {
             window: None,
@@ -146,8 +162,26 @@ impl GuiApplication {
         });
         let readiness = backend.readiness();
         self.state.model_readiness = readiness.clone();
-        self.state.model_ready = model_is_ready(&readiness);
         self.state.model_status = model_status_text(&readiness);
+        self.state.model_ready = model_is_ready(&readiness);
+        if self.state.model_ready {
+            match inspect_model_dir(&self.state.model_dir) {
+                Ok(artifacts) => {
+                    self.state.model_status = format!(
+                        "MODEL READY {} W:{} D:{} T:{}",
+                        artifacts.layout.as_str(),
+                        readiness.weights,
+                        readiness.dims,
+                        readiness.tokenizer
+                    );
+                }
+                Err(error) => {
+                    self.state.model_ready = false;
+                    self.state.model_status = "MODEL INVALID".to_string();
+                    self.state.status_line = format!("ERROR: model validation failed: {error}");
+                }
+            }
+        }
     }
 
     fn refresh_devices(&self) {
@@ -169,6 +203,8 @@ impl GuiApplication {
         self.preferences.model_dir = Some(self.state.model_dir.to_string_lossy().into_owned());
         self.preferences.save_dir = Some(self.state.save_dir.to_string_lossy().into_owned());
         self.preferences.microphone_id = self.state.selected_microphone.clone();
+        self.preferences.chunk_duration_ms = self.state.chunk_duration_ms;
+        self.preferences.recording_id = self.state.recording_id.map(|id| id.to_string());
         if let Err(error) = save_preferences(&self.app_home, &self.preferences) {
             self.state.status_line = format!("ERROR: preferences not saved: {error}");
         }
@@ -177,6 +213,7 @@ impl GuiApplication {
     fn reload_recording(&mut self, recording_id: RecordingId) -> Result<()> {
         let recording = self.store.load_recording(recording_id)?;
         self.state.set_recording(Some(&recording), &self.store);
+        self.persist_preferences();
         Ok(())
     }
 
@@ -186,6 +223,10 @@ impl GuiApplication {
             GuiAction::ChooseModel => self.choose_model(),
             GuiAction::ChooseSaveDirectory => self.choose_save_directory(),
             GuiAction::CycleMicrophone => self.cycle_microphone(),
+            GuiAction::CycleRecording => self.cycle_recording(),
+            GuiAction::PreviousClip => self.cycle_clip(-1),
+            GuiAction::NextClip => self.cycle_clip(1),
+            GuiAction::CycleChunkDuration => self.cycle_chunk_duration(),
             GuiAction::ToggleRecording => self.toggle_recording(),
             GuiAction::Prepare => self.start_prepare(),
             GuiAction::Transcribe => self.start_transcription(),
@@ -205,7 +246,8 @@ impl GuiApplication {
             .add_filter(
                 "Audio and video",
                 &[
-                    "wav", "mp3", "m4a", "flac", "ogg", "mp4", "mov", "mkv", "webm",
+                    "wav", "mp3", "m4a", "flac", "ogg", "aac", "opus", "aiff", "mp4", "mov", "mkv",
+                    "webm", "avi",
                 ],
             )
             .pick_file()
@@ -239,6 +281,10 @@ impl GuiApplication {
         self.persist_preferences();
         if self.state.model_ready {
             self.state.status_line = "Model ready for local transcription".to_string();
+        } else if self.state.model_status == "MODEL INVALID" {
+            self.state.status_line =
+                "Model files were found but failed validation; choose another model folder"
+                    .to_string();
         } else {
             self.state.status_line =
                 "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
@@ -285,13 +331,76 @@ impl GuiApplication {
         self.state.status_line = format!("Microphone: {}", self.state.microphone_label());
     }
 
+    fn cycle_recording(&mut self) {
+        let Ok(recordings) = self.store.list_recordings() else {
+            self.state.status_line = "ERROR: saved recordings could not be listed".to_string();
+            return;
+        };
+        if recordings.is_empty() {
+            self.state.status_line = "No saved recordings yet".to_string();
+            return;
+        }
+        let current_index = self
+            .state
+            .recording_id
+            .and_then(|recording_id| {
+                recordings
+                    .iter()
+                    .position(|recording| recording.id == recording_id)
+            })
+            .unwrap_or(usize::MAX);
+        let next_index = if current_index == usize::MAX {
+            0
+        } else {
+            (current_index + 1) % recordings.len()
+        };
+        self.state.transcript_editing = false;
+        let recording = &recordings[next_index];
+        self.state.set_recording(Some(recording), &self.store);
+        self.persist_preferences();
+        self.state.status_line = format!(
+            "Selected recording {}",
+            display_path(Path::new(&recording.source.path))
+        );
+    }
+
+    fn cycle_chunk_duration(&mut self) {
+        const PRESETS_MS: [Option<u64>; 4] = [None, Some(10_000), Some(30_000), Some(60_000)];
+        let current_index = PRESETS_MS
+            .iter()
+            .position(|preset| *preset == self.state.chunk_duration_ms)
+            .unwrap_or(0);
+        self.state.chunk_duration_ms = PRESETS_MS[(current_index + 1) % PRESETS_MS.len()];
+        self.persist_preferences();
+        self.state.status_line = format!(
+            "Transcription chunks: {}; apply on the next transcription",
+            self.state.chunk_duration_label()
+        );
+    }
+
+    fn cycle_clip(&mut self, direction: isize) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let Ok(recording) = self.store.load_recording(recording_id) else {
+            self.state.status_line = "ERROR: current recording could not be reloaded".to_string();
+            return;
+        };
+        let Some(clip_id) = self.state.cycled_clip_id(direction) else {
+            self.state.status_line =
+                "No persisted clips yet; transcribe the recording first".to_string();
+            return;
+        };
+        self.state.transcript_editing = false;
+        self.state
+            .set_recording_clip(&recording, &self.store, clip_id);
+        self.state.status_line = format!("Selected {}", self.state.clip_label());
+    }
+
     fn toggle_recording(&mut self) {
         if matches!(self.state.operation, GuiOperation::Recording) {
-            if let Some(stop_requested) = &self.stop_recording {
-                stop_requested.store(true, Ordering::Relaxed);
-                self.state.operation = GuiOperation::Stopping;
-                self.state.status_line = "Stopping microphone and saving recording...".to_string();
-            }
+            self.request_recording_stop();
             return;
         }
         if !matches!(self.state.operation, GuiOperation::Idle) {
@@ -311,7 +420,7 @@ impl GuiApplication {
             let message = record_microphone(&store, endpoint_id.as_deref(), worker_stop)
                 .map_or_else(
                     |error| GuiMessage::Failure {
-                        recording_id: None,
+                        recording_id: Some(error.recording_id),
                         operation: "microphone recording".to_string(),
                         message: error.to_string(),
                     },
@@ -319,6 +428,14 @@ impl GuiApplication {
                 );
             let _ = sender.send(message);
         });
+    }
+
+    fn request_recording_stop(&mut self) {
+        if let Some(stop_requested) = &self.stop_recording {
+            stop_requested.store(true, Ordering::Relaxed);
+            self.state.operation = GuiOperation::Stopping;
+            self.state.status_line = "Stopping microphone and saving recording...".to_string();
+        }
     }
 
     fn start_prepare(&mut self) {
@@ -370,6 +487,10 @@ impl GuiApplication {
         let sender = self.message_tx.clone();
         let store = self.store.clone();
         let model_dir = self.state.model_dir.clone();
+        let chunk_duration_us = self
+            .state
+            .chunk_duration_ms
+            .map(|duration_ms| duration_ms.saturating_mul(1_000));
         self.state.operation = GuiOperation::Transcribing;
         self.state.status_line = "Transcribing locally with native Whisper...".to_string();
         std::thread::spawn(move || {
@@ -378,7 +499,7 @@ impl GuiApplication {
                 recording_id,
                 model_dir,
                 crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
-                None,
+                chunk_duration_us,
             )
             .map_or_else(
                 |error| GuiMessage::Failure {
@@ -640,7 +761,10 @@ impl ApplicationHandler for GuiApplication {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.request_recording_stop();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if size.width == 0 || size.height == 0 {
                     return;
@@ -716,6 +840,8 @@ struct GuiPreferences {
     model_dir: Option<String>,
     save_dir: Option<String>,
     microphone_id: Option<String>,
+    chunk_duration_ms: Option<u64>,
+    recording_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -747,6 +873,10 @@ enum GuiAction {
     ChooseModel,
     ChooseSaveDirectory,
     CycleMicrophone,
+    CycleRecording,
+    PreviousClip,
+    NextClip,
+    CycleChunkDuration,
     ToggleRecording,
     Prepare,
     Transcribe,
@@ -809,6 +939,7 @@ struct GuiLayout {
     mic_radius: f32,
     import: Rect,
     model: Rect,
+    recording: Rect,
     microphone: Rect,
     save_directory: Rect,
     prepare: Rect,
@@ -817,6 +948,9 @@ struct GuiLayout {
     transcript: Rect,
     export: Rect,
     refresh_devices: Rect,
+    previous_clip: Rect,
+    next_clip: Rect,
+    chunk_duration: Rect,
 }
 
 impl GuiLayout {
@@ -828,6 +962,7 @@ impl GuiLayout {
             mic_radius: (height * 0.115).max(58.0),
             import: Rect::new(width * 0.69, 16.0, width * 0.80, 94.0),
             model: Rect::new(width * 0.81, 16.0, width * 0.96, 94.0),
+            recording: Rect::new(width * 0.56, 16.0, width * 0.68, 94.0),
             microphone: Rect::new(width * 0.27, height * 0.26, width * 0.63, height * 0.35),
             save_directory: Rect::new(width * 0.27, height * 0.37, width * 0.63, height * 0.46),
             prepare: Rect::new(width * 0.69, height * 0.26, width * 0.81, height * 0.35),
@@ -836,6 +971,9 @@ impl GuiLayout {
             transcript: Rect::new(width * 0.05, height * 0.74, width * 0.67, height * 0.95),
             export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
             refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
+            previous_clip: Rect::new(width * 0.69, height * 0.66, width * 0.81, height * 0.75),
+            next_clip: Rect::new(width * 0.84, height * 0.66, width * 0.96, height * 0.75),
+            chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.96, height * 0.87),
         }
     }
 }
@@ -866,11 +1004,18 @@ struct GuiState {
     recording_id: Option<RecordingId>,
     recording_status: Option<RecordingStatus>,
     selected_clip_id: Option<ClipId>,
+    clip_ids: Vec<ClipId>,
+    chunk_duration_ms: Option<u64>,
     prepared: bool,
 }
 
 impl GuiState {
-    fn new(model_dir: PathBuf, save_dir: PathBuf, selected_microphone: Option<String>) -> Self {
+    fn new(
+        model_dir: PathBuf,
+        save_dir: PathBuf,
+        selected_microphone: Option<String>,
+        chunk_duration_ms: Option<u64>,
+    ) -> Self {
         Self {
             cursor: PhysicalPosition::new(0.0, 0.0),
             modifiers: ModifiersState::default(),
@@ -892,16 +1037,38 @@ impl GuiState {
             recording_id: None,
             recording_status: None,
             selected_clip_id: None,
+            clip_ids: Vec::new(),
+            chunk_duration_ms,
             prepared: false,
         }
     }
 
     fn set_recording(&mut self, recording: Option<&Recording>, store: &RecordingStore) {
+        let preferred_clip = self.selected_clip_id;
+        self.set_recording_with_clip(recording, store, preferred_clip);
+    }
+
+    fn set_recording_clip(
+        &mut self,
+        recording: &Recording,
+        store: &RecordingStore,
+        clip_id: ClipId,
+    ) {
+        self.set_recording_with_clip(Some(recording), store, Some(clip_id));
+    }
+
+    fn set_recording_with_clip(
+        &mut self,
+        recording: Option<&Recording>,
+        store: &RecordingStore,
+        preferred_clip: Option<ClipId>,
+    ) {
         let Some(recording) = recording else {
             self.recording = false;
             self.recording_id = None;
             self.recording_status = None;
             self.selected_clip_id = None;
+            self.clip_ids.clear();
             self.prepared = false;
             self.transcript_editable = false;
             if !self.transcript_editing {
@@ -913,11 +1080,23 @@ impl GuiState {
         self.recording_id = Some(recording.id);
         self.recording_status = Some(recording.status);
         self.recording = recording.status == RecordingStatus::Recording;
-        self.selected_clip_id = recording
+        self.clip_ids = recording
             .clips
             .iter()
             .find(|clip| clip.status != crate::domain::ClipStatus::Deleted)
-            .map(|clip| clip.id);
+            .into_iter()
+            .chain(
+                recording
+                    .clips
+                    .iter()
+                    .filter(|clip| clip.status != crate::domain::ClipStatus::Deleted)
+                    .skip(1),
+            )
+            .map(|clip| clip.id)
+            .collect();
+        self.selected_clip_id = preferred_clip
+            .filter(|clip_id| self.clip_ids.contains(clip_id))
+            .or_else(|| self.clip_ids.first().copied());
         self.prepared = store
             .recording_dir(recording.id)
             .join("audio")
@@ -943,6 +1122,38 @@ impl GuiState {
             }
             self.transcript_draft = self.transcript.clone();
         }
+    }
+
+    fn cycled_clip_id(&self, direction: isize) -> Option<ClipId> {
+        if self.clip_ids.is_empty() {
+            return None;
+        }
+        let current = self
+            .selected_clip_id
+            .and_then(|clip_id| self.clip_ids.iter().position(|id| *id == clip_id))
+            .unwrap_or(0);
+        let length = isize::try_from(self.clip_ids.len()).ok()?;
+        let next = (isize::try_from(current).ok()? + direction).rem_euclid(length);
+        self.clip_ids.get(usize::try_from(next).ok()?).copied()
+    }
+
+    fn clip_label(&self) -> String {
+        let index = self
+            .selected_clip_id
+            .and_then(|clip_id| self.clip_ids.iter().position(|id| *id == clip_id))
+            .map_or(0, |index| index + 1);
+        if self.clip_ids.is_empty() {
+            "CLIP NONE".to_string()
+        } else {
+            format!("CLIP {index}/{}", self.clip_ids.len())
+        }
+    }
+
+    fn chunk_duration_label(&self) -> String {
+        self.chunk_duration_ms.map_or_else(
+            || "FULL".to_string(),
+            |duration_ms| format!("{}S", duration_ms / 1_000),
+        )
     }
 
     fn microphone_label(&self) -> String {
@@ -972,6 +1183,9 @@ impl GuiState {
         if layout.model.contains(cursor) {
             return Some(GuiAction::ChooseModel);
         }
+        if layout.recording.contains(cursor) {
+            return Some(GuiAction::CycleRecording);
+        }
         if layout.microphone.contains(cursor) {
             return Some(GuiAction::CycleMicrophone);
         }
@@ -989,6 +1203,15 @@ impl GuiState {
         }
         if layout.refresh_devices.contains(cursor) {
             return Some(GuiAction::RefreshDevices);
+        }
+        if layout.previous_clip.contains(cursor) {
+            return Some(GuiAction::PreviousClip);
+        }
+        if layout.next_clip.contains(cursor) {
+            return Some(GuiAction::NextClip);
+        }
+        if layout.chunk_duration.contains(cursor) {
+            return Some(GuiAction::CycleChunkDuration);
         }
         if layout.transcript.contains(cursor) {
             if !self.transcript_editable {
@@ -1024,7 +1247,7 @@ impl GuiState {
 
 impl Default for GuiState {
     fn default() -> Self {
-        Self::new(PathBuf::new(), PathBuf::new(), None)
+        Self::new(PathBuf::new(), PathBuf::new(), None, None)
     }
 }
 
@@ -1378,6 +1601,7 @@ impl Canvas {
                 INACTIVE
             },
         );
+        self.button(layout.recording, "RECENT", false, enabled);
         self.button(layout.import, "IMPORT", false, enabled);
         self.button(layout.model, "MODEL", state.model_ready, enabled);
 
@@ -1498,13 +1722,32 @@ impl Canvas {
             state.recording_id.is_some() && enabled,
         );
         self.button(layout.refresh_devices, "MIC LIST", false, enabled);
+        self.button(
+            layout.previous_clip,
+            "PREV",
+            false,
+            state.clip_ids.len() > 1 && enabled,
+        );
+        self.button(
+            layout.next_clip,
+            "NEXT",
+            false,
+            state.clip_ids.len() > 1 && enabled,
+        );
+        self.button(
+            layout.chunk_duration,
+            &format!("CHUNK {}", state.chunk_duration_label()),
+            state.chunk_duration_ms.is_some(),
+            enabled,
+        );
         let status_top = (height * 0.49) as i32;
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
             &format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
                 state.model_status,
-                operation_label(state.operation)
+                operation_label(state.operation),
+                state.clip_label()
             ),
             (width * 0.26) as i32,
             2,
@@ -2230,6 +2473,7 @@ fn find_memory_type(
 
 #[cfg(test)]
 mod tests {
+    use super::ClipId;
     use super::GuiAction;
     use super::GuiState;
     use super::INITIAL_HEIGHT;
@@ -2261,5 +2505,24 @@ mod tests {
 
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
+    }
+
+    #[test]
+    fn clip_navigation_wraps_and_chunk_label_is_explicit() {
+        let first = ClipId::new();
+        let second = ClipId::new();
+        let third = ClipId::new();
+        let mut state = GuiState {
+            clip_ids: vec![first, second, third],
+            selected_clip_id: Some(first),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.cycled_clip_id(-1), Some(third));
+        assert_eq!(state.cycled_clip_id(1), Some(second));
+        assert_eq!(state.clip_label(), "CLIP 1/3");
+        assert_eq!(state.chunk_duration_label(), "FULL");
+        state.chunk_duration_ms = Some(30_000);
+        assert_eq!(state.chunk_duration_label(), "30S");
     }
 }

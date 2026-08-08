@@ -40,6 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrepareReport {
@@ -73,6 +74,13 @@ pub struct ExportReport {
 pub struct MicrophoneReport {
     pub recording_id: RecordingId,
     pub capture: AudioCaptureReport,
+}
+
+#[derive(Debug, Error)]
+#[error("microphone recording {recording_id} failed: {reason}")]
+pub struct MicrophoneFailure {
+    pub recording_id: RecordingId,
+    pub reason: String,
 }
 
 /// Persist a new recording source and return its stable ID.
@@ -149,7 +157,7 @@ pub fn record_microphone(
     store: &RecordingStore,
     endpoint_id: Option<&str>,
     stop_requested: Arc<AtomicBool>,
-) -> Result<MicrophoneReport> {
+) -> std::result::Result<MicrophoneReport, MicrophoneFailure> {
     capture_microphone(
         store,
         endpoint_id,
@@ -170,9 +178,12 @@ pub fn record_microphone_for_duration(
     endpoint_id: Option<&str>,
     output_path: Option<PathBuf>,
     duration: Duration,
-) -> Result<MicrophoneReport> {
+) -> std::result::Result<MicrophoneReport, MicrophoneFailure> {
     if duration.is_zero() {
-        bail!("capture duration must be greater than zero");
+        return Err(MicrophoneFailure {
+            recording_id: RecordingId::new(),
+            reason: "capture duration must be greater than zero".to_string(),
+        });
     }
     capture_microphone(
         store,
@@ -192,7 +203,7 @@ fn capture_microphone(
     endpoint_id: Option<&str>,
     requested_output_path: Option<PathBuf>,
     request: CaptureRequest,
-) -> Result<MicrophoneReport> {
+) -> std::result::Result<MicrophoneReport, MicrophoneFailure> {
     let recording_id = RecordingId::new();
     let output_path = requested_output_path.unwrap_or_else(|| {
         store
@@ -200,7 +211,13 @@ fn capture_microphone(
             .join("source")
             .join("microphone.wav")
     });
-    let source = SourceAsset::new(AssetKind::MicrophoneRecording, &output_path)?;
+    let source =
+        SourceAsset::new(AssetKind::MicrophoneRecording, &output_path).map_err(|error| {
+            MicrophoneFailure {
+                recording_id,
+                reason: error.to_string(),
+            }
+        })?;
     let mut state = AppState::new();
     store
         .apply_command(
@@ -210,10 +227,16 @@ fn capture_microphone(
                 source,
             },
         )
-        .wrap_err("failed to persist microphone recording manifest")?;
+        .map_err(|error| MicrophoneFailure {
+            recording_id,
+            reason: format!("failed to persist microphone recording manifest: {error}"),
+        })?;
     store
         .apply_command(&mut state, Command::StartRecording { recording_id })
-        .wrap_err("failed to persist microphone start state")?;
+        .map_err(|error| MicrophoneFailure {
+            recording_id,
+            reason: format!("failed to persist microphone start state: {error}"),
+        })?;
 
     let capture_result = match request {
         CaptureRequest::Bounded(duration) => {
@@ -235,13 +258,24 @@ fn capture_microphone(
                         reason,
                     },
                 )
-                .wrap_err("failed to persist microphone failure state")?;
-            return Err(error).wrap_err("microphone capture failed");
+                .map_err(|persist_error| MicrophoneFailure {
+                    recording_id,
+                    reason: format!(
+                        "microphone capture failed: {error}; failed to persist failure state: {persist_error}"
+                    ),
+                })?;
+            return Err(MicrophoneFailure {
+                recording_id,
+                reason: format!("microphone capture failed: {error}"),
+            });
         }
     };
     store
         .apply_command(&mut state, Command::CompleteRecording { recording_id })
-        .wrap_err("failed to persist microphone saved state")?;
+        .map_err(|error| MicrophoneFailure {
+            recording_id,
+            reason: format!("failed to persist microphone saved state: {error}"),
+        })?;
     Ok(MicrophoneReport {
         recording_id,
         capture,

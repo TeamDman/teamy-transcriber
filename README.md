@@ -66,7 +66,9 @@ and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
 success/failure back into the visible status line. Press Space to start/stop
 microphone capture, Escape to stop capture or cancel transcript editing, and
-Ctrl+E to open transcript export.
+Ctrl+E to open transcript export. The GUI also exposes full-recording or
+10/30/60-second chunk presets, previous/next clip review, and cycling through
+persisted recordings; those choices survive restart.
 
 The GUI and diagnostic CLI share the workflow orchestration in
 `src/workflow.rs`; both persist the same recording lifecycle and transcript

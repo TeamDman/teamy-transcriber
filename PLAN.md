@@ -74,6 +74,13 @@ loop and stayed responsive with an explicit writable
 location is inaccessible in this managed shell, so that launch was not used as
 evidence against normal user-machine behavior.
 
+2026-08-08: Extended the GUI to expose the persisted clip workflow instead of
+forcing full-recording transcription. Full, 10-second, 30-second, and
+60-second chunk presets now persist in GUI settings; previous/next clip review,
+saved-recording cycling, preferred-recording recovery, model structure
+validation, and close-while-recording stop signaling are implemented. The
+shared tests and full quality gate pass again.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -445,9 +452,9 @@ Completion: Long files yield a coherent transcript with a machine-readable chunk
 
 #### W13 [~] Add explicit transcript editing and output routing
 
-Work: Add staged versus committed transcript versions, user edits, local derivative actions, copy/export/save, and an explicit future integration boundary for external apps. The current slice exports the latest committed transcript per active clip to an explicit or recording-owned text file; user editing and external-target actions remain pending.
+Work: Add staged versus committed transcript versions, user edits, local derivative actions, copy/export/save, and an explicit future integration boundary for external apps. The current slice exports the latest committed transcript per active clip, lets the GUI edit committed text with `user_edit` provenance, and keeps external-target actions deferred.
 
-Validation: Raw ASR provenance remains in the manifest and export labels; export is explicit and writes a recording-owned or user-selected file. User edits, LLM derivatives, and external-target safety tests remain pending.
+Validation: Raw ASR provenance remains in the manifest and export labels; export is explicit and writes a recording-owned or user-selected file. Shared workflow/domain tests cover user edits and latest-version export; LLM derivatives and external-target safety tests remain pending.
 
 Completion: A user can review and export a transcript without losing the source or raw result.
 
@@ -455,9 +462,9 @@ Completion: A user can review and export a transcript without losing the source 
 
 #### W14 [~] Build renderer-neutral presentation state
 
-Work: Define stable UI IDs, action IDs, focus/context state, narration/diagnostics, waveform/transcript projections, and contextual keyboard precedence. The current slice provides these as a pure `presentation` module and the GUI now maps its controls to shared workflow actions; a fuller projection/transport convergence remains pending.
+Work: Define stable UI IDs, action IDs, focus/context state, narration/diagnostics, waveform/transcript projections, and contextual keyboard precedence. The current slice provides these as a pure `presentation` module and maps GUI controls to shared workflow actions, including chunk presets, clip navigation, recovery, and keyboard editing; a fuller projection/transport convergence remains pending.
 
-Validation: Headless tests verify deterministic Escape, transcript, timeline, and recording-control key precedence plus renderer-neutral transcript/diagnostic projection. GUI action tests cover the microphone hit target, and workflow tests cover edit/export persistence. Pointer/palette/tray adapters and conflict logging remain pending.
+Validation: Headless tests verify deterministic Escape, transcript, timeline, and recording-control key precedence plus renderer-neutral transcript/diagnostic projection. GUI tests cover microphone hit targets, clip navigation, chunk labels, and workflow edit/export persistence. Pointer/palette/tray adapters and conflict logging remain pending.
 
 Completion: A headless presentation test can drive the first slice without depending on a window or renderer.
 
@@ -465,7 +472,7 @@ Completion: A headless presentation test can drive the first slice without depen
 
 Work: Present a skeuomorphic microphone/record control, armed/recording/stopped state, level or waveform view, clip timeline, staged transcript area, model/runtime status, and obvious save/export actions. The Ash/Vulkan/Winit shell now owns the GUI-only first workflow: local model selection/readiness, media import/prepare, microphone capture, native transcription, transcript edit, and export, with asynchronous status/error reporting and persisted preferences.
 
-Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bitmap glyph and microphone hit-test paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, and export. A human-operated file-picker/model/capture/transcription run, true waveform data, accessibility/narration, operation cancellation beyond capture, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
+Validation: Window lifecycle and first-frame Vulkan startup are empirically verified on this device; the bitmap glyph, microphone hit-test, clip navigation, and chunk-label paths are covered by focused tests; shared workflow/domain tests cover persistence, user-edit provenance, and export. A human-operated file-picker/model/capture/transcription run, true waveform data, accessibility/narration, operation cancellation beyond capture, and local model-backed inference remain open. The view shows staged text only after a committed transcript and does not imply uncommitted edits are final.
 
 Completion: A user can import or record, see the current state, transcribe, inspect text, and save/export from one coherent window.
 
@@ -618,15 +625,15 @@ Remaining open gates are intentional decisions, not omitted requirements.
 
 ## Next safe implementation slice
 
-The next implementation turn should continue W11 and close the model-dependent evidence gap:
+The next implementation turn should close the remaining GUI evidence and lifecycle gaps:
 
 1. Run `recording prepare` and `recording transcribe` against a local native model package, recording model revision, artifact hashes, CPU timing, and output checksum.
 2. Add a portable video/audio fixture strategy and source-time mapping, likely behind an ffmpeg/ffprobe adapter or a documented native library.
-3. Add an explicit CLI clip-creation command and source-time mapping for clips that are not currently represented by persisted events.
-4. Expand the backend lifecycle with progress, cancellation, staged results, and structured receipts.
+3. Exercise GUI microphone start/stop, failure recovery, chunked transcription, edit, and export with a real local fixture.
+4. Expand the backend lifecycle with progress, cancellation, staged results, and structured receipts where the backend supports it.
 5. Keep local model inventory and native artifact validation separate from any future CDN acquisition.
 
-Do not begin by copying WhisperX, building the skeuomorphic microphone, adding tray hotkeys, or writing the Slug renderer. Those are downstream of the semantic and storage contract.
+Do not add CDN acquisition, tray hotkeys, or the Slug renderer until the GUI-only core workflow has a real model/device evidence run; those remain downstream or optional.
 
 ## Plan completion rule
 
