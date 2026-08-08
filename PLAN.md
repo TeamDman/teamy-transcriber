@@ -61,6 +61,15 @@ or the legacy packed-NPY layout. No CTranslate2-to-Burn converter exists in
 this repository, so the GUI reports the native package contract rather than
 silently reintroducing a Python/CLI prerequisite.
 
+2026-08-08: Added a GUI-only local preparation path for Whisper PyTorch
+checkpoints. MODEL now offers native-package selection or asynchronous
+checkpoint conversion; the latter reads checkpoint dimensions and
+`model_state_dict`, remaps the known Whisper/Burn naming differences, copies a
+local tokenizer, writes `model.bpk` + `dims.json` + `tokenizer.json`, validates
+the result, and selects it as the active model. Existing output directories
+are never overwritten, no network access is used, and CTranslate2/faster-
+whisper `model.bin` remains explicitly unsupported.
+
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
@@ -200,8 +209,11 @@ directory. The preferred package is:
   decoding.
 
 The older `encoder/` and `decoder/` packed-NPY layout remains readable during
-migration, but new prepared artifacts should use Burnpack. The runtime does
-not download or convert model files during transcription.
+migration, but new prepared artifacts should use Burnpack. The GUI can create
+the preferred package from a compatible local Whisper PyTorch checkpoint and
+tokenizer; it does not download assets or convert CTranslate2/faster-whisper
+`model.bin` directories. Transcription itself only consumes an already
+prepared native package.
 
 The shared cross-project registry shape follows `teamy-tts`: stable model ID,
 revision, prepared-directory path, package status, source/archive fingerprint,
@@ -492,9 +504,9 @@ Completion: The app can run a fully observable transcription job without real in
 
 #### W8 [~] Build model and runtime preparation
 
-Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. Do not add a downloader or CDN dependency.
+Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. The GUI may prepare a compatible local PyTorch checkpoint into the native package, but must not add a downloader or CDN dependency.
 
-Validation: `model show`, local inventory, `doctor`, and backend readiness report the configured local model/runtime paths without downloading or modifying them. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
+Validation: `model show`, local inventory, `doctor`, backend readiness, and the GUI MODEL flow report the configured local model/runtime paths without downloading assets; checkpoint preparation is explicit, local, validated, and non-overwriting. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
@@ -502,7 +514,8 @@ Completion: The application explains which local model/runtime assets are presen
 
 Work: Implement the first native Whisper ASR path behind the backend protocol,
 consuming `model.bpk`, `dims.json`, and `tokenizer.json` supplied in the
-configured local model directory. The current path accepts normalized 16 kHz
+configured local model directory. The GUI can prepare that package from a
+compatible local Whisper PyTorch checkpoint. The current path accepts normalized 16 kHz
 mono input, builds Whisper log-mel features in Rust, loads Burn weights, and
 returns raw transcript text. VAD/alignment remain later capabilities.
 

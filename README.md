@@ -103,16 +103,22 @@ provenance events. Restarting the GUI reopens the selected persisted recording
 (falling back to the available recordings) and restores the selected model,
 microphone, and export directory
 from its app-owned settings file. Selecting MODEL validates the tokenizer,
-dimensions, and Burnpack/legacy layout before TRANSCRIBE is enabled; no CLI
-model-preparation command is required for a locally supplied package.
+dimensions, and Burnpack/legacy layout before TRANSCRIBE is enabled. The GUI
+also offers a local-only preparation path: choose `No` in the model setup
+dialog, select a Whisper PyTorch checkpoint, select its local `tokenizer.json`
+when it is not beside the checkpoint, and choose an output parent directory.
+The conversion runs asynchronously and selects the resulting native package
+after validation; no CLI model-preparation command is required.
 
-The native model package is assumed to be available locally for this
-implementation slice; the application does not download or convert it. The
-preferred model directory contains `model.bpk`, `dims.json`, and
+The native model package or source checkpoint is assumed to be available
+locally for this implementation slice; the application does not download
+model assets. The preferred prepared model directory contains `model.bpk`, `dims.json`, and
 `tokenizer.json`. The runtime also recognizes the older packed-NPY
 `encoder/`/`decoder/` layout during migration. If a selected folder contains
 a CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
-incompatible format and explains that a native Burnpack package is required.
+incompatible format and explains that a native Burnpack package is required;
+the local GUI preparation path currently accepts Whisper PyTorch checkpoints,
+not CTranslate2 `model.bin` directories.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for

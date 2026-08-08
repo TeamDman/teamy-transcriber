@@ -16,6 +16,7 @@ use crate::domain::RecordingStatus;
 use crate::media::AudioProfile;
 use crate::media::read_waveform_peaks;
 use crate::native_whisper::model::inspect_model_dir;
+use crate::native_whisper::prepare::convert_pytorch_checkpoint;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
 use crate::storage::RecordingStore;
@@ -347,6 +348,28 @@ impl GuiApplication {
     }
 
     fn choose_model(&mut self) {
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let choice = MessageDialog::new()
+            .set_level(MessageLevel::Info)
+            .set_title("Model setup")
+            .set_description(
+                "Yes: choose an existing native Burnpack folder. No: prepare a local Whisper PyTorch checkpoint and tokenizer. Cancel: leave the current model unchanged.",
+            )
+            .set_buttons(MessageButtons::YesNoCancel)
+            .show();
+        match choice {
+            MessageDialogResult::Yes => self.choose_model_folder(),
+            MessageDialogResult::No => self.prepare_local_model(),
+            MessageDialogResult::Cancel
+            | MessageDialogResult::Ok
+            | MessageDialogResult::Custom(_) => {}
+        }
+    }
+
+    fn choose_model_folder(&mut self) {
         let Some(path) = FileDialog::new().pick_folder() else {
             return;
         };
@@ -367,6 +390,74 @@ impl GuiApplication {
                 "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
                     .to_string();
         }
+    }
+
+    fn prepare_local_model(&mut self) {
+        let Some(checkpoint) = FileDialog::new()
+            .add_filter("Whisper PyTorch checkpoint", &["pt", "pth"])
+            .pick_file()
+        else {
+            return;
+        };
+        let tokenizer = checkpoint
+            .parent()
+            .map(|parent| parent.join("tokenizer.json"))
+            .filter(|path| path.is_file())
+            .or_else(|| {
+                FileDialog::new()
+                    .add_filter("Tokenizer", &["json"])
+                    .set_directory(checkpoint.parent().unwrap_or_else(|| Path::new(".")))
+                    .pick_file()
+            });
+        let Some(tokenizer) = tokenizer else {
+            self.state.status_line =
+                "Model preparation cancelled: choose a local tokenizer.json next to the checkpoint"
+                    .to_string();
+            return;
+        };
+        let initial_directory = checkpoint
+            .parent()
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(|| Path::new("."));
+        let Some(output_parent) = FileDialog::new()
+            .set_directory(initial_directory)
+            .pick_folder()
+        else {
+            return;
+        };
+        let Some(checkpoint_stem) = checkpoint.file_stem().and_then(|stem| stem.to_str()) else {
+            self.state.status_line =
+                "ERROR: checkpoint filename has no usable model name".to_string();
+            return;
+        };
+        let output_dir = output_parent.join(format!("{checkpoint_stem}-burnpack"));
+        if output_dir.exists() {
+            self.state.status_line = format!(
+                "ERROR: refusing to overwrite existing model directory {}",
+                display_path(&output_dir)
+            );
+            return;
+        }
+        let sender = self.message_tx.clone();
+        self.state.operation = GuiOperation::PreparingModel;
+        self.state.status_line = format!(
+            "Preparing native model from {}; this may take a while...",
+            display_path(&checkpoint)
+        );
+        std::thread::spawn(move || {
+            let message = convert_pytorch_checkpoint(&checkpoint, &tokenizer, &output_dir)
+                .map_or_else(
+                    |error| GuiMessage::Failure {
+                        recording_id: None,
+                        operation: "model preparation".to_string(),
+                        message: error.to_string(),
+                    },
+                    |artifacts| GuiMessage::ModelPrepared {
+                        model_dir: artifacts.root,
+                    },
+                );
+            let _ = sender.send(message);
+        });
     }
 
     fn choose_media_tools(&mut self) {
@@ -992,6 +1083,18 @@ impl GuiApplication {
                     format!("{} microphone(s) available", self.state.microphones.len())
                 };
             }
+            GuiMessage::ModelPrepared { model_dir } => {
+                self.state.operation = GuiOperation::Idle;
+                self.state.model_dir = model_dir;
+                self.inspect_model();
+                self.persist_preferences();
+                self.state.status_line = if self.state.model_ready {
+                    "Native model prepared and ready for local transcription".to_string()
+                } else {
+                    "Model preparation finished but validation failed; choose another model"
+                        .to_string()
+                };
+            }
             GuiMessage::Prepared {
                 recording_id,
                 report,
@@ -1358,6 +1461,9 @@ struct GuiPreferences {
 #[derive(Debug)]
 enum GuiMessage {
     Devices(Vec<AudioInputDevice>),
+    ModelPrepared {
+        model_dir: PathBuf,
+    },
     Prepared {
         recording_id: RecordingId,
         report: PrepareReport,
@@ -1430,6 +1536,7 @@ enum GuiAction {
 enum GuiOperation {
     #[default]
     Idle,
+    PreparingModel,
     Preparing,
     MovingClip,
     DeletingClip,
@@ -1907,6 +2014,7 @@ fn model_status_text(root: &Path, readiness: &NativeWhisperReadiness) -> String 
 
 fn next_gui_step(state: &GuiState) -> &'static str {
     match state.operation {
+        GuiOperation::PreparingModel => "WAIT: LOCAL MODEL PREPARATION IN PROGRESS",
         GuiOperation::Preparing => "WAIT: AUDIO PREPARATION IN PROGRESS",
         GuiOperation::MovingClip => "WAIT: CLIP MOVE IN PROGRESS",
         GuiOperation::DeletingClip => "WAIT: CLIP DELETE IN PROGRESS",
@@ -1995,6 +2103,7 @@ fn compact_text(value: &str, max_chars: usize) -> String {
 fn operation_label(operation: GuiOperation) -> &'static str {
     match operation {
         GuiOperation::Idle => "IDLE",
+        GuiOperation::PreparingModel => "PREPARING MODEL",
         GuiOperation::Preparing => "PREPARING AUDIO",
         GuiOperation::MovingClip => "MOVING CLIP",
         GuiOperation::DeletingClip => "DELETING CLIP",
