@@ -163,6 +163,11 @@ IMPORT dialog. Winit file-drop events now validate supported audio/video
 extensions, create the recording, and start the existing asynchronous prepare
 workflow; unsupported dropped files receive an explicit status diagnostic.
 
+2026-08-08: Widened the GUI's local PyTorch checkpoint picker to advertise the
+common `.bin` and `.ckpt` names in addition to `.pt` and `.pth`. The converter
+still validates the checkpoint contents and native Burnpack round trip, so a
+CTranslate2 `model.bin` remains an explicit incompatible-format diagnostic.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

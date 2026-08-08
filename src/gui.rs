@@ -447,7 +447,7 @@ impl GuiApplication {
 
     fn prepare_local_model(&mut self) {
         let Some(checkpoint) = FileDialog::new()
-            .add_filter("Whisper PyTorch checkpoint", &["pt", "pth"])
+            .add_filter("Whisper PyTorch checkpoint", &["pt", "pth", "bin", "ckpt"])
             .pick_file()
         else {
             return;
