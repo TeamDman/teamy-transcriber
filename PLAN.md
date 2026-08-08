@@ -667,7 +667,7 @@ The next implementation turn should close the remaining GUI evidence and lifecyc
 1. Run `recording prepare` and `recording transcribe` against a local native model package, recording model revision, artifact hashes, CPU timing, and output checksum.
 2. Add a portable video/audio fixture strategy and source-time mapping, likely behind an ffmpeg/ffprobe adapter or a documented native library.
 3. Exercise GUI microphone start/stop, failure recovery, chunked transcription, edit, and export with a real local fixture.
-4. Expand the backend lifecycle with progress, cancellation, staged results, and structured receipts where the backend supports it.
+4. Expand the backend lifecycle with staged results and structured timing/quality receipts; cooperative cancellation and bounded per-clip progress are now present at the workflow/GUI boundary.
 5. Keep local model inventory and native artifact validation separate from any future CDN acquisition.
 
 Do not add CDN acquisition, tray hotkeys, or the Slug renderer until the GUI-only core workflow has a real model/device evidence run; those remain downstream or optional.
