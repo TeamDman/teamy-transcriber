@@ -43,6 +43,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-07: Compared model lifecycle conventions with `G:\Programming\Repos\teamy-tts`. Both projects should share stable model IDs, revision-keyed prepared directories, explicit manifests, artifact hashes, and acquisition receipts. Whisper keeps its task-specific `model.bpk`, `dims.json`, and `tokenizer.json` contract; TTS keeps its role-specific Burnpack/frontend assets. Neither project should treat the other task's tensors or sidecars as interchangeable.
 
+2026-08-08: Closed the GUI media-tool configuration gap. `TOOLS` now lets a user select local `ffmpeg` and `ffprobe` executables, persists those paths, and routes GUI non-WAV/video preparation through the same explicit adapter configuration as the CLI. No model CDN or download flow is added yet; local model files remain an intentional prerequisite.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

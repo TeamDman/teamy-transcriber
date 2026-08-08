@@ -22,13 +22,14 @@ use crate::transcription::NativeWhisperConfig;
 use crate::transcription::NativeWhisperReadiness;
 use crate::transcription::RuntimeAssetStatus;
 use crate::workflow::ExportReport;
+use crate::workflow::MediaToolConfig;
 use crate::workflow::MicrophoneReport;
 use crate::workflow::PrepareReport;
 use crate::workflow::TranscriptionReport;
 use crate::workflow::commit_transcript_edit;
 use crate::workflow::create_recording;
 use crate::workflow::export_recording;
-use crate::workflow::prepare_recording;
+use crate::workflow::prepare_recording_with_tools;
 use crate::workflow::record_microphone;
 use crate::workflow::transcribe_recording;
 use ash::Entry;
@@ -98,6 +99,7 @@ struct GuiApplication {
     state: GuiState,
     app_home: AppHome,
     store: RecordingStore,
+    media_tools: MediaToolConfig,
     preferences: GuiPreferences,
     message_tx: Sender<GuiMessage>,
     message_rx: Receiver<GuiMessage>,
@@ -119,6 +121,13 @@ impl GuiApplication {
             .save_dir
             .as_deref()
             .map_or_else(|| default_save_dir(&app_home), PathBuf::from);
+        let mut media_tools = MediaToolConfig::from_environment();
+        if let Some(path) = preferences.ffmpeg_path.as_deref() {
+            media_tools.ffmpeg_executable = PathBuf::from(path);
+        }
+        if let Some(path) = preferences.ffprobe_path.as_deref() {
+            media_tools.ffprobe_executable = PathBuf::from(path);
+        }
         let recordings = store.list_recordings()?;
         let preferred_recording = preferences
             .recording_id
@@ -145,6 +154,7 @@ impl GuiApplication {
             state,
             app_home,
             store,
+            media_tools,
             preferences,
             message_tx,
             message_rx,
@@ -205,6 +215,18 @@ impl GuiApplication {
         self.preferences.microphone_id = self.state.selected_microphone.clone();
         self.preferences.chunk_duration_ms = self.state.chunk_duration_ms;
         self.preferences.recording_id = self.state.recording_id.map(|id| id.to_string());
+        self.preferences.ffmpeg_path = Some(
+            self.media_tools
+                .ffmpeg_executable
+                .to_string_lossy()
+                .into_owned(),
+        );
+        self.preferences.ffprobe_path = Some(
+            self.media_tools
+                .ffprobe_executable
+                .to_string_lossy()
+                .into_owned(),
+        );
         if let Err(error) = save_preferences(&self.app_home, &self.preferences) {
             self.state.status_line = format!("ERROR: preferences not saved: {error}");
         }
@@ -221,6 +243,7 @@ impl GuiApplication {
         match action {
             GuiAction::ImportFile => self.import_file(),
             GuiAction::ChooseModel => self.choose_model(),
+            GuiAction::ChooseMediaTools => self.choose_media_tools(),
             GuiAction::ChooseSaveDirectory => self.choose_save_directory(),
             GuiAction::CycleMicrophone => self.cycle_microphone(),
             GuiAction::CycleRecording => self.cycle_recording(),
@@ -290,6 +313,29 @@ impl GuiApplication {
                 "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
                     .to_string();
         }
+    }
+
+    fn choose_media_tools(&mut self) {
+        let Some(ffmpeg) = FileDialog::new().set_file_name("ffmpeg.exe").pick_file() else {
+            return;
+        };
+        let Some(ffprobe) = FileDialog::new()
+            .set_directory(ffmpeg.parent().unwrap_or_else(|| Path::new(".")))
+            .set_file_name("ffprobe.exe")
+            .pick_file()
+        else {
+            return;
+        };
+        self.media_tools = MediaToolConfig {
+            ffmpeg_executable: ffmpeg,
+            ffprobe_executable: ffprobe,
+        };
+        self.persist_preferences();
+        self.state.status_line = format!(
+            "Media tools: {} / {}",
+            display_path(&self.media_tools.ffmpeg_executable),
+            display_path(&self.media_tools.ffprobe_executable)
+        );
     }
 
     fn choose_save_directory(&mut self) {
@@ -449,20 +495,22 @@ impl GuiApplication {
         }
         let sender = self.message_tx.clone();
         let store = self.store.clone();
+        let media_tools = self.media_tools.clone();
         self.state.operation = GuiOperation::Preparing;
         self.state.status_line = "Preparing audio to 16 kHz mono...".to_string();
         std::thread::spawn(move || {
-            let message = prepare_recording(&store, recording_id).map_or_else(
-                |error| GuiMessage::Failure {
-                    recording_id: Some(recording_id),
-                    operation: "audio preparation".to_string(),
-                    message: error.to_string(),
-                },
-                |report| GuiMessage::Prepared {
-                    recording_id,
-                    report,
-                },
-            );
+            let message = prepare_recording_with_tools(&store, recording_id, &media_tools)
+                .map_or_else(
+                    |error| GuiMessage::Failure {
+                        recording_id: Some(recording_id),
+                        operation: "audio preparation".to_string(),
+                        message: error.to_string(),
+                    },
+                    |report| GuiMessage::Prepared {
+                        recording_id,
+                        report,
+                    },
+                );
             let _ = sender.send(message);
         });
     }
@@ -842,6 +890,8 @@ struct GuiPreferences {
     microphone_id: Option<String>,
     chunk_duration_ms: Option<u64>,
     recording_id: Option<String>,
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -871,6 +921,7 @@ enum GuiMessage {
 enum GuiAction {
     ImportFile,
     ChooseModel,
+    ChooseMediaTools,
     ChooseSaveDirectory,
     CycleMicrophone,
     CycleRecording,
@@ -942,6 +993,7 @@ struct GuiLayout {
     recording: Rect,
     microphone: Rect,
     save_directory: Rect,
+    media_tools: Rect,
     prepare: Rect,
     transcribe: Rect,
     waveform: Rect,
@@ -965,6 +1017,7 @@ impl GuiLayout {
             recording: Rect::new(width * 0.56, 16.0, width * 0.68, 94.0),
             microphone: Rect::new(width * 0.27, height * 0.26, width * 0.63, height * 0.35),
             save_directory: Rect::new(width * 0.27, height * 0.37, width * 0.63, height * 0.46),
+            media_tools: Rect::new(width * 0.69, height * 0.37, width * 0.81, height * 0.46),
             prepare: Rect::new(width * 0.69, height * 0.26, width * 0.81, height * 0.35),
             transcribe: Rect::new(width * 0.84, height * 0.26, width * 0.96, height * 0.35),
             waveform: Rect::new(width * 0.05, height * 0.54, width * 0.67, height * 0.70),
@@ -1198,6 +1251,9 @@ impl GuiState {
         }
         if layout.save_directory.contains(cursor) {
             return Some(GuiAction::ChooseSaveDirectory);
+        }
+        if layout.media_tools.contains(cursor) {
+            return Some(GuiAction::ChooseMediaTools);
         }
         if layout.prepare.contains(cursor) {
             return Some(GuiAction::Prepare);
@@ -1670,6 +1726,7 @@ impl Canvas {
             2,
             ink,
         );
+        self.button(layout.media_tools, "TOOLS", false, enabled);
         self.button(layout.prepare, "PREPARE", state.prepared, enabled);
         self.button(
             layout.transcribe,
@@ -2511,6 +2568,17 @@ mod tests {
 
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
         assert_eq!(state.click(size), Some(GuiAction::ToggleRecording));
+    }
+
+    #[test]
+    fn media_tools_hit_selects_local_tool_configuration() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(850.0, 300.0),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::ChooseMediaTools));
     }
 
     #[test]

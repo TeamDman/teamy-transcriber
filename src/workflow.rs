@@ -49,6 +49,23 @@ pub struct PrepareReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaToolConfig {
+    pub ffmpeg_executable: PathBuf,
+    pub ffprobe_executable: PathBuf,
+}
+
+impl MediaToolConfig {
+    #[must_use]
+    pub fn from_environment() -> Self {
+        let adapter = FfmpegMediaAdapter::from_environment();
+        Self {
+            ffmpeg_executable: adapter.ffmpeg_executable,
+            ffprobe_executable: adapter.ffprobe_executable,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscribedChunk {
     pub clip_id: ClipId,
     pub transcript_id: TranscriptId,
@@ -118,6 +135,20 @@ pub fn prepare_recording(
     store: &RecordingStore,
     recording_id: RecordingId,
 ) -> Result<PrepareReport> {
+    prepare_recording_with_tools(store, recording_id, &MediaToolConfig::from_environment())
+}
+
+/// Normalize a recording using explicitly selected local media tools.
+///
+/// # Errors
+///
+/// Returns an error when the recording or source cannot be loaded, or the
+/// selected media adapter cannot produce normalized audio.
+pub fn prepare_recording_with_tools(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    tools: &MediaToolConfig,
+) -> Result<PrepareReport> {
     let recording = store
         .load_recording(recording_id)
         .wrap_err("failed to load recording manifest")?;
@@ -134,9 +165,12 @@ pub fn prepare_recording(
                 .wrap_err("failed to normalize WAV source")?
         }
         AssetKind::AudioFile | AssetKind::VideoFile | AssetKind::MicrophoneRecording => {
-            FfmpegMediaAdapter::from_environment()
-                .prepare_audio(source, &output_dir)
-                .wrap_err("failed to normalize source through ffmpeg")?
+            FfmpegMediaAdapter {
+                ffmpeg_executable: tools.ffmpeg_executable.clone(),
+                ffprobe_executable: tools.ffprobe_executable.clone(),
+            }
+            .prepare_audio(source, &output_dir)
+            .wrap_err("failed to normalize source through ffmpeg")?
         }
     };
     Ok(PrepareReport {
