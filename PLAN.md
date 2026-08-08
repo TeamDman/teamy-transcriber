@@ -135,6 +135,13 @@ decodes until the end-of-text token, and checks stop reason, dimensions, and
 tokenizer output. This proves the native decoder path with a deterministic
 fixture; a real Whisper checkpoint and quality transcript remain unverified.
 
+2026-08-08: Retested bounded microphone capture after moving the worker's Core
+Audio COM apartment from MTA to STA, following the Windows `IAudioClient`
+activation contract. Both enumerated endpoints still reject shared
+initialization with `0x80070057`; the exclusive-mode format probe returns
+`0x88890008`. The GUI therefore preserves a recoverable failure with explicit
+diagnostics; this environment still provides no saved microphone fixture.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

@@ -271,7 +271,7 @@ mod windows_capture {
     use windows::Win32::Media::Audio::eCapture;
     use windows::Win32::System::Com::CLSCTX_ALL;
     use windows::Win32::System::Com::CLSCTX_INPROC_SERVER;
-    use windows::Win32::System::Com::COINIT_MULTITHREADED;
+    use windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
     use windows::Win32::System::Com::CoCreateInstance;
     use windows::Win32::System::Com::CoInitializeEx;
     use windows::Win32::System::Com::CoTaskMemFree;
@@ -302,7 +302,10 @@ mod windows_capture {
             reason = "COM apartment initialization is a process API with no borrowed pointers"
         )]
         fn initialize() -> eyre::Result<Self> {
-            let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            // Windows Core Audio documents the first IAudioClient activation as
+            // requiring an STA thread on older systems; keeping capture on an
+            // apartment-threaded worker is also safer for device-specific drivers.
+            let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
             if result.is_ok() {
                 return Ok(Self {
                     uninitialize_on_drop: true,
