@@ -21,6 +21,7 @@ use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
 use crate::transcription::NativeWhisperReadiness;
 use crate::transcription::RuntimeAssetStatus;
+use crate::workflow::ClipMoveReport;
 use crate::workflow::ExportReport;
 use crate::workflow::MediaToolConfig;
 use crate::workflow::MicrophoneReport;
@@ -29,6 +30,7 @@ use crate::workflow::TranscriptionReport;
 use crate::workflow::commit_transcript_edit;
 use crate::workflow::create_recording;
 use crate::workflow::export_recording;
+use crate::workflow::move_clip;
 use crate::workflow::prepare_recording_with_tools;
 use crate::workflow::record_microphone;
 use crate::workflow::transcribe_recording_with_cancellation;
@@ -251,6 +253,8 @@ impl GuiApplication {
             GuiAction::CycleRecording => self.cycle_recording(),
             GuiAction::PreviousClip => self.cycle_clip(-1),
             GuiAction::NextClip => self.cycle_clip(1),
+            GuiAction::MoveClipLeft => self.move_selected_clip(-1),
+            GuiAction::MoveClipRight => self.move_selected_clip(1),
             GuiAction::CycleChunkDuration => self.cycle_chunk_duration(),
             GuiAction::ToggleRecording => self.toggle_recording(),
             GuiAction::Prepare => self.start_prepare(),
@@ -445,6 +449,56 @@ impl GuiApplication {
         self.state
             .set_recording_clip(&recording, &self.store, clip_id);
         self.state.status_line = format!("Selected {}", self.state.clip_label());
+    }
+
+    fn move_selected_clip(&mut self, direction: isize) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let Some(clip_id) = self.state.selected_clip_id else {
+            self.state.status_line = "Create or select a clip first".to_string();
+            return;
+        };
+        if !matches!(self.state.operation, GuiOperation::Idle) {
+            self.state.status_line = "Finish the current operation first".to_string();
+            return;
+        }
+        let Some(current_index) = self.state.clip_ids.iter().position(|id| *id == clip_id) else {
+            self.state.status_line = "Selected clip is no longer active".to_string();
+            return;
+        };
+        let Some(target_index) = isize::try_from(current_index)
+            .ok()
+            .and_then(|index| index.checked_add(direction))
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| *index < self.state.clip_ids.len())
+        else {
+            self.state.status_line = "Clip is already at that edge".to_string();
+            return;
+        };
+        let sender = self.message_tx.clone();
+        let store = self.store.clone();
+        self.state.operation = GuiOperation::MovingClip;
+        self.state.status_line = format!(
+            "Moving {} to position {}...",
+            self.state.clip_label(),
+            target_index + 1
+        );
+        std::thread::spawn(move || {
+            let message = move_clip(&store, recording_id, clip_id, target_index).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: Some(recording_id),
+                    operation: "clip movement".to_string(),
+                    message: error.to_string(),
+                },
+                |report| GuiMessage::Moved {
+                    recording_id,
+                    report,
+                },
+            );
+            let _ = sender.send(message);
+        });
     }
 
     fn toggle_recording(&mut self) {
@@ -695,6 +749,21 @@ impl GuiApplication {
                     );
                 }
             }
+            GuiMessage::Moved {
+                recording_id,
+                report,
+            } => {
+                self.state.operation = GuiOperation::Idle;
+                if let Err(error) = self.reload_recording(recording_id) {
+                    self.state.status_line = format!("ERROR: moved but reload failed: {error}");
+                } else {
+                    self.state.status_line = format!(
+                        "Moved clip {} to position {}",
+                        report.clip_id,
+                        report.target_index + 1
+                    );
+                }
+            }
             GuiMessage::Recorded(report) => {
                 self.stop_recording = None;
                 self.state.recording = false;
@@ -925,6 +994,10 @@ enum GuiMessage {
         recording_id: RecordingId,
         report: PrepareReport,
     },
+    Moved {
+        recording_id: RecordingId,
+        report: ClipMoveReport,
+    },
     Recorded(MicrophoneReport),
     Transcribed {
         recording_id: RecordingId,
@@ -951,6 +1024,8 @@ enum GuiAction {
     CycleRecording,
     PreviousClip,
     NextClip,
+    MoveClipLeft,
+    MoveClipRight,
     CycleChunkDuration,
     ToggleRecording,
     Prepare,
@@ -967,6 +1042,7 @@ enum GuiOperation {
     #[default]
     Idle,
     Preparing,
+    MovingClip,
     Recording,
     Stopping,
     Transcribing,
@@ -1028,6 +1104,8 @@ struct GuiLayout {
     cancel: Rect,
     previous_clip: Rect,
     next_clip: Rect,
+    move_clip_left: Rect,
+    move_clip_right: Rect,
     chunk_duration: Rect,
 }
 
@@ -1051,8 +1129,10 @@ impl GuiLayout {
             export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
             refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
             cancel: Rect::new(width * 0.69, height * 0.89, width * 0.96, height * 0.97),
-            previous_clip: Rect::new(width * 0.69, height * 0.66, width * 0.81, height * 0.75),
-            next_clip: Rect::new(width * 0.84, height * 0.66, width * 0.96, height * 0.75),
+            previous_clip: Rect::new(width * 0.69, height * 0.66, width * 0.75, height * 0.75),
+            next_clip: Rect::new(width * 0.76, height * 0.66, width * 0.81, height * 0.75),
+            move_clip_left: Rect::new(width * 0.84, height * 0.66, width * 0.90, height * 0.75),
+            move_clip_right: Rect::new(width * 0.91, height * 0.66, width * 0.96, height * 0.75),
             chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.96, height * 0.87),
         }
     }
@@ -1303,6 +1383,12 @@ impl GuiState {
         if layout.next_clip.contains(cursor) {
             return Some(GuiAction::NextClip);
         }
+        if layout.move_clip_left.contains(cursor) {
+            return Some(GuiAction::MoveClipLeft);
+        }
+        if layout.move_clip_right.contains(cursor) {
+            return Some(GuiAction::MoveClipRight);
+        }
         if layout.chunk_duration.contains(cursor) {
             return Some(GuiAction::CycleChunkDuration);
         }
@@ -1408,6 +1494,7 @@ fn operation_label(operation: GuiOperation) -> &'static str {
     match operation {
         GuiOperation::Idle => "IDLE",
         GuiOperation::Preparing => "PREPARING AUDIO",
+        GuiOperation::MovingClip => "MOVING CLIP",
         GuiOperation::Recording => "RECORDING",
         GuiOperation::Stopping => "SAVING RECORDING",
         GuiOperation::Transcribing => "TRANSCRIBING LOCALLY",
@@ -1822,6 +1909,18 @@ impl Canvas {
         self.button(
             layout.next_clip,
             "NEXT",
+            false,
+            state.clip_ids.len() > 1 && enabled,
+        );
+        self.button(
+            layout.move_clip_left,
+            "LEFT",
+            false,
+            state.clip_ids.len() > 1 && enabled,
+        );
+        self.button(
+            layout.move_clip_right,
+            "RIGHT",
             false,
             state.clip_ids.len() > 1 && enabled,
         );
@@ -2631,6 +2730,21 @@ mod tests {
         };
 
         assert_eq!(state.click(size), Some(GuiAction::CancelOperation));
+    }
+
+    #[test]
+    fn clip_move_hit_targets_left_reorder_action() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(1030.0, 520.0),
+            operation: GuiOperation::Idle,
+            clip_ids: vec![ClipId::new(), ClipId::new()],
+            selected_clip_id: Some(ClipId::new()),
+            ..GuiState::default()
+        };
+        state.selected_clip_id = state.clip_ids.get(1).copied();
+
+        assert_eq!(state.click(size), Some(GuiAction::MoveClipLeft));
     }
 
     #[test]

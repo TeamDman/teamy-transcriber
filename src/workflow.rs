@@ -49,6 +49,12 @@ pub struct PrepareReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipMoveReport {
+    pub clip_id: ClipId,
+    pub target_index: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaToolConfig {
     pub ffmpeg_executable: PathBuf,
     pub ffprobe_executable: PathBuf,
@@ -124,6 +130,37 @@ pub fn create_recording(
         )
         .wrap_err("failed to persist recording manifest")?;
     Ok(recording_id)
+}
+
+/// Move an existing clip in the persisted recording order.
+///
+/// # Errors
+///
+/// Returns an error when the recording or clip is missing, the target index is
+/// invalid, or the replayable move event cannot be persisted.
+pub fn move_clip(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    clip_id: ClipId,
+    target_index: usize,
+) -> Result<ClipMoveReport> {
+    let mut state = store
+        .load_state(recording_id)
+        .wrap_err("failed to load recording event state")?;
+    store
+        .apply_command(
+            &mut state,
+            Command::MoveClip {
+                recording_id,
+                clip_id,
+                target_index,
+            },
+        )
+        .wrap_err("failed to persist clip movement")?;
+    Ok(ClipMoveReport {
+        clip_id,
+        target_index,
+    })
 }
 
 /// Normalize an imported or captured source into the Whisper audio format.

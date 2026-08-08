@@ -47,6 +47,8 @@ This file is the living work contract. A fresh agent should be able to resume fr
 
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
+2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
+
 2026-08-07: Added the first native GUI slice using the Ash 0.38, ash-window 0.13,
 raw-window-handle 0.6, and Winit 0.30 stack already used by cursor-latency and
 teamy-terminal. `cargo run -- gui` now creates the Winit window, Vulkan surface,

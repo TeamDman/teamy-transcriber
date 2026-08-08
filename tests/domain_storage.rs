@@ -21,6 +21,7 @@ use teamy_transcriber::transcription::TranscriptionRequest;
 use teamy_transcriber::workflow::commit_transcript_edit;
 use teamy_transcriber::workflow::create_recording;
 use teamy_transcriber::workflow::export_recording;
+use teamy_transcriber::workflow::move_clip;
 
 #[test]
 fn domain_events_replay_to_the_same_state() {
@@ -474,6 +475,53 @@ fn failed_transcription_can_be_retried_without_losing_the_failure_reason() {
         .expect("completed clip should exist");
     assert_eq!(completed.status, ClipStatus::Transcribed);
     assert_eq!(completed.failure, None);
+}
+
+#[test]
+fn shared_workflow_persists_clip_reordering() {
+    let root = unique_temp_dir("teamy-transcriber-move");
+    let store = RecordingStore::new(root.clone());
+    let recording_id = create_recording(&store, AssetKind::AudioFile, "fixture.wav")
+        .expect("recording should be created");
+    let first = ClipId::new();
+    let second = ClipId::new();
+    let mut state = store
+        .load_state(recording_id)
+        .expect("recording state should load");
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: first,
+                source_range: TimeRange::new(0, 1_000_000).expect("first range should be valid"),
+            },
+        )
+        .expect("first clip should persist");
+    store
+        .apply_command(
+            &mut state,
+            Command::AddClip {
+                recording_id,
+                clip_id: second,
+                source_range: TimeRange::new(1_000_000, 2_000_000)
+                    .expect("second range should be valid"),
+            },
+        )
+        .expect("second clip should persist");
+
+    let report = move_clip(&store, recording_id, second, 0).expect("clip should move");
+    assert_eq!(report.clip_id, second);
+    assert_eq!(report.target_index, 0);
+    let loaded = store
+        .load_recording(recording_id)
+        .expect("moved recording should reload");
+    assert_eq!(
+        loaded.clips.iter().map(|clip| clip.id).collect::<Vec<_>>(),
+        vec![second, first]
+    );
+
+    std::fs::remove_dir_all(root).expect("test directory should be removable");
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
