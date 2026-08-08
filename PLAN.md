@@ -81,6 +81,11 @@ saved-recording cycling, preferred-recording recovery, model structure
 validation, and close-while-recording stop signaling are implemented. The
 shared tests and full quality gate pass again.
 
+2026-08-08: Added compact active-model, recording-source, clip, operation, and
+model-readiness labels to the canvas so recovery does not depend on CLI
+inspection. The GUI-only path remains blocked only on empirical execution with
+a real local model/device fixture, not on missing control wiring.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.

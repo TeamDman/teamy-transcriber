@@ -1003,6 +1003,7 @@ struct GuiState {
     operation: GuiOperation,
     recording_id: Option<RecordingId>,
     recording_status: Option<RecordingStatus>,
+    recording_source: String,
     selected_clip_id: Option<ClipId>,
     clip_ids: Vec<ClipId>,
     chunk_duration_ms: Option<u64>,
@@ -1036,6 +1037,7 @@ impl GuiState {
             operation: GuiOperation::Idle,
             recording_id: None,
             recording_status: None,
+            recording_source: "NO RECORDING".to_string(),
             selected_clip_id: None,
             clip_ids: Vec::new(),
             chunk_duration_ms,
@@ -1067,6 +1069,7 @@ impl GuiState {
             self.recording = false;
             self.recording_id = None;
             self.recording_status = None;
+            self.recording_source = "NO RECORDING".to_string();
             self.selected_clip_id = None;
             self.clip_ids.clear();
             self.prepared = false;
@@ -1079,6 +1082,7 @@ impl GuiState {
         };
         self.recording_id = Some(recording.id);
         self.recording_status = Some(recording.status);
+        self.recording_source = display_path(Path::new(&recording.source.path));
         self.recording = recording.status == RecordingStatus::Recording;
         self.clip_ids = recording
             .clips
@@ -1744,10 +1748,12 @@ impl Canvas {
         self.draw_wrapped_text(
             Point::new(width * 0.70, status_top as f32),
             &format!(
-                "{}\n{}\n{}",
+                "{}\nMODEL PATH {}\n{}\n{}\nSOURCE {}",
                 state.model_status,
+                display_path(&state.model_dir),
                 operation_label(state.operation),
-                state.clip_label()
+                state.clip_label(),
+                &state.recording_source,
             ),
             (width * 0.26) as i32,
             2,
