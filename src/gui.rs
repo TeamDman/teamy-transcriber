@@ -243,7 +243,7 @@ impl GuiApplication {
                 }
                 Err(error) => {
                     self.state.model_ready = false;
-                    self.state.model_status = "MODEL INVALID".to_string();
+                    self.state.model_status = format!("MODEL INVALID: {error}");
                     self.state.status_line = format!("ERROR: model validation failed: {error}");
                 }
             }
@@ -417,10 +417,13 @@ impl GuiApplication {
         self.persist_preferences();
         if self.state.model_ready {
             self.state.status_line = "Model ready for local transcription".to_string();
-        } else if self.state.model_status == "MODEL INVALID" {
-            self.state.status_line =
-                "Model files were found but failed validation; choose another model folder"
-                    .to_string();
+        } else if self.state.model_status.starts_with("MODEL INVALID:") {
+            self.state.status_line = format!(
+                "Model validation failed; choose another folder. {}",
+                self.state
+                    .model_status
+                    .trim_start_matches("MODEL INVALID: ")
+            );
         } else if self.state.model_status.starts_with("MODEL CTRANSLATE2") {
             self.state.status_line =
                 "CTranslate2 model detected; choose a native Burnpack model folder".to_string();

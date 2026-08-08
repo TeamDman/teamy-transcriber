@@ -147,6 +147,11 @@ two common local weight-container keys, `model_state_dict` and `state_dict`.
 Each candidate is loaded into a fresh Burn model, validated for missing/unused
 tensors, and only then allowed to create the transactional native package.
 
+2026-08-08: Preserved native-model validation details in the GUI recovery
+status. Selecting a malformed model now shows the specific validation reason
+alongside the instruction to choose another folder, rather than discarding the
+diagnostic behind a generic `MODEL INVALID` label.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
