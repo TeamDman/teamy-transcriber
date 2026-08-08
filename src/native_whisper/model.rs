@@ -76,7 +76,7 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     let dims_path = root.join(MODEL_DIMS_FILE_NAME);
     if burnpack_path.is_file() && dims_path.is_file() {
         let dims = read_dims_file(&dims_path)?;
-        return Ok(WhisperModelArtifacts {
+        let artifacts = WhisperModelArtifacts {
             root: root.to_path_buf(),
             layout: WhisperModelLayout::BurnPack,
             tokenizer,
@@ -85,7 +85,9 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
             burnpack_path: Some(burnpack_path),
             dims_path: Some(dims_path),
             dims: Some(dims),
-        });
+        };
+        validate_model_artifacts(&artifacts)?;
+        return Ok(artifacts);
     }
 
     let encoder_dir = root.join("encoder");
@@ -102,6 +104,7 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
             dims: None,
         };
         artifacts.dims = super::whisper::infer_dims_from_artifacts(&artifacts).ok();
+        validate_model_artifacts(&artifacts)?;
         return Ok(artifacts);
     }
 
@@ -112,6 +115,21 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
         MODEL_DIMS_FILE_NAME,
         TOKENIZER_FILE_NAME,
     )
+}
+
+fn validate_model_artifacts(artifacts: &WhisperModelArtifacts) -> eyre::Result<()> {
+    if let Some(dims) = &artifacts.dims
+        && artifacts.tokenizer.vocab_size != dims.text.n_vocab
+    {
+        bail!(
+            "native Whisper tokenizer vocabulary size {} does not match model vocabulary size {}",
+            artifacts.tokenizer.vocab_size,
+            dims.text.n_vocab
+        );
+    }
+    super::whisper::default_decoder_prompt_token_ids(artifacts)
+        .map(|_| ())
+        .wrap_err("native Whisper tokenizer is missing required transcription tokens")
 }
 
 fn read_dims_file(path: &Path) -> eyre::Result<WhisperDims> {

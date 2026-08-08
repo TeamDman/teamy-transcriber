@@ -76,6 +76,11 @@ loaded back through the native Burn runtime before activation, and failed
 preparations remove only their own newly created partial directory so a retry
 does not inherit misleading artifacts.
 
+2026-08-08: Made native model inspection reject tokenizer/model vocabulary
+mismatches and missing Whisper control tokens. Existing packages selected
+through MODEL now fail visibly before TRANSCRIBE can be enabled instead of
+waiting for a decoder-time token lookup or embedding failure.
+
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
