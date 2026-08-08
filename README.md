@@ -74,7 +74,7 @@ and transcript panel. The GUI is
 the complete first workflow surface: choose a local model directory, import an
 audio/video file by dialog or drag-and-drop (which automatically prepares normalized audio), record from a
 selected microphone, transcribe locally, review/edit the committed transcript,
-and export it through native file dialogs. Long-running capture, preparation,
+copy it to the system clipboard, and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
 bounded preparation/transcription progress and success/failure back into the
 visible status line. The status panel also shows a state-derived `NEXT`

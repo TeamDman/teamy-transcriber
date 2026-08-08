@@ -168,6 +168,11 @@ common `.bin` and `.ckpt` names in addition to `.pt` and `.pth`. The converter
 still validates the checkpoint contents and native Burnpack round trip, so a
 CTranslate2 `model.bin` remains an explicit incompatible-format diagnostic.
 
+2026-08-08: Closed the GUI copy half of the transcript output surface. The
+transcript panel now exposes `COPY`, copying the visible committed text or edit
+draft through the native clipboard and reporting clipboard failures in the
+status line; `EXPORT` remains the explicit persisted output path.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

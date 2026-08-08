@@ -45,6 +45,7 @@ use crate::workflow::prepare_recording_with_tools_and_profile;
 use crate::workflow::record_microphone;
 use crate::workflow::split_clip_at;
 use crate::workflow::transcribe_recording_with_profile_and_cancellation_and_progress;
+use arboard::Clipboard;
 use ash::Entry;
 use ash::vk;
 use eyre::Context;
@@ -326,6 +327,7 @@ impl GuiApplication {
             GuiAction::ToggleRecording => self.toggle_recording(),
             GuiAction::Prepare => self.start_prepare(),
             GuiAction::Transcribe => self.start_transcription(),
+            GuiAction::CopyTranscript => self.copy_transcript(),
             GuiAction::Export => self.start_export(),
             GuiAction::CommitTranscriptEdit => self.commit_edit(),
             GuiAction::RefreshDevices => self.refresh_devices(),
@@ -1039,6 +1041,26 @@ impl GuiApplication {
         });
     }
 
+    fn copy_transcript(&mut self) {
+        if self.state.recording_id.is_none() {
+            self.state.status_line = "Transcribe a clip before copying its text".to_string();
+            return;
+        }
+        let text = self.state.transcript_display().trim().to_string();
+        if text.is_empty() || text.starts_with("No transcript") {
+            self.state.status_line = "Transcribe a clip before copying its text".to_string();
+            return;
+        }
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            Ok(()) => {
+                self.state.status_line = "Transcript copied to the clipboard".to_string();
+            }
+            Err(error) => {
+                self.state.status_line = format!("ERROR: clipboard copy failed: {error}");
+            }
+        }
+    }
+
     fn start_export(&mut self) {
         let Some(recording_id) = self.state.recording_id else {
             self.state.status_line = "Import or record audio first".to_string();
@@ -1630,6 +1652,7 @@ enum GuiAction {
     ToggleRecording,
     Prepare,
     Transcribe,
+    CopyTranscript,
     Export,
     CommitTranscriptEdit,
     RefreshDevices,
@@ -1712,6 +1735,7 @@ struct GuiLayout {
     transcribe: Rect,
     waveform: Rect,
     transcript: Rect,
+    copy_transcript: Rect,
     export: Rect,
     refresh_devices: Rect,
     split_clip: Rect,
@@ -1744,7 +1768,8 @@ impl GuiLayout {
             transcribe: Rect::new(width * 0.84, height * 0.26, width * 0.96, height * 0.35),
             waveform: Rect::new(width * 0.05, height * 0.54, width * 0.67, height * 0.70),
             transcript: Rect::new(width * 0.05, height * 0.74, width * 0.67, height * 0.95),
-            export: Rect::new(width * 0.69, height * 0.54, width * 0.81, height * 0.64),
+            copy_transcript: Rect::new(width * 0.785, height * 0.54, width * 0.875, height * 0.64),
+            export: Rect::new(width * 0.69, height * 0.54, width * 0.78, height * 0.64),
             refresh_devices: Rect::new(width * 0.84, height * 0.37, width * 0.96, height * 0.46),
             split_clip: Rect::new(width * 0.69, height * 0.89, width * 0.81, height * 0.97),
             append_clip: Rect::new(width * 0.84, height * 0.89, width * 0.96, height * 0.97),
@@ -1753,7 +1778,7 @@ impl GuiLayout {
             next_clip: Rect::new(width * 0.76, height * 0.66, width * 0.81, height * 0.75),
             move_clip_left: Rect::new(width * 0.84, height * 0.66, width * 0.90, height * 0.75),
             move_clip_right: Rect::new(width * 0.91, height * 0.66, width * 0.96, height * 0.75),
-            delete_clip: Rect::new(width * 0.84, height * 0.54, width * 0.96, height * 0.64),
+            delete_clip: Rect::new(width * 0.88, height * 0.54, width * 0.96, height * 0.64),
             chunk_duration: Rect::new(width * 0.69, height * 0.78, width * 0.81, height * 0.87),
             audio_profile: Rect::new(width * 0.84, height * 0.78, width * 0.96, height * 0.87),
         }
@@ -2016,6 +2041,9 @@ impl GuiState {
         }
         if layout.export.contains(cursor) {
             return Some(GuiAction::Export);
+        }
+        if layout.copy_transcript.contains(cursor) {
+            return Some(GuiAction::CopyTranscript);
         }
         if layout.refresh_devices.contains(cursor) {
             return Some(GuiAction::RefreshDevices);
@@ -2864,6 +2892,12 @@ impl Canvas {
             "EXPORT",
             false,
             state.recording_id.is_some() && enabled,
+        );
+        self.button(
+            layout.copy_transcript,
+            "COPY",
+            false,
+            state.recording_id.is_some() && state.transcript_editable && enabled,
         );
         self.button(layout.refresh_devices, "MIC LIST", false, enabled);
         self.button(
@@ -3809,6 +3843,19 @@ mod tests {
         };
 
         assert_eq!(state.click(size), Some(GuiAction::DeleteClip));
+    }
+
+    #[test]
+    fn transcript_copy_hit_targets_copy_action() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(990.0, 450.0),
+            recording_id: Some(RecordingId::new()),
+            transcript_editable: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::CopyTranscript));
     }
 
     #[test]
