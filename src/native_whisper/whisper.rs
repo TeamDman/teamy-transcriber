@@ -1172,6 +1172,7 @@ fn load_packed_float_tensor<B: Backend, const D: usize>(
 )]
 mod tests {
     use super::AudioEncoderDims;
+    use super::DecodeStopReason;
     use super::TextDecoderDims;
     use super::WhisperAudioEncoderConfig;
     use super::WhisperCpuBackend;
@@ -1179,6 +1180,7 @@ mod tests {
     use super::WhisperModelConfig;
     use super::WhisperTextDecoderConfig;
     use super::attn_decoder_mask;
+    use super::greedy_decode_with_model;
     use super::greedy_next_token_id;
     use super::has_repeated_token_collapse;
     use super::run_prompt_forward_pass;
@@ -1377,6 +1379,16 @@ mod tests {
         assert_eq!(summary.prompt_token_ids.len(), 4);
         assert_eq!(summary.encoder_output_dims, [1, 1500, 4]);
         assert_eq!(summary.decoder_logits_dims, [1, 4, 5]);
+
+        let decode = greedy_decode_with_model(&artifacts, &features, 4)
+            .expect("generated Burnpack model should complete greedy decoding");
+        assert_eq!(decode.prompt_token_ids, summary.prompt_token_ids);
+        assert_eq!(decode.encoder_output_dims, [1, 1500, 4]);
+        assert_eq!(decode.last_decoder_logits_dims, [1, 4, 5]);
+        assert!(decode.terminated_on_end_of_text);
+        assert_eq!(decode.stop_reason, DecodeStopReason::EndOfText);
+        assert!(decode.generated_token_ids.is_empty());
+        assert!(decode.text.is_empty());
 
         std::fs::remove_dir_all(root).expect("model fixture directory should be removable");
     }

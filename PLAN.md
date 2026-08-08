@@ -129,6 +129,12 @@ existing reducer, exposes a persisted `HOTKEY ON/OFF` control, and reports
 registration conflicts without blocking startup. Runtime interaction with a
 human-operated tray menu and a conflict/restart matrix remains open.
 
+2026-08-08: Extended the tiny native Burnpack fixture through the full greedy
+decode path. The test now loads the package, constructs Whisper features,
+decodes until the end-of-text token, and checks stop reason, dimensions, and
+tokenizer output. This proves the native decoder path with a deterministic
+fixture; a real Whisper checkpoint and quality transcript remain unverified.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
@@ -766,7 +772,10 @@ The next implementation turn should close the remaining GUI evidence and lifecyc
 4. Expand the backend lifecycle with staged results and structured timing/quality receipts; cooperative cancellation and bounded per-clip progress are now present at the workflow/GUI boundary.
 5. Keep local model inventory and native artifact validation separate from any future CDN acquisition.
 
-Do not add CDN acquisition, tray hotkeys, or the Slug renderer until the GUI-only core workflow has a real model/device evidence run; those remain downstream or optional.
+Do not add CDN acquisition or make the experimental Slug renderer the default
+until the GUI-only core workflow has a real model/device evidence run. Tray and
+hotkey behavior is implemented; its human-operated conflict/restart check is
+still an evidence task rather than a second control path.
 
 ## Plan completion rule
 
