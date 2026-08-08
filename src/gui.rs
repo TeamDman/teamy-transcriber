@@ -368,8 +368,19 @@ impl GuiApplication {
         else {
             return;
         };
-        let kind = asset_kind_for_path(&path);
-        match create_recording(&self.store, kind, &path) {
+        self.import_path(&path);
+    }
+
+    fn import_path(&mut self, path: &Path) {
+        if !is_supported_media_path(path) {
+            self.state.status_line = format!(
+                "ERROR: unsupported media file {}; choose an audio or video file",
+                display_path(path)
+            );
+            return;
+        }
+        let kind = asset_kind_for_path(path);
+        match create_recording(&self.store, kind, path) {
             Ok(recording_id) => {
                 if let Err(error) = self.reload_recording(recording_id) {
                     self.state.status_line =
@@ -377,7 +388,7 @@ impl GuiApplication {
                     return;
                 }
                 self.state.status_line =
-                    format!("Imported {}; preparing audio...", display_path(&path));
+                    format!("Imported {}; preparing audio...", display_path(path));
                 self.start_prepare();
             }
             Err(error) => {
@@ -1463,6 +1474,20 @@ impl ApplicationHandler for GuiApplication {
                     self.state.commit_input(&text);
                 }
             }
+            WindowEvent::HoveredFile(_) => {
+                if matches!(self.state.operation, GuiOperation::Idle) {
+                    self.state.status_line =
+                        "Release the audio or video file to import it".to_string();
+                }
+            }
+            WindowEvent::DroppedFile(path) => {
+                if matches!(self.state.operation, GuiOperation::Idle) {
+                    self.import_path(&path);
+                } else {
+                    self.state.status_line =
+                        "Finish the current operation before importing another file".to_string();
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -2150,6 +2175,30 @@ fn asset_kind_for_path(path: &Path) -> AssetKind {
     }
 }
 
+fn is_supported_media_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "wav"
+                | "mp3"
+                | "m4a"
+                | "flac"
+                | "ogg"
+                | "aac"
+                | "opus"
+                | "aiff"
+                | "mp4"
+                | "mov"
+                | "mkv"
+                | "webm"
+                | "avi"
+        )
+    )
+}
+
 fn default_save_dir(app_home: &AppHome) -> PathBuf {
     std::env::var_os("USERPROFILE").map_or_else(
         || app_home.0.join("exports"),
@@ -2666,7 +2715,7 @@ impl Canvas {
             },
         );
         self.button(layout.recording, "RECENT", false, enabled);
-        self.button(layout.import, "IMPORT", false, enabled);
+        self.button(layout.import, "IMPORT/DROP", false, enabled);
         self.button(
             layout.hotkey,
             if state.global_hotkey_enabled {
@@ -3644,12 +3693,23 @@ mod tests {
     use super::Point;
     use super::RecordingId;
     use super::glyph;
+    use super::is_supported_media_path;
     use super::missing_readiness;
     use super::model_status_text;
     use super::next_gui_step;
     use ash::vk;
     use winit::dpi::PhysicalPosition;
     use winit::dpi::PhysicalSize;
+
+    #[test]
+    fn dropped_media_filter_accepts_audio_video_and_rejects_other_files() {
+        assert!(is_supported_media_path(std::path::Path::new("sample.WAV")));
+        assert!(is_supported_media_path(std::path::Path::new("sample.Mp4")));
+        assert!(!is_supported_media_path(std::path::Path::new("notes.txt")));
+        assert!(!is_supported_media_path(std::path::Path::new(
+            "no-extension"
+        )));
+    }
 
     #[test]
     fn reference_labels_have_bitmap_glyphs() {

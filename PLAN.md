@@ -158,6 +158,11 @@ Double-clicking `teamy-transcriber.exe` now opens the same Ash/Vulkan window as
 scripts and diagnostics. A bounded no-argument process smoke reached a
 responsive native window handle.
 
+2026-08-08: Added drag-and-drop media import to the same GUI action path as the
+IMPORT dialog. Winit file-drop events now validate supported audio/video
+extensions, create the recording, and start the existing asynchronous prepare
+workflow; unsupported dropped files receive an explicit status diagnostic.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.

@@ -72,7 +72,7 @@ to a small deterministic bitmap alphabet when no supported system font is
 available), a microphone control, microphone/save-directory selectors, waveform,
 and transcript panel. The GUI is
 the complete first workflow surface: choose a local model directory, import an
-audio/video file (which automatically prepares normalized audio), record from a
+audio/video file by dialog or drag-and-drop (which automatically prepares normalized audio), record from a
 selected microphone, transcribe locally, review/edit the committed transcript,
 and export it through native file dialogs. Long-running capture, preparation,
 transcription, edit, and export work runs off the window thread and reports
