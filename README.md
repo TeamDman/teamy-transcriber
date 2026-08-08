@@ -20,6 +20,9 @@ The project is informed by Teamy-Studio, teamy-llm-service, teamy-terminal, whis
 The initial repository baseline is a template-backed diagnostic CLI:
 
 ~~~powershell
+# With no arguments, the executable opens the GUI directly:
+teamy-transcriber.exe
+# The explicit command remains available for scripts and development:
 cargo run -- doctor
 cargo run -- microphone list
 # Capture one explicit microphone interval (Windows):

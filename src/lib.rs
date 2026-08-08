@@ -20,6 +20,7 @@ use crate::cli::Cli;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::Utc;
+use std::ffi::OsString;
 use teamy_cancellation::CtrlCHandler;
 
 /// Version string combining package version, git repository metadata, and build time.
@@ -76,12 +77,20 @@ pub fn main() -> eyre::Result<()> {
     // Parse command line arguments using figue
     // unwrap() is figue's intended CLI entry behavior:
     // it exits with proper codes for --help/--version/completions/parse-errors.
+    let command_line_arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if launch_gui_without_command(&command_line_arguments) {
+        let global_args = crate::cli::global_args::GlobalArgs::default();
+        logging_init::init_logging(&global_args, cancellation_token.clone())?;
+        gui::run()?;
+        cancellation_token.bail_if_cancelled()?;
+        return Ok(());
+    }
     let version = version();
 
     let cli: Cli = figue::Driver::new(
         figue::builder::<Cli>()
             .expect("schema should be valid")
-            .cli(move |cli| cli.args_os(std::env::args_os().skip(1)).strict())
+            .cli(move |cli| cli.args_os(command_line_arguments).strict())
             .help(move |help| {
                 help.version(version)
                     .include_implementation_source_file(true)
@@ -110,4 +119,20 @@ pub fn main() -> eyre::Result<()> {
     output.emit(requested_output_format)?;
     cancellation_token.bail_if_cancelled()?;
     Ok(())
+}
+
+fn launch_gui_without_command(arguments: &[OsString]) -> bool {
+    arguments.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_command_arguments_request_the_gui() {
+        let arguments: Vec<OsString> = Vec::new();
+        assert!(launch_gui_without_command(&arguments));
+        assert!(!launch_gui_without_command(&[OsString::from("doctor")]));
+    }
 }

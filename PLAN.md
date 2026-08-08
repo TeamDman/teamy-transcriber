@@ -152,6 +152,12 @@ status. Selecting a malformed model now shows the specific validation reason
 alongside the instruction to choose another folder, rather than discarding the
 diagnostic behind a generic `MODEL INVALID` label.
 
+2026-08-08: Made the built executable GUI-first for zero-argument launches.
+Double-clicking `teamy-transcriber.exe` now opens the same Ash/Vulkan window as
+`teamy-transcriber gui`; all explicit CLI subcommands remain unchanged for
+scripts and diagnostics. A bounded no-argument process smoke reached a
+responsive native window handle.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
