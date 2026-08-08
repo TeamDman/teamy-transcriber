@@ -110,7 +110,9 @@ The native model package is assumed to be available locally for this
 implementation slice; the application does not download or convert it. The
 preferred model directory contains `model.bpk`, `dims.json`, and
 `tokenizer.json`. The runtime also recognizes the older packed-NPY
-`encoder/`/`decoder/` layout during migration.
+`encoder/`/`decoder/` layout during migration. If a selected folder contains
+a CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
+incompatible format and explains that a native Burnpack package is required.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for

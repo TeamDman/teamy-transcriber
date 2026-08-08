@@ -205,7 +205,7 @@ impl GuiApplication {
         });
         let readiness = backend.readiness();
         self.state.model_readiness = readiness.clone();
-        self.state.model_status = model_status_text(&readiness);
+        self.state.model_status = model_status_text(&self.state.model_dir, &readiness);
         self.state.model_ready = model_is_ready(&readiness);
         if self.state.model_ready {
             match inspect_model_dir(&self.state.model_dir) {
@@ -359,6 +359,9 @@ impl GuiApplication {
             self.state.status_line =
                 "Model files were found but failed validation; choose another model folder"
                     .to_string();
+        } else if self.state.model_status.starts_with("MODEL CTRANSLATE2") {
+            self.state.status_line =
+                "CTranslate2 model detected; choose a native Burnpack model folder".to_string();
         } else {
             self.state.status_line =
                 "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
@@ -1888,17 +1891,17 @@ fn model_is_ready(readiness: &NativeWhisperReadiness) -> bool {
         && readiness.tokenizer == RuntimeAssetStatus::Present
 }
 
-fn model_status_text(readiness: &NativeWhisperReadiness) -> String {
+fn model_status_text(root: &Path, readiness: &NativeWhisperReadiness) -> String {
+    let label = if model_is_ready(readiness) {
+        "READY"
+    } else if root.join("model.bin").is_file() {
+        "CTRANSLATE2 UNSUPPORTED"
+    } else {
+        "MISSING"
+    };
     format!(
         "MODEL {} W:{} D:{} T:{}",
-        if model_is_ready(readiness) {
-            "READY"
-        } else {
-            "MISSING"
-        },
-        readiness.weights,
-        readiness.dims,
-        readiness.tokenizer
+        label, readiness.weights, readiness.dims, readiness.tokenizer
     )
 }
 
@@ -3414,6 +3417,8 @@ mod tests {
     use super::INK;
     use super::Point;
     use super::glyph;
+    use super::missing_readiness;
+    use super::model_status_text;
     use super::next_gui_step;
     use ash::vk;
     use winit::dpi::PhysicalPosition;
@@ -3583,5 +3588,22 @@ mod tests {
             next_gui_step(&state),
             "CLICK IMPORT OR THE MICROPHONE TO START"
         );
+    }
+
+    #[test]
+    fn incompatible_ctranslate_model_is_named_for_gui_recovery() {
+        let root = std::env::temp_dir().join(format!(
+            "teamy-transcriber-gui-model-format-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("model fixture directory should be creatable");
+        std::fs::write(root.join("model.bin"), b"CTranslate2 fixture")
+            .expect("model fixture should be writable");
+
+        let status = model_status_text(&root, &missing_readiness());
+        assert!(status.starts_with("MODEL CTRANSLATE2 UNSUPPORTED"));
+
+        std::fs::remove_dir_all(root).expect("model fixture directory should be removable");
     }
 }

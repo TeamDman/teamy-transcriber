@@ -53,6 +53,14 @@ This keeps the zero-to-first-use path actionable without requiring CLI
 knowledge; model acquisition and microphone evidence remain separate open
 boundaries.
 
+2026-08-08: Audited the local Hugging Face cache and found a
+`Systran/faster-whisper-large-v3` snapshot containing a 3.1 GB CTranslate2
+`model.bin`, tokenizer, and config. It is not compatible with the active pure
+Rust Burn runtime, which requires `model.bpk` + `dims.json` + `tokenizer.json`
+or the legacy packed-NPY layout. No CTranslate2-to-Burn converter exists in
+this repository, so the GUI reports the native package contract rather than
+silently reintroducing a Python/CLI prerequisite.
+
 2026-08-08: Added cooperative GUI transcription cancellation. The GUI exposes `CANCEL` and `Escape` while recording/transcribing; transcription observes the request at clip boundaries, retains completed clip receipts, and reports `cancelled` explicitly in the shared and CLI reports. The native per-clip decoder remains synchronous, so cancellation does not interrupt an already-running clip.
 
 2026-08-08: Connected persisted clip reordering to the GUI. `LEFT`/`RIGHT` now dispatch the existing replayable `MoveClip` command through shared workflow orchestration, retain the selected clip across reload, and report the new position without introducing an NLE-style timeline editor.
