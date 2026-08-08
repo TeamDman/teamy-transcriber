@@ -189,7 +189,7 @@ pub fn convert_pytorch_checkpoint(
         );
     }
 
-    std::fs::create_dir_all(output_dir)
+    std::fs::create_dir(output_dir)
         .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
     let mut partial_output = PartialModelDirectory::new(output_dir);
     let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
