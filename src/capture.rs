@@ -256,6 +256,7 @@ mod windows_capture {
     use std::thread;
     use std::time::Duration;
     use std::time::Instant;
+    use windows::Win32::Foundation::E_INVALIDARG;
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_SHARED;
     use windows::Win32::Media::Audio::ERole;
@@ -265,7 +266,6 @@ mod windows_capture {
     use windows::Win32::Media::Audio::MMDeviceEnumerator;
     use windows::Win32::Media::Audio::WAVEFORMATEX;
     use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
-    use windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE_0;
     use windows::Win32::Media::Audio::eCapture;
     use windows::Win32::System::Com::CLSCTX_ALL;
     use windows::Win32::System::Com::CLSCTX_INPROC_SERVER;
@@ -284,6 +284,7 @@ mod windows_capture {
     const KSDATAFORMAT_SUBTYPE_PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
     const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID =
         GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
+    const WASAPI_SHARED_BUFFER_100NS: i64 = 10_000_000;
 
     struct ComApartment {
         uninitialize_on_drop: bool,
@@ -408,14 +409,13 @@ mod windows_capture {
         }
         let capture_format = unsafe { audio_capture_format(mix_format.0) }
             .wrap_err("invalid microphone mix format")?;
-        let canonical_format = canonical_wave_format(capture_format);
-        let initialize_format = std::ptr::addr_of!(canonical_format.Format);
+        let initialize_format = mix_format.0;
         let wave_format = unsafe { mix_format.0.read_unaligned() };
         let format_tag = wave_format.wFormatTag;
         let bits_per_sample = wave_format.wBitsPerSample;
         let cb_size = wave_format.cbSize;
         let avg_bytes_per_sec = wave_format.nAvgBytesPerSec;
-        let mut closest_format = initialize_format.cast_mut();
+        let mut closest_format = std::ptr::null_mut();
         let format_support = unsafe {
             audio_client.IsFormatSupported(
                 AUDCLNT_SHAREMODE_SHARED,
@@ -423,7 +423,7 @@ mod windows_capture {
                 Some(&raw mut closest_format),
             )
         };
-        if closest_format != initialize_format.cast_mut() && !closest_format.is_null() {
+        if !closest_format.is_null() {
             unsafe { CoTaskMemFree(Some(closest_format.cast::<c_void>())) };
         }
         if format_support.is_err() {
@@ -435,20 +435,24 @@ mod windows_capture {
                 avg_bytes_per_sec,
             );
         }
-        let buffer_duration_100ns = 0;
         let initialize_result = unsafe {
             audio_client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
                 0,
-                buffer_duration_100ns,
+                WASAPI_SHARED_BUFFER_100NS,
                 0,
                 initialize_format,
                 None,
             )
         };
         initialize_result.map_err(|error| {
+            let recovery_hint = if error.code() == E_INVALIDARG {
+                " The endpoint accepted its advertised mix format probe but rejected stream initialization; check Windows microphone privacy access and whether another application has exclusive control of the device."
+            } else {
+                ""
+            };
             eyre::eyre!(
-                "failed to initialize shared microphone stream ({capture_format:?}, buffer_100ns={buffer_duration_100ns}, format_support={format_support:?}): {error}"
+                "failed to initialize shared microphone stream ({capture_format:?}, buffer_100ns={WASAPI_SHARED_BUFFER_100NS}, format_support={format_support:?}): {error}.{recovery_hint}"
             )
         })?;
         let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
@@ -557,39 +561,6 @@ mod windows_capture {
             block_align: wave_format.nBlockAlign,
             sample_format,
         })
-    }
-
-    fn canonical_wave_format(format: AudioCaptureFormat) -> WAVEFORMATEXTENSIBLE {
-        let bits_per_sample = match format.sample_format {
-            AudioSampleFormat::Float32 | AudioSampleFormat::Pcm32 => 32,
-            AudioSampleFormat::Pcm24 => 24,
-            AudioSampleFormat::Pcm16 => 16,
-        };
-        let sample_format = match format.sample_format {
-            AudioSampleFormat::Float32 => KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
-            AudioSampleFormat::Pcm16 | AudioSampleFormat::Pcm24 | AudioSampleFormat::Pcm32 => {
-                KSDATAFORMAT_SUBTYPE_PCM
-            }
-        };
-        WAVEFORMATEXTENSIBLE {
-            Format: WAVEFORMATEX {
-                wFormatTag: WAVE_FORMAT_EXTENSIBLE,
-                nChannels: format.channels,
-                nSamplesPerSec: format.sample_rate_hz,
-                nAvgBytesPerSec: format.sample_rate_hz * u32::from(format.block_align),
-                nBlockAlign: format.block_align,
-                wBitsPerSample: bits_per_sample,
-                cbSize: u16::try_from(
-                    size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>(),
-                )
-                .unwrap_or(0),
-            },
-            Samples: WAVEFORMATEXTENSIBLE_0 {
-                wValidBitsPerSample: bits_per_sample,
-            },
-            dwChannelMask: 0,
-            SubFormat: sample_format,
-        }
     }
 
     fn pcm_sample_format(bits_per_sample: u16) -> eyre::Result<AudioSampleFormat> {
