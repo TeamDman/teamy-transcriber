@@ -404,6 +404,17 @@ audio hash as the CPU canary. CUDA acceptance is currently bounded to this GPU,
 LibTorch build, and tiny model; multi-GPU, packaged-DLL, and large-model
 performance evidence remain pending.
 
+2026-08-24: After commit `1e2ff5e`, clean receipts
+`target/vctk-p230-385-tiny-cuda-4.json` and
+`target/vctk-p230-385-tiny-cpu-3.json` both pass with schema version 2. The
+CUDA receipt explicitly records `cuda:0`, `torch_cuda_available: true`, one
+device, cuDART 12080, and cuDNN 91900; the CPU receipt records `cpu` while
+using the same tch/LibTorch model implementation. Both produce the exact
+reference transcript, CER/WER 0, identical transcript/model/audio hashes, and
+successful replay. The LibTorch-enabled `check-all.ps1` gate passes, and
+`cargo check --no-default-features --all-targets` passes without warnings from
+the CUDA cfg anchor.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
