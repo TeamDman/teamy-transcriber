@@ -6177,6 +6177,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "sha2",
  "teamy-cancellation",
  "thiserror 1.0.69",
  "tokenizers",

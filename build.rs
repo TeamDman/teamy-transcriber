@@ -80,7 +80,18 @@ fn git_output(args: &[&str]) -> Option<String> {
 }
 
 fn git_output_allow_empty(args: &[&str]) -> Option<String> {
-    Command::new("git")
+    let mut command = Command::new("git");
+    if let Some(manifest_dir) = std::env::var_os("CARGO_MANIFEST_DIR") {
+        command
+            .arg("-c")
+            .arg(format!(
+                "safe.directory={}",
+                std::path::PathBuf::from(&manifest_dir).display()
+            ))
+            .arg("-C")
+            .arg(manifest_dir);
+    }
+    command
         .args(args)
         .output()
         .ok()

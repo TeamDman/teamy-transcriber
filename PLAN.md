@@ -4,8 +4,8 @@ Status: active implementation slice; the GUI now owns the first end-to-end local
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
-Last updated: 2026-08-08
-Current focus: [~] verify and finish the GUI-only import, capture, transcribe, edit, and export workflow
+Last updated: 2026-08-23
+Current focus: [~] establish a reproducible native-Whisper VCTK canary while preserving the GUI workflow
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -184,6 +184,12 @@ stop-controlled WAV artifact contract. A rebuilt capture smoke exercised the
 fallback here; CPAL also receives `0x80070057` during stream creation, so this
 managed session still cannot provide a saved microphone fixture.
 
+2026-08-08: Added a visible GUI `REVEAL RECORDING` action. It opens the active
+recording's persisted directory through the platform file manager, exposing
+the source/derived audio, event receipt, manifest, and transcript artifacts
+without requiring the CLI; the action is backed by the same stable
+`RecordingStore::recording_dir` path used by persistence.
+
 2026-08-08: Added replayable GUI clip editing boundaries. `S` replaces the
 selected active clip with two midpoint source ranges; `A` replaces the selected
 clip and its next active source-time-adjacent clip with one combined range.
@@ -264,6 +270,33 @@ a real local model/device fixture, not on missing control wiring.
 2026-08-08: Re-ran the full quality gate and a launch smoke after the recovery
 labels/control-safety changes. `check-all.ps1` passes, and the GUI process
 reaches the event loop and remains responsive with a writable app-home override.
+
+2026-08-23: Audited and removed only an interrupted, uncompilable local-LLM GUI
+WIP that referenced undefined actions/configuration; the existing Ash/Vulkan
+GUI, local native-model preparation, and `REVEAL RECORDING` work remain intact.
+The native model contract is unchanged and no CDN/model acquisition was added.
+
+2026-08-23: Added the portable `fixtures/vctk-p230-385.json` descriptor and
+typed `verify speech vctk-p230-385` command. The descriptor records the
+user-owned VCTK 0.80 attribution, relative sample path, expected source hash
+`1580043a209675e1a5caa32fe41e1cb4725e496728ed62f7488cc6c72772f9f0`, reference
+text, and deterministic 16 kHz mono normalization policy; no corpus media is
+tracked. Missing corpus produces `unavailable` with `passed: false`.
+
+2026-08-23: Ran the real VCTK sample through import, deterministic WAV
+normalization, persisted manifest/events, and replay evidence. The normalized
+artifact is 153,176 bytes with SHA-256
+`692424b61419a0fd8a59bb0e6237c5f21cbc732fede91ec6c3651fcb5c259ef1`; a
+missing native model produces an honest `failed` receipt at the model stage
+while replay reports one event, next sequence 2, and a matching materialized
+recording. A cached `Systran/faster-whisper-large-v3` CTranslate2 directory was
+fingerprinted but also fails honestly because it contains `model.bin` rather
+than the required native Burnpack/legacy-NPY layout. The native model-backed
+transcript and CER/WER oracle remain unverified pending a compatible local
+model package.
+
+2026-08-23: `cargo fmt --all`, `cargo check --all-targets`, and
+`cargo test --all-targets` pass (38 library tests plus all integration suites).
 
 ## Plan operating rules
 
@@ -533,7 +566,13 @@ Completion: A pure domain crate can load a manifest, apply valid commands, rejec
 
 Work: Add short licensed or generated audio fixtures, at least one video fixture, silence/noise/speech cases, and expected normalized metadata. Keep large/private recordings out of Git.
 
-Validation: A generated stereo WAV fixture and one local VCTK speech sample exercise metadata, downmixing, resampling, and output duration without a microphone, GPU, or hosted service. The VCTK check is empirical and user-owned; video, silence/noise cases, checked-in checksums, and complete provenance fixtures are still pending.
+Validation: The generated stereo WAV fixture and the user-owned VCTK sample
+exercise metadata, downmixing, resampling, output duration, and the typed
+import-to-persist canary without a microphone, GPU, or hosted service. The
+portable descriptor and source checksum are checked in, while corpus media is
+not; missing-corpus and incompatible-model outcomes are empirically non-passing
+receipts. Video, silence/noise cases, and a native-model-backed oracle remain
+pending.
 
 Completion: A fresh checkout can exercise import, normalization metadata, clip boundaries, and a fake transcription backend.
 
@@ -598,9 +637,11 @@ mono input, builds Whisper log-mel features in Rust, loads Burn weights, and
 returns raw transcript text. VAD/alignment remain later capabilities.
 
 Validation: Rust unit and integration tests pass, including deterministic
-frontend and model-shape checks. A real local native model, output checksum,
-long-input ordering, bounded work, cancellation, and quality/timing matrix are
-pending a supplied model package.
+frontend and model-shape checks. The real VCTK canary now verifies input hash,
+import, normalization, persisted artifacts, model fingerprinting, and honest
+model failure/replay receipts; a real compatible native model, transcript
+output checksum, long-input ordering, bounded work, cancellation, and
+quality/timing matrix remain pending a supplied model package.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -623,10 +664,13 @@ persists clip processing/failure transitions, exports the latest transcript,
 and projects them through `recording show`; import/video fixture execution,
 ordered result staging, progress, and cancellation remain pending.
 
-Validation: The no-GUI command path, event receipt, VCTK normalization smoke,
-native frontend/model tests, persisted failure state, and full repository gate
-pass. Actual model-backed inference and timing receipts are unverified until a
-local native model fixture is available.
+Validation: The typed no-GUI canary traverses the real VCTK import, 16 kHz mono
+normalization, persisted recording/events, native model inspection, and replay
+receipt; missing corpus and incompatible local models are explicitly
+non-passing. Native frontend/model tests and the full repository gate pass.
+Actual model-backed inference, committed raw-ASR text, CER/WER, and successful
+timing evidence remain unverified until a compatible native model fixture is
+available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 

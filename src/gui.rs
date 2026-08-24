@@ -313,6 +313,7 @@ impl GuiApplication {
             GuiAction::ChooseModel => self.choose_model(),
             GuiAction::ChooseMediaTools => self.choose_media_tools(),
             GuiAction::ChooseSaveDirectory => self.choose_save_directory(),
+            GuiAction::RevealRecording => self.reveal_recording(),
             GuiAction::CycleMicrophone => self.cycle_microphone(),
             GuiAction::CycleRecording => self.cycle_recording(),
             GuiAction::PreviousClip => self.cycle_clip(-1),
@@ -554,6 +555,30 @@ impl GuiApplication {
         self.state.save_dir = path;
         self.persist_preferences();
         self.state.status_line = format!("Save directory: {}", display_path(&self.state.save_dir));
+    }
+
+    fn reveal_recording(&mut self) {
+        let Some(recording_id) = self.state.recording_id else {
+            self.state.status_line = "Import or record audio first".to_string();
+            return;
+        };
+        let directory = self.store.recording_dir(recording_id);
+        if !directory.is_dir() {
+            self.state.status_line = format!(
+                "ERROR: recording folder does not exist: {}",
+                display_path(&directory)
+            );
+            return;
+        }
+        match open::that_detached(&directory) {
+            Ok(()) => {
+                self.state.status_line =
+                    format!("Opened recording folder: {}", display_path(&directory));
+            }
+            Err(error) => {
+                self.state.status_line = format!("ERROR: could not open recording folder: {error}");
+            }
+        }
     }
 
     fn cycle_microphone(&mut self) {
@@ -1659,6 +1684,7 @@ enum GuiAction {
     CancelOperation,
     CancelEdit,
     ToggleHotkey,
+    RevealRecording,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1730,6 +1756,7 @@ struct GuiLayout {
     recording: Rect,
     microphone: Rect,
     save_directory: Rect,
+    reveal_recording: Rect,
     media_tools: Rect,
     prepare: Rect,
     transcribe: Rect,
@@ -1763,6 +1790,7 @@ impl GuiLayout {
             recording: Rect::new(width * 0.56, 16.0, width * 0.68, 94.0),
             microphone: Rect::new(width * 0.27, height * 0.26, width * 0.63, height * 0.35),
             save_directory: Rect::new(width * 0.27, height * 0.37, width * 0.63, height * 0.46),
+            reveal_recording: Rect::new(width * 0.27, height * 0.47, width * 0.63, height * 0.52),
             media_tools: Rect::new(width * 0.69, height * 0.37, width * 0.81, height * 0.46),
             prepare: Rect::new(width * 0.69, height * 0.26, width * 0.81, height * 0.35),
             transcribe: Rect::new(width * 0.84, height * 0.26, width * 0.96, height * 0.35),
@@ -2029,6 +2057,9 @@ impl GuiState {
         }
         if layout.save_directory.contains(cursor) {
             return Some(GuiAction::ChooseSaveDirectory);
+        }
+        if layout.reveal_recording.contains(cursor) {
+            return Some(GuiAction::RevealRecording);
         }
         if layout.media_tools.contains(cursor) {
             return Some(GuiAction::ChooseMediaTools);
@@ -2838,6 +2869,12 @@ impl Canvas {
             &compact_text(&format!("SAVE: {}", display_path(&state.save_dir)), 33),
             2,
             ink,
+        );
+        self.button(
+            layout.reveal_recording,
+            "REVEAL RECORDING",
+            false,
+            state.recording_id.is_some() && enabled,
         );
         self.button(layout.media_tools, "TOOLS", false, enabled);
         self.button(layout.prepare, "PREPARE", state.prepared, enabled);
@@ -3826,6 +3863,18 @@ mod tests {
         };
 
         assert_eq!(state.click(size), Some(GuiAction::ChooseMediaTools));
+    }
+
+    #[test]
+    fn reveal_recording_hit_targets_saved_folder_action() {
+        let size = PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT);
+        let mut state = GuiState {
+            cursor: PhysicalPosition::new(540.0, 380.0),
+            recording_id: Some(RecordingId::new()),
+            ..GuiState::default()
+        };
+
+        assert_eq!(state.click(size), Some(GuiAction::RevealRecording));
     }
 
     #[test]

@@ -134,6 +134,26 @@ For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
 builds or automated tests, and it must not be copied into this repository.
 
+The bounded native-model canary is run explicitly with the supplied corpus
+and a locally prepared native Whisper model:
+
+~~~powershell
+.\target\debug\teamy-transcriber.exe --output-format json `
+  verify speech vctk-p230-385 `
+  --vctk-root G:\Datasets\VCTK\VCTK-Corpus-smaller `
+  --model-dir G:\path\to\native-whisper `
+  --receipt artifacts\verification\vctk-p230-385.json
+~~~
+
+The command never downloads the corpus or model. It writes a versioned
+receipt for `passed`, `failed`, or `unavailable` outcomes and only reports
+`passed` when the real WAV is imported, normalized to 16 kHz mono, persisted,
+transcribed by the native Burn backend, committed as raw ASR, and matched to
+the descriptor reference. The model directory must contain the native
+`model.bpk` + `dims.json` + `tokenizer.json` package or the legacy packed-NPY
+layout; a CTranslate2/faster-whisper `model.bin` directory is an honest
+non-passing diagnostic.
+
 ## Development
 
 Run the repository quality gate:

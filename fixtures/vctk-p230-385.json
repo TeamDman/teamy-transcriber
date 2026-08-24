@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "logical_id": "vctk-p230-385",
+  "relative_audio_path": "wav48/p230/p230_385.wav",
+  "expected_audio_sha256": "1580043a209675e1a5caa32fe41e1cb4725e496728ed62f7488cc6c72772f9f0",
+  "reference_text": "If you can get it.",
+  "normalization_policy": {
+    "source_format": "VCTK 48 kHz WAV",
+    "target_sample_rate_hz": 16000,
+    "target_channels": 1,
+    "downmix": "arithmetic mean across source channels",
+    "resampling": "deterministic linear interpolation",
+    "output_format": "mono 16 kHz floating-point WAV"
+  },
+  "attribution": {
+    "corpus": "CSTR VCTK Corpus",
+    "version": "0.80",
+    "license": "Open Data Commons Attribution License (ODC-By) v1.0",
+    "source": "The Centre for Speech Technology Research, University of Edinburgh",
+    "notice": "Use the user-owned corpus under its accompanying COPYING and README files; no corpus media is distributed by this repository."
+  }
+}

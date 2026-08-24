@@ -12,6 +12,7 @@ pub mod paths;
 pub mod presentation;
 pub mod storage;
 pub mod transcription;
+pub mod verify;
 #[cfg(windows)]
 mod windows_startup;
 pub mod workflow;

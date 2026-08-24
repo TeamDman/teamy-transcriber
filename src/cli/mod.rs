@@ -8,6 +8,7 @@ pub mod microphone;
 pub mod model;
 pub mod output;
 pub mod recording;
+pub mod verify;
 
 use crate::cli::cache::CacheArgs;
 use crate::cli::doctor::DoctorArgs;
@@ -18,6 +19,7 @@ use crate::cli::microphone::MicrophoneArgs;
 use crate::cli::model::ModelArgs;
 use crate::cli::output::CliOutput;
 use crate::cli::recording::RecordingArgs;
+use crate::cli::verify::VerifyArgs;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use facet::Facet;
@@ -85,6 +87,8 @@ pub enum Command {
     Microphone(MicrophoneArgs),
     /// Recording and clip commands.
     Recording(RecordingArgs),
+    /// Reproducible local speech verification commands.
+    Verify(VerifyArgs),
 }
 
 impl Command {
@@ -101,6 +105,7 @@ impl Command {
             Command::Model(args) => args.invoke().await,
             Command::Microphone(args) => args.invoke().await,
             Command::Recording(args) => args.invoke().await,
+            Command::Verify(args) => args.invoke().await,
         }
     }
 }
