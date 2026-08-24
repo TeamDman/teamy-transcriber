@@ -884,6 +884,31 @@ pub fn export_recording(
     recording_id: RecordingId,
     requested_path: Option<PathBuf>,
 ) -> Result<ExportReport> {
+    export_recording_inner(store, recording_id, requested_path, false)
+}
+
+/// Export the latest transcript for each active clip with source-time ranges.
+///
+/// The ranges identify the persisted transcription segments; they are not
+/// word-level alignment timestamps.
+///
+/// # Errors
+///
+/// Returns an error when no committed transcript exists or the output cannot be written.
+pub fn export_recording_with_timestamps(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    requested_path: Option<PathBuf>,
+) -> Result<ExportReport> {
+    export_recording_inner(store, recording_id, requested_path, true)
+}
+
+fn export_recording_inner(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    requested_path: Option<PathBuf>,
+    include_timestamps: bool,
+) -> Result<ExportReport> {
     let recording = store
         .load_recording(recording_id)
         .wrap_err("failed to load recording manifest")?;
@@ -905,13 +930,25 @@ pub fn export_recording(
         if !text.is_empty() {
             text.push_str("\n\n");
         }
-        let _ = write!(
-            text,
-            "[clip {} | {}]\n{}",
-            clip.id,
-            provenance_label(transcript.provenance),
-            transcript.text.trim()
-        );
+        if include_timestamps {
+            let _ = writeln!(
+                text,
+                "[{} - {}] [clip {} | {}]",
+                format_timestamp(clip.source_range.start_us),
+                format_timestamp(clip.source_range.end_us),
+                clip.id,
+                provenance_label(transcript.provenance),
+            );
+            text.push_str(transcript.text.trim());
+        } else {
+            let _ = write!(
+                text,
+                "[clip {} | {}]\n{}",
+                clip.id,
+                provenance_label(transcript.provenance),
+                transcript.text.trim()
+            );
+        }
         transcript_count += 1;
     }
     if transcript_count == 0 {
@@ -929,6 +966,17 @@ pub fn export_recording(
         transcript_count,
         byte_count: text.len(),
     })
+}
+
+fn format_timestamp(microseconds: u64) -> String {
+    let total_milliseconds = microseconds / 1_000;
+    let milliseconds = total_milliseconds % 1_000;
+    let total_seconds = total_milliseconds / 1_000;
+    let seconds = total_seconds % 60;
+    let total_minutes = total_seconds / 60;
+    let minutes = total_minutes % 60;
+    let hours = total_minutes / 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}")
 }
 
 fn transcribe_clip(

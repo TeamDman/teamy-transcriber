@@ -2,6 +2,7 @@ use crate::cli::output::CliOutput;
 use crate::domain::RecordingId;
 use crate::storage::RecordingStore;
 use crate::workflow::export_recording;
+use crate::workflow::export_recording_with_timestamps;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
@@ -26,6 +27,10 @@ pub struct RecordingExportArgs {
     /// Destination text file; defaults to the recording transcript directory.
     #[facet(args::named)]
     pub output: Option<String>,
+    /// Prefix each persisted transcription segment with its source-time range.
+    #[facet(args::named, default)]
+    #[arbitrary(default)]
+    pub timestamps: bool,
 }
 
 impl RecordingExportArgs {
@@ -42,7 +47,12 @@ impl RecordingExportArgs {
             RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
         let app_home = crate::paths::AppHome::resolve()?;
         let store = RecordingStore::new(app_home.0);
-        let report = export_recording(&store, recording_id, self.output.map(PathBuf::from))?;
+        let output = self.output.map(PathBuf::from);
+        let report = if self.timestamps {
+            export_recording_with_timestamps(&store, recording_id, output)?
+        } else {
+            export_recording(&store, recording_id, output)?
+        };
 
         Ok(CliOutput::facet(RecordingExportReport {
             recording_id: recording_id.to_string(),
