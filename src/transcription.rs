@@ -4,6 +4,7 @@ use crate::domain::TranscriptProvenance;
 use crate::native_whisper::frontend::whisper_log_mel_spectrogram;
 use crate::native_whisper::model::MODEL_BURNPACK_FILE_NAME;
 use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
+use crate::native_whisper::model::MODEL_TORCHSCRIPT_FILE_NAME;
 use crate::native_whisper::model::TOKENIZER_FILE_NAME;
 use crate::native_whisper::model::inspect_model_dir;
 use crate::native_whisper::whisper::greedy_decode_with_model;
@@ -148,6 +149,7 @@ impl NativeWhisperBackend {
         let root = &self.config.model_dir;
         let weights = if file_status(&root.join(MODEL_BURNPACK_FILE_NAME))
             == RuntimeAssetStatus::Present
+            || file_status(&root.join(MODEL_TORCHSCRIPT_FILE_NAME)) == RuntimeAssetStatus::Present
             || (directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
                 && directory_status(&root.join("decoder")) == RuntimeAssetStatus::Present)
         {
@@ -155,10 +157,7 @@ impl NativeWhisperBackend {
         } else {
             RuntimeAssetStatus::Missing
         };
-        let dims = if file_status(&root.join(MODEL_DIMS_FILE_NAME)) == RuntimeAssetStatus::Present
-            || weights == RuntimeAssetStatus::Present
-                && directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
-        {
+        let dims = if file_status(&root.join(MODEL_DIMS_FILE_NAME)) == RuntimeAssetStatus::Present {
             RuntimeAssetStatus::Present
         } else {
             RuntimeAssetStatus::Missing
@@ -202,7 +201,7 @@ impl NativeWhisperBackend {
             || readiness.dims != RuntimeAssetStatus::Present
         {
             return Err(TranscriptionError::Configuration(format!(
-                "native model package is incomplete (weights={}, dims={}, tokenizer={})",
+                "native model package is incomplete (weights={}, dims={}, tokenizer={}); preferred tch/LibTorch layout is model.pt + dims.json + tokenizer.json",
                 readiness.weights, readiness.dims, readiness.tokenizer
             )));
         }
@@ -215,7 +214,17 @@ impl NativeWhisperBackend {
 impl TranscriptionBackend for NativeWhisperBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
-            backend_id: "whisper-burn-native-cpu".to_string(),
+            backend_id: if self
+                .config
+                .model_dir
+                .join(MODEL_TORCHSCRIPT_FILE_NAME)
+                .is_file()
+            {
+                "whisper-tch-libtorch-native"
+            } else {
+                "whisper-burn-native-cpu"
+            }
+            .to_string(),
             local_only: true,
             accepts_normalized_audio: true,
         }
@@ -230,9 +239,34 @@ impl TranscriptionBackend for NativeWhisperBackend {
             .map_err(|error| TranscriptionError::Configuration(error.to_string()))?;
         let samples = read_normalized_wav(&request.audio_path)?;
         let features = whisper_log_mel_spectrogram(&samples);
-        let result = greedy_decode_with_model(&artifacts, &features, self.config.max_decode_tokens)
-            .map_err(|error| TranscriptionError::Inference(error.to_string()))?;
-        let text = result.text.trim().to_string();
+        let text = match artifacts.layout {
+            crate::native_whisper::model::WhisperModelLayout::TorchScript => {
+                #[cfg(feature = "tch-native")]
+                {
+                    crate::native_whisper::tch::TchWhisperRuntime::from_artifacts(&artifacts)
+                        .and_then(|runtime| {
+                            runtime.greedy_decode(
+                                &artifacts,
+                                &features,
+                                self.config.max_decode_tokens,
+                            )
+                        })
+                        .map_err(|error| TranscriptionError::Inference(error.to_string()))?
+                }
+                #[cfg(not(feature = "tch-native"))]
+                {
+                    return Err(TranscriptionError::Configuration(
+                        "TorchScript Whisper model requires the tch-native feature".to_string(),
+                    ));
+                }
+            }
+            _ => {
+                greedy_decode_with_model(&artifacts, &features, self.config.max_decode_tokens)
+                    .map_err(|error| TranscriptionError::Inference(error.to_string()))?
+                    .text
+            }
+        };
+        let text = text.trim().to_string();
         if text.is_empty() {
             return Err(TranscriptionError::EmptyResult);
         }

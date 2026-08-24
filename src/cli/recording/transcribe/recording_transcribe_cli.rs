@@ -42,7 +42,7 @@ pub struct RecordingTranscribeArgs {
     /// Maximum number of decoder tokens generated for each clip.
     #[facet(args::named)]
     pub max_decode_tokens: Option<usize>,
-    /// Maximum source chunk duration in milliseconds; omitted uses one full-recording clip.
+    /// Maximum source chunk duration in milliseconds; omitted uses Whisper's 30-second window.
     #[facet(args::named)]
     pub chunk_duration_ms: Option<u64>,
 }

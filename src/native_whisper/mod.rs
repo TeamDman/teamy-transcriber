@@ -20,4 +20,6 @@
 pub mod frontend;
 pub mod model;
 pub mod prepare;
+#[cfg(feature = "tch-native")]
+pub mod tch;
 pub mod whisper;

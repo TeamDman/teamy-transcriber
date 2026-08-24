@@ -409,7 +409,7 @@ impl GuiApplication {
             .set_level(MessageLevel::Info)
             .set_title("Model setup")
             .set_description(
-                "Yes: choose an existing native Burnpack folder. No: prepare a local Whisper PyTorch checkpoint and tokenizer. Cancel: leave the current model unchanged.",
+                "Yes: choose an existing native TorchScript or Burnpack folder. No: prepare a local Whisper PyTorch checkpoint and tokenizer. Cancel: leave the current model unchanged.",
             )
             .set_buttons(MessageButtons::YesNoCancel)
             .show();
@@ -440,10 +440,11 @@ impl GuiApplication {
             );
         } else if self.state.model_status.starts_with("MODEL CTRANSLATE2") {
             self.state.status_line =
-                "CTranslate2 model detected; choose a native Burnpack model folder".to_string();
+                "CTranslate2 model detected; choose a local tch/LibTorch TorchScript Whisper folder"
+                    .to_string();
         } else {
             self.state.status_line =
-                "Model incomplete: select a folder containing model.bpk, dims.json, tokenizer.json"
+                "Model incomplete: select a folder containing model.pt, dims.json, tokenizer.json"
                     .to_string();
         }
     }

@@ -5,8 +5,32 @@ use std::time::UNIX_EPOCH;
 fn main() {
     add_build_script_inputs();
     add_exe_resources();
+    add_windows_cuda_link_anchor();
     add_git_metadata();
     add_build_timestamp();
+}
+
+/// Keep the CUDA `LibTorch` import library alive in Windows release builds.
+fn add_windows_cuda_link_anchor() {
+    if !cfg!(windows) || !cfg!(feature = "tch-native") {
+        return;
+    }
+    let Some(libtorch) = std::env::var_os("LIBTORCH") else {
+        return;
+    };
+    let libtorch = std::path::PathBuf::from(libtorch);
+    if !libtorch.join("lib").join("torch_cuda.lib").is_file() {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=LIBTORCH");
+    println!("cargo:rerun-if-changed=src/native_whisper/cuda_link_anchor.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .file("src/native_whisper/cuda_link_anchor.cpp")
+        .include(libtorch.join("include"))
+        .include(libtorch.join("include/torch/csrc/api/include"))
+        .flag_if_supported("/std:c++17")
+        .compile("teamy_transcriber_cuda_link_anchor");
 }
 
 /// Re-run the build script when normal binary inputs change so embedded build metadata stays fresh.

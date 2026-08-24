@@ -53,12 +53,15 @@ paths are persisted with the other GUI settings. If the selected `ffprobe`
 executable is unavailable or rejects the probe request, the adapter falls back
 to parsing the selected `ffmpeg` binary's stream diagnostics; cancelling the
 GUI's optional ffprobe picker selects that fallback explicitly.
-`recording transcribe` invokes the native Burn Whisper encoder/decoder and
-commits raw ASR text through the same event receipt; persisted partial clips are
-materialized as separate normalized WAV artifacts first. `--chunk-duration-ms`
-creates contiguous, non-overlapping clip records and resumes from their stable
-IDs after a failure. Video fixture verification, runtime installation, and
-model/CDN acquisition remain later slices. During
+`recording transcribe` invokes the native tch/LibTorch Whisper encoder/decoder
+when a TorchScript package is selected and commits raw ASR text through the
+same event receipt; the existing Burn implementation remains a compatibility
+path for older local packages. Persisted partial clips are materialized as
+separate normalized WAV artifacts first. `--chunk-duration-ms` creates
+contiguous, non-overlapping clip records and resumes from their stable IDs
+after a failure; omitted chunking uses Whisper's 30-second context window so
+long recordings are not silently truncated. Video fixture verification, runtime
+installation, and model/CDN acquisition remain later slices. During
 chunked transcription, `CANCEL`/`Escape` cooperatively stop after the active
 clip and retain completed clip transcripts.
 
@@ -113,7 +116,8 @@ provenance events. Restarting the GUI reopens the selected persisted recording
 (falling back to the available recordings) and restores the selected model,
 microphone, and export directory
 from its app-owned settings file. Selecting MODEL validates the tokenizer,
-dimensions, and Burnpack/legacy layout before TRANSCRIBE is enabled. The GUI
+dimensions, and TorchScript/Burnpack/legacy layout before TRANSCRIBE is enabled.
+The GUI
 also offers a local-only preparation path: choose `No` in the model setup
 dialog, select a Whisper PyTorch checkpoint, select its local `tokenizer.json`
 when it is not beside the checkpoint, and choose an output parent directory.
@@ -122,13 +126,16 @@ after validation; no CLI model-preparation command is required.
 
 The native model package or source checkpoint is assumed to be available
 locally for this implementation slice; the application does not download
-model assets. The preferred prepared model directory contains `model.bpk`, `dims.json`, and
-`tokenizer.json`. The runtime also recognizes the older packed-NPY
-`encoder/`/`decoder/` layout during migration. If a selected folder contains
-a CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
-incompatible format and explains that a native Burnpack package is required;
-the local GUI preparation path currently accepts Whisper PyTorch checkpoints,
-not CTranslate2 `model.bin` directories.
+model assets. The preferred prepared model directory contains a TorchScript
+`model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
+`encoder` and `decoder` methods and is loaded through the same pinned
+`tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds and
+`TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` for CPU execution. The runtime also
+recognizes the existing Burnpack `model.bpk` package and older packed-NPY
+`encoder/`/`decoder/` layout during migration. If a selected folder contains a
+CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
+incompatible format; CTranslate2 is not a native tch model and is not loaded
+by this Python-free CLI.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
@@ -148,11 +155,12 @@ and a locally prepared native Whisper model:
 The command never downloads the corpus or model. It writes a versioned
 receipt for `passed`, `failed`, or `unavailable` outcomes and only reports
 `passed` when the real WAV is imported, normalized to 16 kHz mono, persisted,
-transcribed by the native Burn backend, committed as raw ASR, and matched to
-the descriptor reference. The model directory must contain the native
-`model.bpk` + `dims.json` + `tokenizer.json` package or the legacy packed-NPY
-layout; a CTranslate2/faster-whisper `model.bin` directory is an honest
-non-passing diagnostic.
+transcribed by the native backend, committed as raw ASR, and matched to the
+descriptor reference. The preferred model directory must contain the native
+TorchScript `model.pt` + `dims.json` + `tokenizer.json` package; the existing
+Burnpack/packed-NPY layouts remain accepted compatibility paths. A
+CTranslate2/faster-whisper `model.bin` directory is an honest non-passing
+diagnostic.
 
 ## Development
 

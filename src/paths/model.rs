@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub const MODEL_DIR_ENV_VAR: &str = "TEAMY_TRANSCRIBER_MODEL_DIR";
+pub const TORCH_DEVICE_ENV_VAR: &str = "TEAMY_TRANSCRIBER_TORCH_DEVICE";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelHome(pub PathBuf);

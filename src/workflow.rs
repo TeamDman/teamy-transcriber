@@ -779,7 +779,16 @@ fn transcribe_recording_inner(
         .wrap_err("recording is not prepared; prepare it from the GUI first")?;
     let full_range = TimeRange::new(0, metadata.duration_us)
         .wrap_err("prepared recording has no transcribable duration")?;
-    let clips = if let Some(chunk_duration_us) = options.chunk_duration_us {
+    // The native Whisper frontend has a fixed 30-second context window. Keep
+    // the CLI/GUI safe for long recordings even when the caller omits the
+    // option; callers can still choose a shorter explicit duration.
+    let chunk_duration_us = options.chunk_duration_us.or_else(|| {
+        Some(
+            crate::native_whisper::frontend::N_SAMPLES as u64 * 1_000_000
+                / u64::from(crate::media::WHISPER_SAMPLE_RATE_HZ),
+        )
+    });
+    let clips = if let Some(chunk_duration_us) = chunk_duration_us {
         let ranges = plan_time_chunks(metadata.duration_us, chunk_duration_us)?;
         ensure_recording_chunks(store, &mut state, recording_id, &ranges)?
     } else {

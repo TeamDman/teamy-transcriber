@@ -908,7 +908,7 @@ pub fn special_token_id(artifacts: &WhisperModelArtifacts, token: &str) -> eyre:
     required_token_id(&tokenizer, &artifacts.tokenizer.path, token)
 }
 
-fn default_suppressed_token_ids(
+pub(crate) fn default_suppressed_token_ids(
     artifacts: &WhisperModelArtifacts,
     end_of_text: usize,
 ) -> eyre::Result<Vec<usize>> {
@@ -1450,7 +1450,7 @@ fn token_ids_to_tensor(
     )
 }
 
-fn greedy_next_token_id(
+pub(crate) fn greedy_next_token_id(
     logits: &Tensor<WhisperCpuBackend, 3>,
     suppressed_token_ids: &[usize],
 ) -> eyre::Result<usize> {

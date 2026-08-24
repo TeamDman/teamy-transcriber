@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-23
-Current focus: [~] establish a reproducible native-Whisper VCTK canary while preserving the GUI workflow
+Current focus: [~] migrate native ASR to the teamy-tts tch/LibTorch runtime and verify the VCTK canary
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -298,6 +298,40 @@ model package.
 2026-08-23: `cargo fmt --all`, `cargo check --all-targets`, and
 `cargo test --all-targets` pass (38 library tests plus all integration suites).
 
+2026-08-23: The native ASR engine decision is now aligned with `teamy-tts`:
+target Rust `tch` 0.24.0 over LibTorch 2.11.0+cu128, with no Python runtime.
+The matching local LibTorch installation exists at
+`G:\Programming\Caches\teamy-tts-libtorch-2.11.0-cu128\libtorch`, but
+`LIBTORCH` is not currently exported. The installed GLaDOS TorchScript model
+is TTS-only and cannot serve as a Whisper recognizer.
+
+2026-08-23: Audited local model locations using a narrowly scoped
+`whisper-model-audit-20260823` teamy-mft profile plus targeted filesystem
+searches. The machine has the 3.1 GB WhisperX/faster-whisper CTranslate2
+`model.bin` and tokenizer, but no discovered Whisper PyTorch/TorchScript ASR
+checkpoint or native Burn package. The WhisperX `whisperx/assets/pytorch_model.bin`
+file is a 17 MB alignment asset, not the primary recognizer. No USN-backed MFT
+indexes were available, so the profile could not query indexed paths; no drive
+journals were enabled for this audit.
+
+2026-08-23: The supplied long-form WAV is a 44.1 kHz, stereo, 16-bit PCM file
+of approximately 29 minutes 03 seconds. The current native frontend is capped
+at Whisper's 30-second context, so long-form work must use persisted chunks;
+the current no-chunk path would not be an acceptable full-file transcription
+route. A first multi-speaker fixture can concatenate user-owned VCTK clips with
+known speaker/time metadata, but this will test segmentation/label plumbing,
+not prove diarization until a native speaker/VAD model is added.
+
+2026-08-23: Added the preferred tch/LibTorch TorchScript Whisper path. The
+project now pins `tch` 0.24.0, recognizes `model.pt` + `dims.json` +
+`tokenizer.json`, loads an exported graph's `encoder`/`decoder` methods, and
+uses `TEAMY_TRANSCRIBER_TORCH_DEVICE` with the same CUDA/CPU policy as
+`teamy-tts`. The matching local LibTorch build compiles successfully and all
+Rust tests pass. No compatible Whisper TorchScript model was found, so this is
+runtime/package evidence, not ASR quality evidence. Omitted transcription
+chunking now persists Whisper-sized 30-second ranges rather than allowing a
+long file to be silently truncated to its first window.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -311,8 +345,23 @@ model package.
 
 ## Native model artifact convention
 
-The current native Whisper runtime accepts a self-contained prepared model
-directory. The preferred package is:
+The active native Whisper runtime is Rust `tch` over the same pinned LibTorch
+distribution selected by `teamy-tts`: `tch` 0.24.0 over LibTorch
+`2.11.0+cu128`. The preferred Whisper package must be self-contained and
+identify the exact LibTorch runtime/model revision rather than relying on
+Python. `LIBTORCH` is a build-time input; `TEAMY_TRANSCRIBER_TORCH_DEVICE`
+selects CUDA device `0` by default or CPU with `-1`.
+
+The preferred package is:
+
+- `model.pt`: a TorchScript Whisper graph exposing `encoder` and `decoder`;
+- `dims.json`: Whisper dimensions and context limits;
+- `tokenizer.json`: the tokenizer used for the language/task prompt and text
+  decoding.
+
+Until the migration passes the VCTK canary, the existing Burn package remains
+readable as a compatibility/reference and conversion experiment. Its current
+package is:
 
 - `model.bpk`: Burnpack weights for the handwritten Burn Whisper model;
 - `dims.json`: the dimensions needed to instantiate that model;
@@ -320,22 +369,22 @@ directory. The preferred package is:
   decoding.
 
 The older `encoder/` and `decoder/` packed-NPY layout remains readable during
-migration, but new prepared artifacts should use Burnpack. The GUI can create
-the preferred package from a compatible local Whisper PyTorch checkpoint and
-tokenizer; it does not download assets or convert CTranslate2/faster-whisper
-`model.bin` directories. Transcription itself only consumes an already
-prepared native package.
+migration. The GUI's existing checkpoint preparation still creates the Burn
+compatibility package; a TorchScript export/preparation command is the next
+model-lifecycle slice. The application does not download assets or convert
+CTranslate2/faster-whisper `model.bin` directories. Transcription only
+consumes an already prepared native package.
 
 The shared cross-project registry shape follows `teamy-tts`: stable model ID,
 revision, prepared-directory path, package status, source/archive fingerprint,
 manifest version, and per-file hashes. A future `model-manifest.json` (or the
 equivalent project-specific manifest) should identify task, model family,
-converter version, backend, and artifact roles. `teamy-transcriber` should
-adopt the shared registry metadata shape while retaining the Whisper-specific
-sidecars above; `teamy-tts` should retain its separate ForwardTacotron,
-HiFiGAN, phonemizer, and voice artifacts. This gives the projects compatible
-acquisition and verification tooling without falsely claiming weight or
-tokenizer compatibility.
+converter version, backend, LibTorch build, and artifact roles.
+`teamy-transcriber` should adopt the shared registry metadata shape while
+retaining Whisper-specific artifacts; `teamy-tts` should retain its separate
+ForwardTacotron, HiFiGAN, phonemizer, and voice artifacts. This gives the
+projects compatible native-runtime acquisition and verification tooling without
+falsely claiming weight or tokenizer compatibility.
 
 ## User guidance ledger
 
@@ -509,11 +558,12 @@ The first backend contract should expose:
 6. cancel: stop work without corrupting the source or committed transcript;
 7. shutdown: release resources and report final metrics.
 
-The active backend is a pure-Rust Burn Whisper implementation. It consumes a
-local native model package and conforms to this typed contract. WhisperX-style
-VAD, alignment, diarization, timestamps, and accelerator strategies remain
-separate capabilities to add around the native ASR core rather than hidden
-Python prerequisites.
+The current reference backend is a pure-Rust Burn Whisper implementation. The
+target backend is Rust `tch`/LibTorch, using the same pinned runtime family as
+`teamy-tts` and a separately prepared Whisper ASR model. WhisperX-style VAD,
+alignment, diarization, timestamps, and accelerator strategies remain separate
+capabilities to add around the native ASR core rather than hidden Python
+prerequisites.
 
 ### Rendering and transport boundary
 
@@ -630,18 +680,20 @@ Completion: The application explains which local model/runtime assets are presen
 #### W9 [~] Integrate native Whisper ASR
 
 Work: Implement the first native Whisper ASR path behind the backend protocol,
-consuming `model.bpk`, `dims.json`, and `tokenizer.json` supplied in the
-configured local model directory. The GUI can prepare that package from a
-compatible local Whisper PyTorch checkpoint. The current path accepts normalized 16 kHz
-mono input, builds Whisper log-mel features in Rust, loads Burn weights, and
-returns raw transcript text. VAD/alignment remain later capabilities.
+consuming the preferred TorchScript `model.pt`, `dims.json`, and `tokenizer.json`
+package supplied in the configured local model directory. The graph is loaded
+through Rust `tch`/LibTorch and the existing Burn package remains a compatibility
+path. The current path accepts normalized 16 kHz mono input, builds Whisper
+log-mel features in Rust, runs greedy decoder steps, and returns raw transcript
+text. VAD/alignment remain later capabilities.
 
 Validation: Rust unit and integration tests pass, including deterministic
 frontend and model-shape checks. The real VCTK canary now verifies input hash,
 import, normalization, persisted artifacts, model fingerprinting, and honest
-model failure/replay receipts; a real compatible native model, transcript
-output checksum, long-input ordering, bounded work, cancellation, and
-quality/timing matrix remain pending a supplied model package.
+model failure/replay receipts; the tch/LibTorch package path compiles and is
+unit-covered. A real compatible native model, transcript output checksum,
+long-input ordering, bounded work, cancellation, and quality/timing matrix
+remain pending a supplied TorchScript package.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -657,8 +709,8 @@ Completion: Microphone recording is a normal source kind in the domain model and
 
 #### W11 [~] Complete one file-to-transcript vertical slice
 
-Work: Connect WAV normalization, full-duration or persisted partial-clip
-extraction, native Whisper submission, raw transcript commit, and structured
+Work: Connect WAV normalization, persisted 30-second clip extraction, native
+Whisper submission, raw transcript commit, and structured
 CLI/GUI output through the same event-backed recording. The current slice also
 persists clip processing/failure transitions, exports the latest transcript,
 and projects them through `recording show`; import/video fixture execution,
@@ -669,8 +721,8 @@ normalization, persisted recording/events, native model inspection, and replay
 receipt; missing corpus and incompatible local models are explicitly
 non-passing. Native frontend/model tests and the full repository gate pass.
 Actual model-backed inference, committed raw-ASR text, CER/WER, and successful
-timing evidence remain unverified until a compatible native model fixture is
-available.
+timing evidence remain unverified until a compatible TorchScript model fixture
+is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
@@ -679,6 +731,13 @@ Completion: The first user-value path works end to end for a fixture and is docu
 Work: Implement bounded chunking, speech-aware boundaries where available, ordered assembly, partial results, retry/cancel semantics, and quality metadata. The current slice provides deterministic fixed-duration ranges, stable clip IDs, ordered per-clip reports, and resumable failure states; speech-aware boundaries, cancellation, and timing quality metadata remain pending. Preserve source-to-chunk offsets.
 
 Validation: Unit coverage verifies no gaps or overlap in synthetic plans; the VCTK smoke empirically produced five ordered ranges with no duplication before the expected missing-runtime failure. Real local inference, long-input worker limits, cancellation, and timing evidence remain pending.
+
+The next fixture extension can concatenate clips from distinct VCTK speakers
+with a checked-in logical descriptor and an ignored generated WAV. Its truth
+manifest should retain source speaker IDs and clip offsets, and its first gate
+should assert ordered segmentation and label plumbing. It must not be called a
+diarization-quality oracle until the native VAD/speaker-embedding path exists;
+simple concatenation does not exercise overlap, reverberation, or crosstalk.
 
 Completion: Long files yield a coherent transcript with a machine-readable chunk map and no unreported approximation.
 

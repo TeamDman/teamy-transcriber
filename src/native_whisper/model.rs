@@ -5,11 +5,13 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub const MODEL_BURNPACK_FILE_NAME: &str = "model.bpk";
+pub const MODEL_TORCHSCRIPT_FILE_NAME: &str = "model.pt";
 pub const MODEL_DIMS_FILE_NAME: &str = "dims.json";
 pub const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhisperModelLayout {
+    TorchScript,
     WhisperBurnNpy,
     BurnPack,
 }
@@ -18,6 +20,7 @@ impl WhisperModelLayout {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::TorchScript => "whisper-torchscript",
             Self::WhisperBurnNpy => "whisper-burn-npy",
             Self::BurnPack => "burnpack",
         }
@@ -38,15 +41,16 @@ pub struct WhisperModelArtifacts {
     pub encoder_dir: Option<PathBuf>,
     pub decoder_dir: Option<PathBuf>,
     pub burnpack_path: Option<PathBuf>,
+    pub torchscript_path: Option<PathBuf>,
     pub dims_path: Option<PathBuf>,
     pub dims: Option<WhisperDims>,
 }
 
 /// Inspect a locally supplied native Whisper model directory.
 ///
-/// The preferred layout is Burnpack weights plus `dims.json` and
-/// `tokenizer.json`. The legacy whisper-burn packed-NPY layout remains
-/// discoverable so existing local model artifacts can be migrated gradually.
+/// The preferred layout is a `TorchScript` `model.pt` plus `dims.json` and
+/// `tokenizer.json`, loaded through the same tch/LibTorch family as
+/// `teamy-tts`. Burnpack and packed-NPY remain compatibility paths.
 ///
 /// # Errors
 ///
@@ -73,7 +77,24 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     };
 
     let burnpack_path = root.join(MODEL_BURNPACK_FILE_NAME);
+    let torchscript_path = root.join(MODEL_TORCHSCRIPT_FILE_NAME);
     let dims_path = root.join(MODEL_DIMS_FILE_NAME);
+    if torchscript_path.is_file() && dims_path.is_file() {
+        let dims = read_dims_file(&dims_path)?;
+        let artifacts = WhisperModelArtifacts {
+            root: root.to_path_buf(),
+            layout: WhisperModelLayout::TorchScript,
+            tokenizer,
+            encoder_dir: None,
+            decoder_dir: None,
+            burnpack_path: None,
+            torchscript_path: Some(torchscript_path),
+            dims_path: Some(dims_path),
+            dims: Some(dims),
+        };
+        validate_model_artifacts(&artifacts)?;
+        return Ok(artifacts);
+    }
     if burnpack_path.is_file() && dims_path.is_file() {
         let dims = read_dims_file(&dims_path)?;
         let artifacts = WhisperModelArtifacts {
@@ -83,6 +104,7 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
             encoder_dir: None,
             decoder_dir: None,
             burnpack_path: Some(burnpack_path),
+            torchscript_path: None,
             dims_path: Some(dims_path),
             dims: Some(dims),
         };
@@ -100,6 +122,7 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
             encoder_dir: Some(encoder_dir),
             decoder_dir: Some(decoder_dir),
             burnpack_path: None,
+            torchscript_path: None,
             dims_path: None,
             dims: None,
         };
@@ -109,8 +132,11 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     }
 
     bail!(
-        "native Whisper model {} is incomplete; expected {} + {} + {} or encoder/decoder packed-NPY directories",
+        "native Whisper model {} is incomplete; expected {} + {} + {} for tch/LibTorch or {} + {} + {} for the legacy Burn path or encoder/decoder packed-NPY directories",
         root.display(),
+        MODEL_TORCHSCRIPT_FILE_NAME,
+        MODEL_DIMS_FILE_NAME,
+        TOKENIZER_FILE_NAME,
         MODEL_BURNPACK_FILE_NAME,
         MODEL_DIMS_FILE_NAME,
         TOKENIZER_FILE_NAME,
