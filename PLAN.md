@@ -385,6 +385,12 @@ the feed-forward width (`4 * state`) rather than the hidden state width. With
 integration suites. The working tree contains only these two correctness fixes
 until they are committed.
 
+2026-08-24: Repeated the canary after commit `1caf167` from a clean worktree.
+Receipt `target/vctk-p230-385-tiny-3.json` records revision `1caf167`, clean
+status, the same exact transcript and CER/WER 0, successful replay, and 9,653
+ms total runtime (3,777 ms model load, 5,823 ms transcription). The receipt is
+an ignored local artifact; the corpus and model remain outside version control.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
