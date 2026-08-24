@@ -37,6 +37,20 @@ pub struct TchSafetensorsWhisperRuntime {
     model_kind: Kind,
 }
 
+#[derive(Debug)]
+struct DecoderLayerCache {
+    self_key: Option<Tensor>,
+    self_value: Option<Tensor>,
+    cross_key: Tensor,
+    cross_value: Tensor,
+}
+
+#[derive(Debug)]
+struct DecoderCache {
+    layers: Vec<DecoderLayerCache>,
+    position: i64,
+}
+
 impl TchSafetensorsWhisperRuntime {
     /// Load and validate a canonical safetensors Whisper package.
     pub fn from_artifacts(artifacts: &WhisperModelArtifacts) -> eyre::Result<Self> {
@@ -113,19 +127,19 @@ impl TchSafetensorsWhisperRuntime {
         let encoded = self.encode(&mel)?;
         let decode_limit =
             max_decode_tokens.min(self.dims.text.n_text_ctx.saturating_sub(prompt.len()));
-        let mut all_tokens = prompt;
         let mut generated = Vec::new();
+        let prompt_values = prompt
+            .iter()
+            .map(|token| i64::try_from(*token))
+            .collect::<Result<Vec<_>, _>>()
+            .wrap_err("Whisper token ID exceeded i64")?;
+        let prompt_tokens = Tensor::from_slice(&prompt_values)
+            .reshape([1, prompt_values.len() as i64])
+            .to_kind(Kind::Int64)
+            .to_device(self.device);
+        let mut cache = self.new_decoder_cache(&encoded)?;
+        let mut logits = self.decode_cached(&prompt_tokens, &mut cache)?;
         for _ in 0..decode_limit {
-            let token_values = all_tokens
-                .iter()
-                .map(|token| i64::try_from(*token))
-                .collect::<Result<Vec<_>, _>>()
-                .wrap_err("Whisper token ID exceeded i64")?;
-            let tokens = Tensor::from_slice(&token_values)
-                .reshape([1, token_values.len() as i64])
-                .to_kind(Kind::Int64)
-                .to_device(self.device);
-            let logits = self.decode(&tokens, &encoded)?;
             let (_batch_size, seq_len, vocab_size) = logits
                 .size3()
                 .wrap_err("direct tch Whisper decoder must return [batch, sequence, vocabulary]")?;
@@ -143,8 +157,13 @@ impl TchSafetensorsWhisperRuntime {
             if next_token == end_of_text {
                 break;
             }
-            all_tokens.push(next_token);
             generated.push(next_token);
+            let token = i64::try_from(next_token).wrap_err("Whisper token ID exceeded i64")?;
+            let token = Tensor::from_slice(&[token])
+                .reshape([1, 1])
+                .to_kind(Kind::Int64)
+                .to_device(self.device);
+            logits = self.decode_cached(&token, &mut cache)?;
         }
         decode_token_ids(artifacts, &generated, true)
     }
@@ -202,6 +221,7 @@ impl TchSafetensorsWhisperRuntime {
         self.layer_norm(&x, "model.encoder.layer_norm")
     }
 
+    #[cfg(test)]
     fn decode(&self, tokens: &Tensor, encoder_output: &Tensor) -> eyre::Result<Tensor> {
         let token_ids = tokens.reshape([-1]);
         let embedding = self
@@ -256,6 +276,174 @@ impl TchSafetensorsWhisperRuntime {
                 eyre::eyre!("Whisper model is missing proj_out.weight and tied token embeddings")
             })?;
         Ok(x.linear(output_weight, Option::<&Tensor>::None))
+    }
+
+    fn new_decoder_cache(&self, encoder_output: &Tensor) -> eyre::Result<DecoderCache> {
+        let layers = (0..self.dims.text.n_text_layer)
+            .map(|index| {
+                let prefix = format!("model.decoder.layers.{index}.encoder_attn");
+                Ok(DecoderLayerCache {
+                    self_key: None,
+                    self_value: None,
+                    cross_key: self.linear(encoder_output, &format!("{prefix}.k_proj"))?,
+                    cross_value: self.linear(encoder_output, &format!("{prefix}.v_proj"))?,
+                })
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+        Ok(DecoderCache {
+            layers,
+            position: 0,
+        })
+    }
+
+    fn decode_cached(&self, tokens: &Tensor, cache: &mut DecoderCache) -> eyre::Result<Tensor> {
+        let token_ids = tokens.reshape([-1]);
+        let seq_len = tokens.size()[1];
+        let positions = self.required("model.decoder.embed_positions.weight")?;
+        if cache.position + seq_len > positions.size()[0] {
+            bail!(
+                "decoder sequence position {} exceeded the model's {} positions",
+                cache.position + seq_len,
+                positions.size()[0]
+            );
+        }
+        let embedding = self
+            .required("model.decoder.embed_tokens.weight")?
+            .index_select(0, &token_ids)
+            .reshape([1, seq_len, self.dims.text.n_text_state as i64]);
+        let mut x = embedding + positions.narrow(0, cache.position, seq_len).unsqueeze(0);
+        let position = cache.position;
+
+        for index in 0..self.dims.text.n_text_layer {
+            let prefix = format!("model.decoder.layers.{index}");
+            let normalized = self.layer_norm(&x, &format!("{prefix}.self_attn_layer_norm"))?;
+            let attended = self.cached_self_attention(
+                &normalized,
+                &prefix,
+                self.dims.text.n_text_head,
+                &mut cache.layers[index],
+                position,
+            )?;
+            x += attended;
+
+            let normalized = self.layer_norm(&x, &format!("{prefix}.encoder_attn_layer_norm"))?;
+            let attended = self.cached_cross_attention(
+                &normalized,
+                &prefix,
+                self.dims.text.n_text_head,
+                &cache.layers[index],
+            )?;
+            x += attended;
+
+            let normalized = self.layer_norm(&x, &format!("{prefix}.final_layer_norm"))?;
+            x += self.feed_forward(&normalized, &prefix)?;
+        }
+        cache.position += seq_len;
+
+        let x = self.layer_norm(&x, "model.decoder.layer_norm")?;
+        let output_weight = self
+            .weights
+            .get("proj_out.weight")
+            .or_else(|| self.weights.get("model.decoder.embed_tokens.weight"))
+            .ok_or_else(|| {
+                eyre::eyre!("Whisper model is missing proj_out.weight and tied token embeddings")
+            })?;
+        Ok(x.linear(output_weight, Option::<&Tensor>::None))
+    }
+
+    fn cached_self_attention(
+        &self,
+        input: &Tensor,
+        block_prefix: &str,
+        n_heads: usize,
+        cache: &mut DecoderLayerCache,
+        position: i64,
+    ) -> eyre::Result<Tensor> {
+        let prefix = format!("{block_prefix}.self_attn");
+        let query = self.linear(input, &format!("{prefix}.q_proj"))?;
+        let new_key = self.linear(input, &format!("{prefix}.k_proj"))?;
+        let new_value = self.linear(input, &format!("{prefix}.v_proj"))?;
+        let key = match cache.self_key.as_ref() {
+            Some(previous) => Tensor::cat(&[previous, &new_key], 1),
+            None => new_key,
+        };
+        let value = match cache.self_value.as_ref() {
+            Some(previous) => Tensor::cat(&[previous, &new_value], 1),
+            None => new_value,
+        };
+        cache.self_key = Some(key.shallow_clone());
+        cache.self_value = Some(value.shallow_clone());
+        let context = self.attention_from_qkv(&query, &key, &value, n_heads, true, position)?;
+        Ok(context.linear(
+            self.required(&format!("{prefix}.out_proj.weight"))?,
+            Some(self.required(&format!("{prefix}.out_proj.bias"))?),
+        ))
+    }
+
+    fn cached_cross_attention(
+        &self,
+        input: &Tensor,
+        block_prefix: &str,
+        n_heads: usize,
+        cache: &DecoderLayerCache,
+    ) -> eyre::Result<Tensor> {
+        let prefix = format!("{block_prefix}.encoder_attn");
+        let query = self.linear(input, &format!("{prefix}.q_proj"))?;
+        let context = self.attention_from_qkv(
+            &query,
+            &cache.cross_key,
+            &cache.cross_value,
+            n_heads,
+            false,
+            0,
+        )?;
+        Ok(context.linear(
+            self.required(&format!("{prefix}.out_proj.weight"))?,
+            Some(self.required(&format!("{prefix}.out_proj.bias"))?),
+        ))
+    }
+
+    fn attention_from_qkv(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        n_heads: usize,
+        causal: bool,
+        past_length: i64,
+    ) -> eyre::Result<Tensor> {
+        let query_len = query.size()[1];
+        let source_len = key.size()[1];
+        let state = query.size()[2];
+        let n_heads = i64::try_from(n_heads).wrap_err("Whisper head count exceeded i64")?;
+        if n_heads == 0 || state % n_heads != 0 {
+            bail!("Whisper attention state {state} is not divisible by head count {n_heads}");
+        }
+        let head_state = state / n_heads;
+        let scale = (head_state as f64).powf(-0.25);
+        let query = query
+            .reshape([1, query_len, n_heads, head_state])
+            .transpose(1, 2)
+            * scale;
+        let key = key
+            .reshape([1, source_len, n_heads, head_state])
+            .transpose(1, 2)
+            .transpose(2, 3)
+            * scale;
+        let value = value
+            .reshape([1, source_len, n_heads, head_state])
+            .transpose(1, 2);
+        let mut scores = query.matmul(&key);
+        if causal {
+            let mask = Tensor::ones([query_len, source_len], (Kind::Bool, self.device))
+                .triu(past_length + 1);
+            scores = scores.masked_fill(&mask, f64::NEG_INFINITY);
+        }
+        Ok(scores
+            .softmax(-1, None)
+            .matmul(&value)
+            .transpose(1, 2)
+            .reshape([1, query_len, state]))
     }
 
     fn attention(
@@ -614,9 +802,10 @@ mod tests {
         };
         let mut weights = HashMap::new();
         let mut add = |name: &str, shape: &[i64]| {
+            let element_count: i64 = shape.iter().product();
             weights.insert(
                 name.to_string(),
-                Tensor::zeros(shape, (Kind::Float, Device::Cpu)),
+                Tensor::arange(element_count, (Kind::Float, Device::Cpu)).reshape(shape) / 100.0,
             );
         };
         add("model.encoder.conv1.weight", &[4, 2, 3]);
@@ -684,5 +873,25 @@ mod tests {
         let tokens = Tensor::from_slice(&[1_i64, 2]).reshape([1, 2]);
         let logits = runtime.decode(&tokens, &encoded).unwrap();
         assert_eq!(logits.size(), [1, 2, 7]);
+    }
+
+    #[test]
+    fn cached_decoder_matches_full_prefix_decoder() {
+        let runtime = synthetic_runtime();
+        let input = Tensor::zeros([1, 2, 4], (Kind::Float, Device::Cpu));
+        let encoded = runtime.encode(&input).unwrap();
+        let prompt = Tensor::from_slice(&[1_i64, 2]).reshape([1, 2]);
+        let full_prompt = runtime.decode(&prompt, &encoded).unwrap();
+        let mut cache = runtime.new_decoder_cache(&encoded).unwrap();
+        let cached_prompt = runtime.decode_cached(&prompt, &mut cache).unwrap();
+        assert!(full_prompt.allclose(&cached_prompt, 1e-5, 1e-5, false));
+
+        let full_prefix = Tensor::from_slice(&[1_i64, 2, 3]).reshape([1, 3]);
+        let full_next = runtime.decode(&full_prefix, &encoded).unwrap().select(1, 2);
+        let cached_next = runtime
+            .decode_cached(&Tensor::from_slice(&[3_i64]).reshape([1, 1]), &mut cache)
+            .unwrap()
+            .select(1, 0);
+        assert!(full_next.allclose(&cached_next, 1e-5, 1e-5, false));
     }
 }

@@ -354,8 +354,11 @@ single `model.safetensors` plus matching `config.json` and `tokenizer.json`, der
 overwrite an existing output. The direct LibTorch runtime loads F32/F16/BF16
 weights into resident `tch` tensors and runs the Whisper encoder, causal
 decoder self-attention, cross-attention, tied/output projection, and greedy
-decoding without Python. A synthetic encoder/decoder shape test and the full
-repository gate pass. Sharded safetensors, KV-cache decoding,
+decoding without Python. Decoder self-attention K/V are now cached per layer
+and cross-attention K/V are precomputed once per window; the cached logits
+match the full-prefix reference on a deterministic synthetic model. A
+synthetic encoder/decoder shape test and the full repository gate pass.
+Sharded safetensors,
 TorchScript export/JIT benchmarking, logits parity against Python, and real
 model-backed VCTK quality remain pending.
 
