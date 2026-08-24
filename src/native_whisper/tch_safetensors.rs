@@ -22,6 +22,7 @@ use safetensors::tensor::SafeTensors;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
+use std::path::PathBuf;
 use tch::Device;
 use tch::Kind;
 use tch::Tensor;
@@ -54,33 +55,41 @@ struct DecoderCache {
 impl TchSafetensorsWhisperRuntime {
     /// Load and validate a canonical safetensors Whisper package.
     pub fn from_artifacts(artifacts: &WhisperModelArtifacts) -> eyre::Result<Self> {
-        let model_path = artifacts.safetensors_path.as_deref().ok_or_else(|| {
-            eyre::eyre!("safetensors Whisper artifact is missing model.safetensors")
-        })?;
+        let model_paths = if artifacts.safetensors_paths.is_empty() {
+            artifacts
+                .safetensors_path
+                .clone()
+                .map_or_else(Vec::new, |path| vec![path])
+        } else {
+            artifacts.safetensors_paths.clone()
+        };
+        if model_paths.is_empty() {
+            bail!("safetensors Whisper artifact has no weight files");
+        }
         let dims = artifacts
             .dims
             .clone()
             .ok_or_else(|| eyre::eyre!("safetensors Whisper artifact is missing dims.json"))?;
         let device = super::tch::configured_device_for_runtime()?;
-        let file = File::open(model_path)
-            .wrap_err_with(|| format!("failed to open {}", model_path.display()))?;
-        // SAFETY: the file handle remains open for the lifetime of the mapping, and the
-        // mapping is only used as an immutable byte slice while SafeTensors validates it.
-        let mapped = unsafe { Mmap::map(&file) }
-            .wrap_err_with(|| format!("failed to memory-map {}", model_path.display()))?;
-        let tensors = SafeTensors::deserialize(&mapped)
-            .wrap_err_with(|| format!("failed to parse {}", model_path.display()))?;
-        validate_tensor_manifest(&tensors, &dims)?;
-
-        let model_kind = tensors
-            .tensor("model.encoder.conv1.weight")
-            .wrap_err("safetensors model is missing model.encoder.conv1.weight")
-            .and_then(|view| kind_for_dtype(view.dtype()))?;
-        let mut weights = HashMap::with_capacity(tensors.len());
-        for (name, view) in tensors.tensors() {
-            let tensor = tensor_from_view(&view, model_kind, device)
-                .wrap_err_with(|| format!("failed to load safetensor {name}"))?;
-            weights.insert(name, tensor);
+        validate_safetensors_files(&model_paths, &dims)?;
+        let model_kind = model_kind_from_files(&model_paths)?;
+        let mut weights = HashMap::new();
+        for model_path in &model_paths {
+            let file = File::open(model_path)
+                .wrap_err_with(|| format!("failed to open {}", model_path.display()))?;
+            // SAFETY: the file handle remains open for the lifetime of the mapping, and the
+            // mapping is only used as an immutable byte slice while SafeTensors validates it.
+            let mapped = unsafe { Mmap::map(&file) }
+                .wrap_err_with(|| format!("failed to memory-map {}", model_path.display()))?;
+            let tensors = SafeTensors::deserialize(&mapped)
+                .wrap_err_with(|| format!("failed to parse {}", model_path.display()))?;
+            for (name, view) in tensors.tensors() {
+                let tensor = tensor_from_view(&view, model_kind, device)
+                    .wrap_err_with(|| format!("failed to load safetensor {name}"))?;
+                if weights.insert(name.clone(), tensor).is_some() {
+                    bail!("safetensors weight {name} appears in more than one shard");
+                }
+            }
         }
 
         Ok(Self {
@@ -535,21 +544,83 @@ impl TchSafetensorsWhisperRuntime {
 /// Validate the names required by the direct tch graph without materializing
 /// the model tensors.  This is used by model preparation for early diagnostics.
 pub fn validate_safetensors_file(path: &Path, dims: &WhisperDims) -> eyre::Result<()> {
-    let file = File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
-    // SAFETY: the file handle remains open for the lifetime of the mapping, and the mapping is
-    // accessed only immutably by SafeTensors.
-    let mapped = unsafe { Mmap::map(&file) }
-        .wrap_err_with(|| format!("failed to memory-map {}", path.display()))?;
-    let tensors = SafeTensors::deserialize(&mapped)
-        .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
-    validate_tensor_manifest(&tensors, dims)
+    validate_safetensors_files(&[path.to_path_buf()], dims)
+}
+
+/// Validate a canonical single-file or sharded safetensors package.
+pub fn validate_safetensors_files(paths: &[PathBuf], dims: &WhisperDims) -> eyre::Result<()> {
+    if paths.is_empty() {
+        bail!("safetensors model has no weight files");
+    }
+    let mut shapes = HashMap::new();
+    for path in paths {
+        let file =
+            File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+        // SAFETY: the file handle remains open for the lifetime of the mapping, and the mapping
+        // is accessed only immutably by SafeTensors.
+        let mapped = unsafe { Mmap::map(&file) }
+            .wrap_err_with(|| format!("failed to memory-map {}", path.display()))?;
+        let tensors = SafeTensors::deserialize(&mapped)
+            .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
+        for (name, view) in tensors.tensors() {
+            if shapes.insert(name.clone(), view.shape().to_vec()).is_some() {
+                bail!("safetensors weight {name} appears in more than one shard");
+            }
+        }
+    }
+    validate_tensor_manifest(&shapes, dims)
+}
+
+fn model_kind_from_files(paths: &[PathBuf]) -> eyre::Result<Kind> {
+    for path in paths {
+        let file =
+            File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+        // SAFETY: the file handle remains open for the lifetime of the mapping, and the mapping
+        // is accessed only immutably by SafeTensors.
+        let mapped = unsafe { Mmap::map(&file) }
+            .wrap_err_with(|| format!("failed to memory-map {}", path.display()))?;
+        let tensors = SafeTensors::deserialize(&mapped)
+            .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
+        if let Ok(view) = tensors.tensor("model.encoder.conv1.weight") {
+            return kind_for_dtype(view.dtype());
+        }
+    }
+    bail!("safetensors model is missing model.encoder.conv1.weight")
+}
+
+trait TensorShapeLookup {
+    fn has(&self, name: &str) -> bool;
+    fn shape(&self, name: &str) -> Option<Vec<usize>>;
+}
+
+impl TensorShapeLookup for SafeTensors<'_> {
+    fn has(&self, name: &str) -> bool {
+        self.tensor(name).is_ok()
+    }
+
+    fn shape(&self, name: &str) -> Option<Vec<usize>> {
+        self.tensor(name).ok().map(|view| view.shape().to_vec())
+    }
+}
+
+impl TensorShapeLookup for HashMap<String, Vec<usize>> {
+    fn has(&self, name: &str) -> bool {
+        self.contains_key(name)
+    }
+
+    fn shape(&self, name: &str) -> Option<Vec<usize>> {
+        self.get(name).cloned()
+    }
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "Manifest validation keeps the canonical Whisper graph contract explicit"
 )]
-fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> eyre::Result<()> {
+fn validate_tensor_manifest<T: TensorShapeLookup>(
+    tensors: &T,
+    dims: &WhisperDims,
+) -> eyre::Result<()> {
     let required = [
         "model.encoder.conv1.weight",
         "model.encoder.conv1.bias",
@@ -564,7 +635,7 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
         "model.decoder.layer_norm.bias",
     ];
     for name in required {
-        if tensors.tensor(name).is_err() {
+        if !tensors.has(name) {
             bail!("Whisper safetensors model is missing {name}");
         }
     }
@@ -595,7 +666,7 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
         "model.decoder.embed_positions.weight",
         &[dims.text.n_text_ctx, text_state],
     )?;
-    if tensors.tensor("proj_out.weight").is_ok() {
+    if tensors.has("proj_out.weight") {
         ensure_shape(tensors, "proj_out.weight", &[dims.text.n_vocab, text_state])?;
     }
     for prefix in ["model.encoder.layers", "model.decoder.layers"] {
@@ -627,7 +698,7 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
                 format!("{block}.final_layer_norm.bias"),
             ];
             for name in names {
-                if tensors.tensor(&name).is_err() {
+                if !tensors.has(&name) {
                     bail!("Whisper safetensors model is missing {name}");
                 }
             }
@@ -659,7 +730,7 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
                 format!("{block}.final_layer_norm.weight"),
                 format!("{block}.final_layer_norm.bias"),
             ] {
-                if tensors.tensor(&name).is_ok() {
+                if tensors.has(&name) {
                     ensure_shape(tensors, &name, &[state])?;
                 }
             }
@@ -673,7 +744,7 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
                     format!("{block}.encoder_attn_layer_norm.weight"),
                     format!("{block}.encoder_attn_layer_norm.bias"),
                 ] {
-                    if tensors.tensor(&name).is_err() {
+                    if !tensors.has(&name) {
                         bail!("Whisper safetensors model is missing {name}");
                     }
                 }
@@ -691,14 +762,18 @@ fn validate_tensor_manifest(tensors: &SafeTensors<'_>, dims: &WhisperDims) -> ey
     Ok(())
 }
 
-fn ensure_shape(tensors: &SafeTensors<'_>, name: &str, expected: &[usize]) -> eyre::Result<()> {
-    let view = tensors
-        .tensor(name)
-        .wrap_err_with(|| format!("Whisper safetensors model is missing {name}"))?;
-    if view.shape() != expected {
+fn ensure_shape<T: TensorShapeLookup>(
+    tensors: &T,
+    name: &str,
+    expected: &[usize],
+) -> eyre::Result<()> {
+    let shape = tensors
+        .shape(name)
+        .ok_or_else(|| eyre::eyre!("Whisper safetensors model is missing {name}"))?;
+    if shape != expected {
         bail!(
             "Whisper safetensor {name} has shape {:?}, expected {expected:?}",
-            view.shape()
+            shape
         );
     }
     Ok(())

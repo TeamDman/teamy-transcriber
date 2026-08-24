@@ -4,9 +4,13 @@ use super::model::MODEL_CONFIG_FILE_NAME;
 use super::model::MODEL_DIMS_FILE_NAME;
 #[cfg(feature = "tch-native")]
 use super::model::MODEL_SAFETENSORS_FILE_NAME;
+#[cfg(feature = "tch-native")]
+use super::model::MODEL_SAFETENSORS_INDEX_FILE_NAME;
 use super::model::TOKENIZER_FILE_NAME;
 use super::model::WhisperModelArtifacts;
 use super::model::inspect_model_dir;
+#[cfg(feature = "tch-native")]
+use super::model::resolve_safetensor_paths;
 use super::whisper::AudioEncoderDims;
 use super::whisper::TextDecoderDims;
 use super::whisper::WhisperAudioEncoderConfig;
@@ -281,7 +285,7 @@ pub fn convert_pytorch_checkpoint(
 
 /// Prepare a canonical Hugging Face Whisper directory for direct Rust/tch use.
 ///
-/// This operation is local-only. It copies the existing safetensors file,
+/// This operation is local-only. It copies the existing safetensors file(s),
 /// tokenizer, and config into the application package and writes the compact
 /// dims.json sidecar consumed by the runtime. It intentionally does not
 /// convert `CTranslate2` `model.bin` files: those are a different runtime format
@@ -297,26 +301,21 @@ pub fn prepare_safetensors_model(
             source_dir.display()
         );
     }
-    let model_path = source_dir.join(MODEL_SAFETENSORS_FILE_NAME);
     let config_path = source_dir.join(MODEL_CONFIG_FILE_NAME);
     let tokenizer_path = source_dir.join(TOKENIZER_FILE_NAME);
-    if !model_path.is_file() && source_dir.join("model.bin").is_file() {
+    let has_single_weights = source_dir.join(MODEL_SAFETENSORS_FILE_NAME).is_file();
+    let has_shard_index = source_dir.join(MODEL_SAFETENSORS_INDEX_FILE_NAME).is_file();
+    if !has_single_weights && !has_shard_index && source_dir.join("model.bin").is_file() {
         bail!(
             "{} is a CTranslate2/faster-whisper model.bin directory; it cannot be loaded or losslessly converted by the tch/LibTorch Whisper backend. Supply canonical model.safetensors weights instead",
             source_dir.display()
         );
     }
-    for path in [&model_path, &config_path, &tokenizer_path] {
+    let model_paths = resolve_safetensor_paths(source_dir)?;
+    for path in [&config_path, &tokenizer_path] {
         if !path.is_file() {
             bail!("canonical Whisper source is missing {}", path.display());
         }
-    }
-    let shard_index = source_dir.join("model.safetensors.index.json");
-    if shard_index.is_file() {
-        bail!(
-            "sharded safetensors are not prepared yet (found {}); provide a single model.safetensors file",
-            shard_index.display()
-        );
     }
     let config: HuggingFaceWhisperConfig =
         serde_json::from_str(&std::fs::read_to_string(&config_path).wrap_err_with(|| {
@@ -349,12 +348,28 @@ pub fn prepare_safetensors_model(
     // Parse the safetensor header and verify the graph manifest before making
     // the package visible. The weights themselves are memory-mapped rather
     // than copied into a temporary buffer.
-    super::tch_safetensors::validate_safetensors_file(&model_path, &dims)?;
+    super::tch_safetensors::validate_safetensors_files(&model_paths, &dims)?;
 
     std::fs::create_dir(output_dir)
         .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
     let mut partial_output = PartialModelDirectory::new(output_dir);
-    copy_model_file(&model_path, &output_dir.join(MODEL_SAFETENSORS_FILE_NAME))?;
+    for model_path in &model_paths {
+        let relative_path = model_path.strip_prefix(source_dir).wrap_err_with(|| {
+            format!(
+                "safetensor shard {} is outside source directory {}",
+                model_path.display(),
+                source_dir.display()
+            )
+        })?;
+        copy_model_file(model_path, &output_dir.join(relative_path))?;
+    }
+    let shard_index = source_dir.join(MODEL_SAFETENSORS_INDEX_FILE_NAME);
+    if shard_index.is_file() {
+        copy_model_file(
+            &shard_index,
+            &output_dir.join(MODEL_SAFETENSORS_INDEX_FILE_NAME),
+        )?;
+    }
     copy_model_file(&config_path, &output_dir.join(MODEL_CONFIG_FILE_NAME))?;
     copy_model_file(&tokenizer_path, &output_dir.join(TOKENIZER_FILE_NAME))?;
     let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
@@ -371,6 +386,14 @@ pub fn prepare_safetensors_model(
 
 #[cfg(feature = "tch-native")]
 fn copy_model_file(source: &Path, destination: &Path) -> eyre::Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).wrap_err_with(|| {
+            format!(
+                "failed to create model asset directory {}",
+                parent.display()
+            )
+        })?;
+    }
     std::fs::copy(source, destination).wrap_err_with(|| {
         format!(
             "failed to copy model asset {} to {}",

@@ -358,9 +358,10 @@ decoding without Python. Decoder self-attention K/V are now cached per layer
 and cross-attention K/V are precomputed once per window; the cached logits
 match the full-prefix reference on a deterministic synthetic model. A
 synthetic encoder/decoder shape test and the full repository gate pass.
-Sharded safetensors,
-TorchScript export/JIT benchmarking, logits parity against Python, and real
-model-backed VCTK quality remain pending.
+Single-file and indexed-shard safetensors are both accepted, with manifest
+path-safety and cross-shard duplicate checks. TorchScript export/JIT
+benchmarking, logits parity against Python, and real model-backed VCTK quality
+remain pending.
 
 ## Plan operating rules
 
@@ -384,8 +385,8 @@ selects CUDA device `0` by default or CPU with `-1`.
 
 The preferred preparation input is the canonical Whisper model package:
 
-- a single Hugging Face `model.safetensors` file (shard-index preparation is
-  pending);
+- a Hugging Face `model.safetensors` file or
+  `model.safetensors.index.json` plus its shard files;
 - `config.json`/processor metadata from the same model revision;
 - `tokenizer.json` and any required tokenizer sidecars.
 

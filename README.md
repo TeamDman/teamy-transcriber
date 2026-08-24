@@ -132,9 +132,10 @@ after validation. The headless equivalent is:
   --output-dir C:\path\to\teamy-transcriber-model
 ~~~
 
-This command currently accepts one `model.safetensors` file plus matching
-`config.json` and `tokenizer.json`; it performs no download and refuses to
-overwrite an existing directory.
+This command accepts one `model.safetensors` file or an indexed
+`model.safetensors.index.json` package plus matching `config.json` and
+`tokenizer.json`; it performs no download and refuses to overwrite an
+existing directory.
 
 The native model package or source checkpoint is assumed to be available
 locally for this implementation slice; the application does not download
@@ -149,11 +150,11 @@ CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
 incompatible format; CTranslate2 is not a native tch model and is not loaded
 by this Python-free CLI.
 
-The Rust preparation path accepts a canonical Whisper `model.safetensors` plus
-matching config and tokenizer files, validates the manifest, and packages the
-sidecar dimensions for direct `tch` inference. Shard-index preparation and
-optional TorchScript generation remain later work; CTranslate2 `model.bin` is
-not reverse-converted.
+The Rust preparation path accepts a canonical Whisper `model.safetensors`
+file or indexed shard set plus matching config and tokenizer files, validates
+the manifest, and packages the sidecar dimensions for direct `tch` inference.
+Optional TorchScript generation remains later work; CTranslate2 `model.bin`
+is not reverse-converted.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
@@ -175,7 +176,7 @@ receipt for `passed`, `failed`, or `unavailable` outcomes and only reports
 `passed` when the real WAV is imported, normalized to 16 kHz mono, persisted,
 transcribed by the native backend, committed as raw ASR, and matched to the
 descriptor reference. The preferred model directory must contain either the
-canonical safetensors package (`model.safetensors` + `dims.json` +
+canonical safetensors package (`model.safetensors` or indexed shards + `dims.json` +
 `tokenizer.json`) or the native TorchScript (`model.pt` + `dims.json` +
 `tokenizer.json`) package; the existing
 Burnpack/packed-NPY layouts remain accepted compatibility paths. A
