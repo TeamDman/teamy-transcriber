@@ -347,6 +347,18 @@ may be used as a logits/JIT-export oracle during development, but never as a
 runtime dependency. TorchScript is an optional optimized artifact after eager
 `tch` parity, not a hard product requirement.
 
+2026-08-23: Implemented the first Rust-native canonical model package path.
+`model prepare --source-dir <hf-dir> --output-dir <native-dir>` accepts a
+single `model.safetensors` plus matching `config.json` and `tokenizer.json`, derives and writes
+`dims.json`, memory-maps and validates the safetensor manifest, and refuses to
+overwrite an existing output. The direct LibTorch runtime loads F32/F16/BF16
+weights into resident `tch` tensors and runs the Whisper encoder, causal
+decoder self-attention, cross-attention, tied/output projection, and greedy
+decoding without Python. A synthetic encoder/decoder shape test and the full
+repository gate pass. Sharded safetensors, KV-cache decoding,
+TorchScript export/JIT benchmarking, logits parity against Python, and real
+model-backed VCTK quality remain pending.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -369,8 +381,8 @@ selects CUDA device `0` by default or CPU with `-1`.
 
 The preferred preparation input is the canonical Whisper model package:
 
-- one or more Hugging Face `safetensors` weight shards (or an equivalent
-  directly readable tensor container);
+- a single Hugging Face `model.safetensors` file (shard-index preparation is
+  pending);
 - `config.json`/processor metadata from the same model revision;
 - `tokenizer.json` and any required tokenizer sidecars.
 
@@ -394,8 +406,8 @@ package is:
 
 The older `encoder/` and `decoder/` packed-NPY layout remains readable during
 migration. The GUI's existing checkpoint preparation still creates the Burn
-compatibility package; a Rust safetensors preparation command is the next
-model-lifecycle slice. The application does not download assets or pretend to
+compatibility package; the CLI's safetensors preparation creates the direct
+LibTorch package. The application does not download assets or pretend to
 convert CTranslate2/faster-whisper `model.bin` directories. Transcription only
 consumes an already prepared native package.
 
@@ -712,12 +724,14 @@ builds Whisper log-mel features in Rust, runs greedy decoder steps, and returns
 raw transcript text. VAD/alignment remain later capabilities.
 
 Validation: Rust unit and integration tests pass, including deterministic
-frontend and model-shape checks. The real VCTK canary now verifies input hash,
-import, normalization, persisted artifacts, model fingerprinting, and honest
-model failure/replay receipts; the tch/LibTorch package path compiles and is
-unit-covered. A real compatible native model, Rust safetensors preparation,
+frontend and direct-tch synthetic model-shape checks. The real VCTK canary now
+verifies input hash, import, normalization, persisted artifacts, model
+fingerprinting, and honest model failure/replay receipts; the direct
+safetensors preparation and CTranslate2 rejection paths are exercised by
+compilation and a local diagnostic run. A real compatible native model,
 transcript output checksum, long-input ordering, bounded work, cancellation,
-and quality/timing matrix remain pending a supplied canonical model package.
+logits parity, and quality/timing matrix remain pending a supplied canonical
+model package.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -745,8 +759,8 @@ normalization, persisted recording/events, native model inspection, and replay
 receipt; missing corpus and incompatible local models are explicitly
 non-passing. Native frontend/model tests and the full repository gate pass.
 Actual model-backed inference, committed raw-ASR text, CER/WER, and successful
-timing evidence remain unverified until a compatible TorchScript model fixture
-is available.
+timing evidence remain unverified until a compatible canonical Whisper
+checkpoint or TorchScript model fixture is available.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 

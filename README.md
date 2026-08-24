@@ -54,7 +54,7 @@ executable is unavailable or rejects the probe request, the adapter falls back
 to parsing the selected `ffmpeg` binary's stream diagnostics; cancelling the
 GUI's optional ffprobe picker selects that fallback explicitly.
 `recording transcribe` invokes the native tch/LibTorch Whisper encoder/decoder
-when a TorchScript package is selected and commits raw ASR text through the
+when a TorchScript or canonical safetensors package is selected and commits raw ASR text through the
 same event receipt; the existing Burn implementation remains a compatibility
 path for older local packages. Persisted partial clips are materialized as
 separate normalized WAV artifacts first. `--chunk-duration-ms` creates
@@ -118,13 +118,23 @@ provenance events. Restarting the GUI reopens the selected persisted recording
 (falling back to the available recordings) and restores the selected model,
 microphone, and export directory
 from its app-owned settings file. Selecting MODEL validates the tokenizer,
-dimensions, and TorchScript/Burnpack/legacy layout before TRANSCRIBE is enabled.
+dimensions, and TorchScript/safetensors/Burnpack/legacy layout before TRANSCRIBE is enabled.
 The GUI
 also offers a local-only preparation path: choose `No` in the model setup
 dialog, select a Whisper PyTorch checkpoint, select its local `tokenizer.json`
 when it is not beside the checkpoint, and choose an output parent directory.
 The conversion runs asynchronously and selects the resulting native package
-after validation; no CLI model-preparation command is required.
+after validation. The headless equivalent is:
+
+~~~powershell
+.\target\debug\teamy-transcriber.exe model prepare `
+  --source-dir C:\path\to\canonical-whisper `
+  --output-dir C:\path\to\teamy-transcriber-model
+~~~
+
+This command currently accepts one `model.safetensors` file plus matching
+`config.json` and `tokenizer.json`; it performs no download and refuses to
+overwrite an existing directory.
 
 The native model package or source checkpoint is assumed to be available
 locally for this implementation slice; the application does not download
@@ -139,10 +149,11 @@ CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
 incompatible format; CTranslate2 is not a native tch model and is not loaded
 by this Python-free CLI.
 
-The planned Rust preparation path will instead accept canonical Whisper
-`safetensors` shards plus matching config and tokenizer files, remap them into
-direct `tch` weights, and optionally produce TorchScript only when profiling
-shows a JIT graph is faster. CTranslate2 `model.bin` is not reverse-converted.
+The Rust preparation path accepts a canonical Whisper `model.safetensors` plus
+matching config and tokenizer files, validates the manifest, and packages the
+sidecar dimensions for direct `tch` inference. Shard-index preparation and
+optional TorchScript generation remain later work; CTranslate2 `model.bin` is
+not reverse-converted.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
@@ -163,8 +174,10 @@ The command never downloads the corpus or model. It writes a versioned
 receipt for `passed`, `failed`, or `unavailable` outcomes and only reports
 `passed` when the real WAV is imported, normalized to 16 kHz mono, persisted,
 transcribed by the native backend, committed as raw ASR, and matched to the
-descriptor reference. The preferred model directory must contain the native
-TorchScript `model.pt` + `dims.json` + `tokenizer.json` package; the existing
+descriptor reference. The preferred model directory must contain either the
+canonical safetensors package (`model.safetensors` + `dims.json` +
+`tokenizer.json`) or the native TorchScript (`model.pt` + `dims.json` +
+`tokenizer.json`) package; the existing
 Burnpack/packed-NPY layouts remain accepted compatibility paths. A
 CTranslate2/faster-whisper `model.bin` directory is an honest non-passing
 diagnostic.

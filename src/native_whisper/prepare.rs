@@ -1,5 +1,9 @@
 use super::model::MODEL_BURNPACK_FILE_NAME;
+#[cfg(feature = "tch-native")]
+use super::model::MODEL_CONFIG_FILE_NAME;
 use super::model::MODEL_DIMS_FILE_NAME;
+#[cfg(feature = "tch-native")]
+use super::model::MODEL_SAFETENSORS_FILE_NAME;
 use super::model::TOKENIZER_FILE_NAME;
 use super::model::WhisperModelArtifacts;
 use super::model::inspect_model_dir;
@@ -33,6 +37,42 @@ struct CheckpointDims {
     n_text_state: usize,
     n_text_head: usize,
     n_text_layer: usize,
+}
+
+#[cfg(feature = "tch-native")]
+#[derive(Clone, Debug, Deserialize)]
+struct HuggingFaceWhisperConfig {
+    num_mel_bins: usize,
+    max_source_positions: usize,
+    d_model: usize,
+    encoder_attention_heads: usize,
+    encoder_layers: usize,
+    decoder_attention_heads: usize,
+    decoder_layers: usize,
+    vocab_size: usize,
+    max_target_positions: usize,
+}
+
+#[cfg(feature = "tch-native")]
+impl HuggingFaceWhisperConfig {
+    fn into_whisper_dims(self) -> WhisperDims {
+        WhisperDims {
+            audio: AudioEncoderDims {
+                n_mels: self.num_mel_bins,
+                n_audio_ctx: self.max_source_positions,
+                n_audio_state: self.d_model,
+                n_audio_head: self.encoder_attention_heads,
+                n_audio_layer: self.encoder_layers,
+            },
+            text: TextDecoderDims {
+                n_vocab: self.vocab_size,
+                n_text_ctx: self.max_target_positions,
+                n_text_state: self.d_model,
+                n_text_head: self.decoder_attention_heads,
+                n_text_layer: self.decoder_layers,
+            },
+        }
+    }
 }
 
 struct PartialModelDirectory {
@@ -237,6 +277,108 @@ pub fn convert_pytorch_checkpoint(
         .wrap_err("native Burnpack validation failed after model preparation")?;
     partial_output.commit();
     Ok(artifacts)
+}
+
+/// Prepare a canonical Hugging Face Whisper directory for direct Rust/tch use.
+///
+/// This operation is local-only. It copies the existing safetensors file,
+/// tokenizer, and config into the application package and writes the compact
+/// dims.json sidecar consumed by the runtime. It intentionally does not
+/// convert `CTranslate2` `model.bin` files: those are a different runtime format
+/// and cannot be losslessly loaded by `LibTorch`.
+#[cfg(feature = "tch-native")]
+pub fn prepare_safetensors_model(
+    source_dir: &Path,
+    output_dir: &Path,
+) -> eyre::Result<WhisperModelArtifacts> {
+    if !source_dir.is_dir() {
+        bail!(
+            "canonical Whisper source directory is missing: {}",
+            source_dir.display()
+        );
+    }
+    let model_path = source_dir.join(MODEL_SAFETENSORS_FILE_NAME);
+    let config_path = source_dir.join(MODEL_CONFIG_FILE_NAME);
+    let tokenizer_path = source_dir.join(TOKENIZER_FILE_NAME);
+    if !model_path.is_file() && source_dir.join("model.bin").is_file() {
+        bail!(
+            "{} is a CTranslate2/faster-whisper model.bin directory; it cannot be loaded or losslessly converted by the tch/LibTorch Whisper backend. Supply canonical model.safetensors weights instead",
+            source_dir.display()
+        );
+    }
+    for path in [&model_path, &config_path, &tokenizer_path] {
+        if !path.is_file() {
+            bail!("canonical Whisper source is missing {}", path.display());
+        }
+    }
+    let shard_index = source_dir.join("model.safetensors.index.json");
+    if shard_index.is_file() {
+        bail!(
+            "sharded safetensors are not prepared yet (found {}); provide a single model.safetensors file",
+            shard_index.display()
+        );
+    }
+    let config: HuggingFaceWhisperConfig =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).wrap_err_with(|| {
+            format!(
+                "failed to read Hugging Face Whisper config {}",
+                config_path.display()
+            )
+        })?)
+        .wrap_err_with(|| {
+            format!(
+                "failed to parse Hugging Face Whisper config {}",
+                config_path.display()
+            )
+        })?;
+    let dims = config.into_whisper_dims();
+    if dims.audio.n_audio_state == 0
+        || dims.audio.n_audio_head == 0
+        || dims.text.n_text_state == 0
+        || dims.text.n_text_head == 0
+    {
+        bail!("Hugging Face Whisper config contains zero-sized model dimensions");
+    }
+    if output_dir.exists() {
+        bail!(
+            "refusing to overwrite an existing model directory: {}",
+            output_dir.display()
+        );
+    }
+
+    // Parse the safetensor header and verify the graph manifest before making
+    // the package visible. The weights themselves are memory-mapped rather
+    // than copied into a temporary buffer.
+    super::tch_safetensors::validate_safetensors_file(&model_path, &dims)?;
+
+    std::fs::create_dir(output_dir)
+        .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
+    let mut partial_output = PartialModelDirectory::new(output_dir);
+    copy_model_file(&model_path, &output_dir.join(MODEL_SAFETENSORS_FILE_NAME))?;
+    copy_model_file(&config_path, &output_dir.join(MODEL_CONFIG_FILE_NAME))?;
+    copy_model_file(&tokenizer_path, &output_dir.join(TOKENIZER_FILE_NAME))?;
+    let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
+    std::fs::write(
+        &dims_path,
+        serde_json::to_string_pretty(&dims).wrap_err("failed to serialize Whisper dimensions")?,
+    )
+    .wrap_err_with(|| format!("failed to write {}", dims_path.display()))?;
+
+    let artifacts = inspect_model_dir(output_dir)?;
+    partial_output.commit();
+    Ok(artifacts)
+}
+
+#[cfg(feature = "tch-native")]
+fn copy_model_file(source: &Path, destination: &Path) -> eyre::Result<()> {
+    std::fs::copy(source, destination).wrap_err_with(|| {
+        format!(
+            "failed to copy model asset {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn checkpoint_store(checkpoint: &Path, top_level_key: &str) -> PytorchStore {

@@ -31,7 +31,7 @@ impl TchWhisperRuntime {
             .torchscript_path
             .as_deref()
             .ok_or_else(|| eyre::eyre!("TorchScript Whisper artifact is missing model.pt"))?;
-        let device = configured_device()?;
+        let device = configured_device_for_runtime()?;
         let mut model = CModule::load_on_device(model_path, device).wrap_err_with(|| {
             format!(
                 "failed to load TorchScript Whisper model {} on {device:?}",
@@ -122,7 +122,7 @@ impl TchWhisperRuntime {
     }
 }
 
-fn configured_device() -> eyre::Result<Device> {
+pub(crate) fn configured_device_for_runtime() -> eyre::Result<Device> {
     let device_index = std::env::var(TORCH_DEVICE_ENV_VAR)
         .ok()
         .map(|value| {

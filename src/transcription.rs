@@ -4,6 +4,7 @@ use crate::domain::TranscriptProvenance;
 use crate::native_whisper::frontend::whisper_log_mel_spectrogram;
 use crate::native_whisper::model::MODEL_BURNPACK_FILE_NAME;
 use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
+use crate::native_whisper::model::MODEL_SAFETENSORS_FILE_NAME;
 use crate::native_whisper::model::MODEL_TORCHSCRIPT_FILE_NAME;
 use crate::native_whisper::model::TOKENIZER_FILE_NAME;
 use crate::native_whisper::model::WhisperModelArtifacts;
@@ -13,6 +14,8 @@ use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "tch-native")]
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use thiserror::Error;
 
@@ -137,6 +140,15 @@ pub struct NativeWhisperBackend {
     model_artifacts: Arc<OnceLock<Result<WhisperModelArtifacts, String>>>,
     #[cfg(feature = "tch-native")]
     tch_runtime: Arc<OnceLock<Result<Arc<crate::native_whisper::tch::TchWhisperRuntime>, String>>>,
+    #[cfg(feature = "tch-native")]
+    tch_safetensors_runtime: Arc<
+        OnceLock<
+            Result<
+                Arc<Mutex<crate::native_whisper::tch_safetensors::TchSafetensorsWhisperRuntime>>,
+                String,
+            >,
+        >,
+    >,
 }
 
 impl NativeWhisperBackend {
@@ -147,6 +159,8 @@ impl NativeWhisperBackend {
             model_artifacts: Arc::new(OnceLock::new()),
             #[cfg(feature = "tch-native")]
             tch_runtime: Arc::new(OnceLock::new()),
+            #[cfg(feature = "tch-native")]
+            tch_safetensors_runtime: Arc::new(OnceLock::new()),
         }
     }
 
@@ -161,6 +175,7 @@ impl NativeWhisperBackend {
         let weights = if file_status(&root.join(MODEL_BURNPACK_FILE_NAME))
             == RuntimeAssetStatus::Present
             || file_status(&root.join(MODEL_TORCHSCRIPT_FILE_NAME)) == RuntimeAssetStatus::Present
+            || file_status(&root.join(MODEL_SAFETENSORS_FILE_NAME)) == RuntimeAssetStatus::Present
             || (directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
                 && directory_status(&root.join("decoder")) == RuntimeAssetStatus::Present)
         {
@@ -212,7 +227,7 @@ impl NativeWhisperBackend {
             || readiness.dims != RuntimeAssetStatus::Present
         {
             return Err(TranscriptionError::Configuration(format!(
-                "native model package is incomplete (weights={}, dims={}, tokenizer={}); preferred tch/LibTorch layout is model.pt + dims.json + tokenizer.json",
+                "native model package is incomplete (weights={}, dims={}, tokenizer={}); preferred tch/LibTorch layouts are model.pt or model.safetensors with dims.json + tokenizer.json",
                 readiness.weights, readiness.dims, readiness.tokenizer
             )));
         }
@@ -239,6 +254,13 @@ impl TranscriptionBackend for NativeWhisperBackend {
                 .is_file()
             {
                 "whisper-tch-libtorch-native"
+            } else if self
+                .config
+                .model_dir
+                .join(MODEL_SAFETENSORS_FILE_NAME)
+                .is_file()
+            {
+                "whisper-tch-libtorch-safetensors"
             } else {
                 "whisper-burn-native-cpu"
             }
@@ -276,6 +298,33 @@ impl TranscriptionBackend for NativeWhisperBackend {
                 {
                     return Err(TranscriptionError::Configuration(
                         "TorchScript Whisper model requires the tch-native feature".to_string(),
+                    ));
+                }
+            }
+            crate::native_whisper::model::WhisperModelLayout::TchSafetensors => {
+                #[cfg(feature = "tch-native")]
+                {
+                    let runtime = self.tch_safetensors_runtime.get_or_init(|| {
+                        crate::native_whisper::tch_safetensors::TchSafetensorsWhisperRuntime::from_artifacts(&artifacts)
+                            .map(|runtime| Arc::new(Mutex::new(runtime)))
+                            .map_err(|error| error.to_string())
+                    });
+                    let runtime = runtime
+                        .as_ref()
+                        .map_err(|error| TranscriptionError::Inference(error.clone()))?;
+                    let runtime = runtime.lock().map_err(|error| {
+                        TranscriptionError::Inference(format!(
+                            "direct tch Whisper runtime mutex was poisoned: {error}"
+                        ))
+                    })?;
+                    runtime
+                        .greedy_decode(&artifacts, &features, self.config.max_decode_tokens)
+                        .map_err(|error| TranscriptionError::Inference(error.to_string()))?
+                }
+                #[cfg(not(feature = "tch-native"))]
+                {
+                    return Err(TranscriptionError::Configuration(
+                        "safetensors Whisper model requires the tch-native feature".to_string(),
                     ));
                 }
             }

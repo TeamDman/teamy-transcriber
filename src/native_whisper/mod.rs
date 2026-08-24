@@ -22,4 +22,6 @@ pub mod model;
 pub mod prepare;
 #[cfg(feature = "tch-native")]
 pub mod tch;
+#[cfg(feature = "tch-native")]
+pub mod tch_safetensors;
 pub mod whisper;

@@ -1,3 +1,4 @@
+pub mod prepare;
 pub mod show;
 
 mod model_cli;

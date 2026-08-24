@@ -19,6 +19,9 @@ ash-window = "0.13"
 burn = { version = "0.19.0", default-features = false, features = ["ndarray", "std", "store", "record-item-custom-serde"] }
 burn-store = "0.19.1"
 tch = { version = "=0.24.0", optional = true }
+safetensors = { version = "=0.6.2", optional = true }
+half = { version = "=2.7.1", optional = true }
+memmap2 = { version = "=0.9.11", optional = true }
 chrono = "0.4"
 color-eyre = "0.6.5"
 eyre = "0.6.12"
@@ -75,7 +78,7 @@ windows = { version = "0.62.2", features = [
 
 [features]
 default = ["tch-native"]
-tch-native = ["dep:tch"]
+tch-native = ["dep:tch", "dep:safetensors", "dep:half", "dep:memmap2"]
 extended_observability = []
 tracy = ["extended_observability", "dep:tracing-tracy"]
 

@@ -444,7 +444,7 @@ impl GuiApplication {
                     .to_string();
         } else {
             self.state.status_line =
-                "Model incomplete: select a folder containing model.pt, dims.json, tokenizer.json"
+                "Model incomplete: select a folder containing model.pt or model.safetensors, dims.json, tokenizer.json"
                     .to_string();
         }
     }

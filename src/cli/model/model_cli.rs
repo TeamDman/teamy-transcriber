@@ -1,3 +1,4 @@
+use crate::cli::model::prepare::ModelPrepareArgs;
 use crate::cli::model::show::ModelShowArgs;
 use crate::cli::output::CliOutput;
 use arbitrary::Arbitrary;
@@ -18,6 +19,8 @@ pub struct ModelArgs {
 pub enum ModelCommand {
     /// Show the assumed local model directory and inventory.
     Show(ModelShowArgs),
+    /// Prepare a local canonical Hugging Face safetensors Whisper package.
+    Prepare(ModelPrepareArgs),
 }
 
 impl ModelArgs {
@@ -27,6 +30,7 @@ impl ModelArgs {
     pub async fn invoke(self) -> Result<CliOutput> {
         match self.command {
             ModelCommand::Show(args) => args.invoke().await,
+            ModelCommand::Prepare(args) => args.invoke().await,
         }
     }
 }
