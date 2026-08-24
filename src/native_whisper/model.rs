@@ -177,10 +177,11 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     }
 
     bail!(
-        "native Whisper model {} is incomplete; expected {} or {} + {} + {} for tch/LibTorch, or {} + {} + {} for the legacy Burn path or encoder/decoder packed-NPY directories",
+        "native Whisper model {} is incomplete; expected {} or {} or {} + {} + {} for tch/LibTorch, or {} + {} + {} for the legacy Burn path or encoder/decoder packed-NPY directories",
         root.display(),
         MODEL_TORCHSCRIPT_FILE_NAME,
         MODEL_SAFETENSORS_FILE_NAME,
+        MODEL_SAFETENSORS_INDEX_FILE_NAME,
         MODEL_DIMS_FILE_NAME,
         TOKENIZER_FILE_NAME,
         MODEL_BURNPACK_FILE_NAME,
@@ -201,10 +202,17 @@ struct SafetensorsIndex {
 /// selected model directory.
 pub fn resolve_safetensor_paths(root: &Path) -> eyre::Result<Vec<PathBuf>> {
     let single_path = root.join(MODEL_SAFETENSORS_FILE_NAME);
+    let index_path = root.join(MODEL_SAFETENSORS_INDEX_FILE_NAME);
     if single_path.is_file() {
+        if index_path.is_file() {
+            bail!(
+                "canonical Whisper model contains both {} and {}; remove the ambiguous extra layout",
+                single_path.display(),
+                index_path.display()
+            );
+        }
         return Ok(vec![single_path]);
     }
-    let index_path = root.join(MODEL_SAFETENSORS_INDEX_FILE_NAME);
     if !index_path.is_file() {
         bail!(
             "canonical Whisper model is missing {} or {}",

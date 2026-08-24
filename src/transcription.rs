@@ -5,6 +5,7 @@ use crate::native_whisper::frontend::whisper_log_mel_spectrogram;
 use crate::native_whisper::model::MODEL_BURNPACK_FILE_NAME;
 use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
 use crate::native_whisper::model::MODEL_SAFETENSORS_FILE_NAME;
+use crate::native_whisper::model::MODEL_SAFETENSORS_INDEX_FILE_NAME;
 use crate::native_whisper::model::MODEL_TORCHSCRIPT_FILE_NAME;
 use crate::native_whisper::model::TOKENIZER_FILE_NAME;
 use crate::native_whisper::model::WhisperModelArtifacts;
@@ -176,6 +177,8 @@ impl NativeWhisperBackend {
             == RuntimeAssetStatus::Present
             || file_status(&root.join(MODEL_TORCHSCRIPT_FILE_NAME)) == RuntimeAssetStatus::Present
             || file_status(&root.join(MODEL_SAFETENSORS_FILE_NAME)) == RuntimeAssetStatus::Present
+            || file_status(&root.join(MODEL_SAFETENSORS_INDEX_FILE_NAME))
+                == RuntimeAssetStatus::Present
             || (directory_status(&root.join("encoder")) == RuntimeAssetStatus::Present
                 && directory_status(&root.join("decoder")) == RuntimeAssetStatus::Present)
         {
@@ -261,6 +264,13 @@ impl TranscriptionBackend for NativeWhisperBackend {
                 .is_file()
             {
                 "whisper-tch-libtorch-safetensors"
+            } else if self
+                .config
+                .model_dir
+                .join(MODEL_SAFETENSORS_INDEX_FILE_NAME)
+                .is_file()
+            {
+                "whisper-tch-libtorch-safetensors-sharded"
             } else {
                 "whisper-burn-native-cpu"
             }
