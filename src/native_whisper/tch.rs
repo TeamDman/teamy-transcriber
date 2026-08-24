@@ -108,6 +108,7 @@ impl TchWhisperRuntime {
                 .select(1, seq_len - 1)
                 .to_device(Device::Cpu)
                 .to_kind(Kind::Float)
+                .view([-1])
                 .contiguous();
             let values = Vec::<f32>::try_from(final_logits)
                 .wrap_err("failed to copy TorchScript Whisper logits to the host")?;

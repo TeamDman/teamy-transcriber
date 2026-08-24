@@ -6,7 +6,7 @@ The first release is deliberately narrow:
 
 - capture or import audio;
 - save an authoritative recording and clip manifest;
-- transcribe locally through a pure-Rust Burn Whisper runtime;
+- transcribe locally through a Python-free Rust `tch`/LibTorch Whisper runtime;
 - present staged transcript text without silently typing into another application;
 - provide predictable clip movement and a small set of reversible audio-preparation operations;
 - keep the GUI, tray behavior, renderer, and model runtime observable and testable.
@@ -139,8 +139,10 @@ existing directory.
 
 The native model package or source checkpoint is assumed to be available
 locally for this implementation slice; the application does not download
-model assets. The current interim prepared model directory contains a TorchScript
-`model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
+model assets. The preferred package contains canonical safetensors plus
+`dims.json` and `tokenizer.json`; the Rust preparation path has been exercised
+with a real `openai/whisper-tiny` package. An optional TorchScript package
+contains `model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
 `encoder` and `decoder` methods and is loaded through the same pinned
 `tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds and
 `TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` for CPU execution. The runtime also

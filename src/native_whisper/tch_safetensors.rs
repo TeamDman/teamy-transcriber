@@ -159,6 +159,7 @@ impl TchSafetensorsWhisperRuntime {
                 .select(1, seq_len - 1)
                 .to_device(Device::Cpu)
                 .to_kind(Kind::Float)
+                .view([-1])
                 .contiguous();
             let values = Vec::<f32>::try_from(final_logits)
                 .wrap_err("failed to copy direct tch Whisper logits to the host")?;
@@ -731,7 +732,12 @@ fn validate_tensor_manifest<T: TensorShapeLookup>(
                 format!("{block}.final_layer_norm.bias"),
             ] {
                 if tensors.has(&name) {
-                    ensure_shape(tensors, &name, &[state])?;
+                    let expected = if name.ends_with("fc1.bias") {
+                        vec![4 * state]
+                    } else {
+                        vec![state]
+                    };
+                    ensure_shape(tensors, &name, &expected)?;
                 }
             }
             if prefix.ends_with("decoder.layers") {

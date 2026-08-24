@@ -1,11 +1,11 @@
 # teamy-transcriber implementation plan
 
-Status: active implementation slice; the GUI now owns the first end-to-end local workflow, while real model-backed inference and human-operated file-picker/capture evidence still await a supplied native model fixture and explicit runs.
+Status: active implementation slice; the GUI now owns the first end-to-end local workflow, and the direct native Whisper path has bounded real-model evidence. Human-operated file-picker/capture, parity/JIT, and broader quality evidence remain open.
 Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
-Last updated: 2026-08-23
-Current focus: [~] migrate native ASR to the teamy-tts tch/LibTorch runtime and verify the VCTK canary
+Last updated: 2026-08-24
+Current focus: [~] finish direct native Whisper evidence: parity/JIT comparison, long-input controls, and broader quality checks
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -363,6 +363,28 @@ path-safety and cross-shard duplicate checks. TorchScript export/JIT
 benchmarking, logits parity against Python, and real model-backed VCTK quality
 remain pending.
 
+2026-08-24: Prepared a real public `openai/whisper-tiny` Hugging Face package
+(`model.safetensors`, `config.json`, and `tokenizer.json`) with the Rust
+`model prepare` command. The resulting native package was loaded by direct
+`tch`/LibTorch inference on CPU, with the model resident for the transcription
+job and cached decoder attention state. The real VCTK canary
+`vctk-p230-385` traversed import, deterministic 16 kHz mono normalization,
+persistence, model inspection, direct native inference, raw-ASR commit, and
+replay. Receipt `target/vctk-p230-385-tiny-2.json` reports exact text
+`If you can get it.`, CER 0, WER 0, successful replay, and 10,859 ms total
+runtime (3,858 ms model load, 6,944 ms transcription). This is bounded
+empirical evidence for the Python-free ASR path, not evidence for large-v3
+quality, long-form completeness, alignment, diarization, GPU performance, or
+Python logits/JIT parity.
+
+2026-08-24: Fixed two real-model issues exposed by that canary: final logits
+are flattened before host conversion, and Whisper `fc1.bias` validation expects
+the feed-forward width (`4 * state`) rather than the hidden state width. With
+`LIBTORCH=G:\\Programming\\Caches\\teamy-tts-libtorch-2.11.0-cu128\\libtorch`,
+`check-all.ps1` passes formatting, clippy, build, 44 library tests, and all
+integration suites. The working tree contains only these two correctness fixes
+until they are committed.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -713,7 +735,7 @@ Completion: The app can run a fully observable transcription job without real in
 
 Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. The GUI may prepare a compatible local PyTorch checkpoint into the native package, but must not add a downloader or CDN dependency.
 
-Validation: `model show`, local inventory, `doctor`, backend readiness, and the GUI MODEL flow report the configured local model/runtime paths without downloading assets; checkpoint preparation is explicit, local, validated, and non-overwriting. Detailed runtime compatibility, accelerator, permission, and idempotent preparation diagnostics remain pending.
+Validation: `model show`, local inventory, `doctor`, backend readiness, and the GUI MODEL flow report the configured local model/runtime paths without downloading assets; canonical single-file and indexed-shard safetensor preparation is explicit, local, validated, and non-overwriting. A real `openai/whisper-tiny` package has been prepared and loaded with the pinned teamy-tts LibTorch runtime. Detailed runtime compatibility across model families, accelerator matrix, permission diagnostics, and clean-machine installation remain pending.
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
@@ -728,14 +750,13 @@ builds Whisper log-mel features in Rust, runs greedy decoder steps, and returns
 raw transcript text. VAD/alignment remain later capabilities.
 
 Validation: Rust unit and integration tests pass, including deterministic
-frontend and direct-tch synthetic model-shape checks. The real VCTK canary now
-verifies input hash, import, normalization, persisted artifacts, model
-fingerprinting, and honest model failure/replay receipts; the direct
-safetensors preparation and CTranslate2 rejection paths are exercised by
-compilation and a local diagnostic run. A real compatible native model,
-transcript output checksum, long-input ordering, bounded work, cancellation,
-logits parity, and quality/timing matrix remain pending a supplied canonical
-model package.
+frontend, direct-tch synthetic model-shape checks, cached/full-prefix decoder
+agreement, and indexed-shard validation. The real VCTK canary verifies input
+hash, import, normalization, persisted artifacts, model fingerprinting,
+direct-safetensors inference, committed raw-ASR text, CER/WER, timing, and
+replay. Long-input ordering, bounded work, cancellation, Python logits parity,
+TorchScript/JIT performance, and a broader quality/timing matrix remain
+pending.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
@@ -759,12 +780,13 @@ and projects them through `recording show`; import/video fixture execution,
 ordered result staging, progress, and cancellation remain pending.
 
 Validation: The typed no-GUI canary traverses the real VCTK import, 16 kHz mono
-normalization, persisted recording/events, native model inspection, and replay
-receipt; missing corpus and incompatible local models are explicitly
+normalization, persisted recording/events, canonical safetensor model
+inspection, direct native Whisper inference, raw-ASR commit, CER/WER, timing,
+and replay receipt; missing corpus and incompatible local models are explicitly
 non-passing. Native frontend/model tests and the full repository gate pass.
-Actual model-backed inference, committed raw-ASR text, CER/WER, and successful
-timing evidence remain unverified until a compatible canonical Whisper
-checkpoint or TorchScript model fixture is available.
+The successful tiny-model canary is bounded to one short fixture; video,
+long-form completeness, cancellation, alignment, diarization, and a broader
+quality matrix remain pending.
 
 Completion: The first user-value path works end to end for a fixture and is documented as the reference slice.
 
@@ -772,7 +794,10 @@ Completion: The first user-value path works end to end for a fixture and is docu
 
 Work: Implement bounded chunking, speech-aware boundaries where available, ordered assembly, partial results, retry/cancel semantics, and quality metadata. The current slice provides deterministic fixed-duration ranges, stable clip IDs, ordered per-clip reports, and resumable failure states; speech-aware boundaries, cancellation, and timing quality metadata remain pending. Preserve source-to-chunk offsets.
 
-Validation: Unit coverage verifies no gaps or overlap in synthetic plans; the VCTK smoke empirically produced five ordered ranges with no duplication before the expected missing-runtime failure. Real local inference, long-input worker limits, cancellation, and timing evidence remain pending.
+Validation: Unit coverage verifies no gaps or overlap in synthetic plans; the
+real short VCTK canary completes one ordered native-inference window. Long-input
+worker limits, multi-window ordering, cancellation, and timing evidence remain
+pending.
 
 The next fixture extension can concatenate clips from distinct VCTK speakers
 with a checked-in logical descriptor and an ignored generated WAV. Its truth
