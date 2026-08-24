@@ -51,6 +51,15 @@ impl TchWhisperRuntime {
         features: &WhisperLogMelSpectrogram,
         max_decode_tokens: usize,
     ) -> eyre::Result<String> {
+        tch::no_grad(|| self.greedy_decode_without_grad(artifacts, features, max_decode_tokens))
+    }
+
+    fn greedy_decode_without_grad(
+        &self,
+        artifacts: &WhisperModelArtifacts,
+        features: &WhisperLogMelSpectrogram,
+        max_decode_tokens: usize,
+    ) -> eyre::Result<String> {
         if max_decode_tokens == 0 {
             bail!("max decode tokens must be greater than zero");
         }

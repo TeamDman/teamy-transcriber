@@ -128,7 +128,7 @@ after validation; no CLI model-preparation command is required.
 
 The native model package or source checkpoint is assumed to be available
 locally for this implementation slice; the application does not download
-model assets. The preferred prepared model directory contains a TorchScript
+model assets. The current interim prepared model directory contains a TorchScript
 `model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
 `encoder` and `decoder` methods and is loaded through the same pinned
 `tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds and
@@ -138,6 +138,11 @@ recognizes the existing Burnpack `model.bpk` package and older packed-NPY
 CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
 incompatible format; CTranslate2 is not a native tch model and is not loaded
 by this Python-free CLI.
+
+The planned Rust preparation path will instead accept canonical Whisper
+`safetensors` shards plus matching config and tokenizer files, remap them into
+direct `tch` weights, and optionally produce TorchScript only when profiling
+shows a JIT graph is faster. CTranslate2 `model.bin` is not reverse-converted.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for

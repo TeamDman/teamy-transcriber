@@ -6,11 +6,14 @@ use crate::native_whisper::model::MODEL_BURNPACK_FILE_NAME;
 use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
 use crate::native_whisper::model::MODEL_TORCHSCRIPT_FILE_NAME;
 use crate::native_whisper::model::TOKENIZER_FILE_NAME;
+use crate::native_whisper::model::WhisperModelArtifacts;
 use crate::native_whisper::model::inspect_model_dir;
 use crate::native_whisper::whisper::greedy_decode_with_model;
 use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, Facet, PartialEq)]
@@ -131,12 +134,20 @@ pub struct NativeWhisperConfig {
 #[derive(Clone, Debug)]
 pub struct NativeWhisperBackend {
     config: NativeWhisperConfig,
+    model_artifacts: Arc<OnceLock<Result<WhisperModelArtifacts, String>>>,
+    #[cfg(feature = "tch-native")]
+    tch_runtime: Arc<OnceLock<Result<Arc<crate::native_whisper::tch::TchWhisperRuntime>, String>>>,
 }
 
 impl NativeWhisperBackend {
     #[must_use]
     pub fn new(config: NativeWhisperConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            model_artifacts: Arc::new(OnceLock::new()),
+            #[cfg(feature = "tch-native")]
+            tch_runtime: Arc::new(OnceLock::new()),
+        }
     }
 
     #[must_use]
@@ -205,9 +216,16 @@ impl NativeWhisperBackend {
                 readiness.weights, readiness.dims, readiness.tokenizer
             )));
         }
-        inspect_model_dir(&self.config.model_dir)
-            .map(|_| ())
-            .map_err(|error| TranscriptionError::Configuration(error.to_string()))
+        self.model_artifacts().map(|_| ())
+    }
+
+    fn model_artifacts(&self) -> Result<WhisperModelArtifacts, TranscriptionError> {
+        self.model_artifacts
+            .get_or_init(|| {
+                inspect_model_dir(&self.config.model_dir).map_err(|error| error.to_string())
+            })
+            .clone()
+            .map_err(TranscriptionError::Configuration)
     }
 }
 
@@ -235,22 +253,23 @@ impl TranscriptionBackend for NativeWhisperBackend {
         request: &TranscriptionRequest,
     ) -> Result<TranscriptionResult, TranscriptionError> {
         self.validate_configuration(request)?;
-        let artifacts = inspect_model_dir(&self.config.model_dir)
-            .map_err(|error| TranscriptionError::Configuration(error.to_string()))?;
+        let artifacts = self.model_artifacts()?;
         let samples = read_normalized_wav(&request.audio_path)?;
         let features = whisper_log_mel_spectrogram(&samples);
         let text = match artifacts.layout {
             crate::native_whisper::model::WhisperModelLayout::TorchScript => {
                 #[cfg(feature = "tch-native")]
                 {
-                    crate::native_whisper::tch::TchWhisperRuntime::from_artifacts(&artifacts)
-                        .and_then(|runtime| {
-                            runtime.greedy_decode(
-                                &artifacts,
-                                &features,
-                                self.config.max_decode_tokens,
-                            )
-                        })
+                    let runtime = self.tch_runtime.get_or_init(|| {
+                        crate::native_whisper::tch::TchWhisperRuntime::from_artifacts(&artifacts)
+                            .map(Arc::new)
+                            .map_err(|error| error.to_string())
+                    });
+                    let runtime = runtime
+                        .as_ref()
+                        .map_err(|error| TranscriptionError::Inference(error.clone()))?;
+                    runtime
+                        .greedy_decode(&artifacts, &features, self.config.max_decode_tokens)
                         .map_err(|error| TranscriptionError::Inference(error.to_string()))?
                 }
                 #[cfg(not(feature = "tch-native"))]

@@ -334,6 +334,18 @@ long file to be silently truncated to its first window.
 The default per-window decode budget is now the Whisper text-context limit
 (448 generated tokens) and still stops early on end-of-text; callers can lower
 it explicitly when bounded latency is more important than completeness.
+The LibTorch model and validated artifacts are now cached for the lifetime of a
+transcription job instead of being loaded once per chunk, and inference runs
+under `no_grad`.
+
+2026-08-23: Refined the model strategy: the final preparation path should be
+Rust-native and accept canonical Whisper `safetensors`/config/tokenizer
+artifacts, remapping them into the direct `tch` model implementation. The
+WhisperX `faster-whisper`/CTranslate2 `model.bin` remains a distinct converted
+format; it cannot be losslessly reversed into LibTorch weights by `tch`. Python
+may be used as a logits/JIT-export oracle during development, but never as a
+runtime dependency. TorchScript is an optional optimized artifact after eager
+`tch` parity, not a hard product requirement.
 
 ## Plan operating rules
 
@@ -355,9 +367,18 @@ identify the exact LibTorch runtime/model revision rather than relying on
 Python. `LIBTORCH` is a build-time input; `TEAMY_TRANSCRIBER_TORCH_DEVICE`
 selects CUDA device `0` by default or CPU with `-1`.
 
-The preferred package is:
+The preferred preparation input is the canonical Whisper model package:
 
-- `model.pt`: a TorchScript Whisper graph exposing `encoder` and `decoder`;
+- one or more Hugging Face `safetensors` weight shards (or an equivalent
+  directly readable tensor container);
+- `config.json`/processor metadata from the same model revision;
+- `tokenizer.json` and any required tokenizer sidecars.
+
+Rust preparation should validate and remap those tensors into the project's
+versioned native package. The preferred runtime package is:
+
+- direct `tch` weights and dimensions, with an optional `model.pt` TorchScript
+  cache for measured hot paths;
 - `dims.json`: Whisper dimensions and context limits;
 - `tokenizer.json`: the tokenizer used for the language/task prompt and text
   decoding.
@@ -373,9 +394,9 @@ package is:
 
 The older `encoder/` and `decoder/` packed-NPY layout remains readable during
 migration. The GUI's existing checkpoint preparation still creates the Burn
-compatibility package; a TorchScript export/preparation command is the next
-model-lifecycle slice. The application does not download assets or convert
-CTranslate2/faster-whisper `model.bin` directories. Transcription only
+compatibility package; a Rust safetensors preparation command is the next
+model-lifecycle slice. The application does not download assets or pretend to
+convert CTranslate2/faster-whisper `model.bin` directories. Transcription only
 consumes an already prepared native package.
 
 The shared cross-project registry shape follows `teamy-tts`: stable model ID,
@@ -683,20 +704,20 @@ Completion: The application explains which local model/runtime assets are presen
 #### W9 [~] Integrate native Whisper ASR
 
 Work: Implement the first native Whisper ASR path behind the backend protocol,
-consuming the preferred TorchScript `model.pt`, `dims.json`, and `tokenizer.json`
-package supplied in the configured local model directory. The graph is loaded
-through Rust `tch`/LibTorch and the existing Burn package remains a compatibility
-path. The current path accepts normalized 16 kHz mono input, builds Whisper
-log-mel features in Rust, runs greedy decoder steps, and returns raw transcript
-text. VAD/alignment remain later capabilities.
+consuming Rust-prepared direct `tch` weights, dimensions, and tokenizer from the
+configured local model directory. An optional TorchScript `model.pt` path may
+serve measured hot subgraphs, and the existing Burn package remains a
+compatibility path. The current path accepts normalized 16 kHz mono input,
+builds Whisper log-mel features in Rust, runs greedy decoder steps, and returns
+raw transcript text. VAD/alignment remain later capabilities.
 
 Validation: Rust unit and integration tests pass, including deterministic
 frontend and model-shape checks. The real VCTK canary now verifies input hash,
 import, normalization, persisted artifacts, model fingerprinting, and honest
 model failure/replay receipts; the tch/LibTorch package path compiles and is
-unit-covered. A real compatible native model, transcript output checksum,
-long-input ordering, bounded work, cancellation, and quality/timing matrix
-remain pending a supplied TorchScript package.
+unit-covered. A real compatible native model, Rust safetensors preparation,
+transcript output checksum, long-input ordering, bounded work, cancellation,
+and quality/timing matrix remain pending a supplied canonical model package.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 
