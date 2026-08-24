@@ -25,3 +25,15 @@ pub mod tch;
 #[cfg(feature = "tch-native")]
 pub mod tch_safetensors;
 pub mod whisper;
+
+// MSVC can discard the otherwise-unused `torch_cuda.dll` import from the
+// LibTorch link. Keep the same one-symbol CUDA anchor used by teamy-tts so
+// LibTorch initializes its CUDA backend when the executable starts.
+#[cfg(all(windows, teamy_transcriber_cuda_link))]
+unsafe extern "C" {
+    fn teamy_transcriber_force_torch_cuda();
+}
+
+#[cfg(all(windows, teamy_transcriber_cuda_link))]
+#[used]
+static FORCE_TORCH_CUDA_LINK: unsafe extern "C" fn() = teamy_transcriber_force_torch_cuda;

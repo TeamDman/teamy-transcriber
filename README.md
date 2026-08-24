@@ -55,8 +55,9 @@ to parsing the selected `ffmpeg` binary's stream diagnostics; cancelling the
 GUI's optional ffprobe picker selects that fallback explicitly.
 `recording transcribe` invokes the native tch/LibTorch Whisper encoder/decoder
 when a TorchScript or canonical safetensors package is selected and commits raw ASR text through the
-same event receipt; the existing Burn implementation remains a compatibility
-path for older local packages. Persisted partial clips are materialized as
+same event receipt. CPU mode uses the same tch/LibTorch graph on `Device::Cpu`;
+Burnpack is retained only as a legacy compatibility layout and is not the CPU
+fallback. Persisted partial clips are materialized as
 separate normalized WAV artifacts first. `--chunk-duration-ms` creates
 contiguous, non-overlapping clip records and resumes from their stable IDs
 after a failure; omitted chunking uses Whisper's 30-second context window so
@@ -144,10 +145,14 @@ model assets. The preferred package contains canonical safetensors plus
 with a real `openai/whisper-tiny` package. An optional TorchScript package
 contains `model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
 `encoder` and `decoder` methods and is loaded through the same pinned
-`tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds and
-`TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` for CPU execution. The runtime also
+`tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds. CUDA device 0
+is the default when LibTorch reports CUDA availability; set
+`TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` to run the same tch graph on the CPU. When
+running from a checkout, put the matching LibTorch `bin` directory on `PATH`;
+packaged builds must ship the matching LibTorch DLLs beside the executable. The runtime also
 recognizes the existing Burnpack `model.bpk` package and older packed-NPY
-`encoder/`/`decoder/` layout during migration. If a selected folder contains a
+`encoder/`/`decoder/` layout during migration, but those are legacy compatibility
+paths rather than the active tch CPU/GPU runtime. If a selected folder contains a
 CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
 incompatible format; CTranslate2 is not a native tch model and is not loaded
 by this Python-free CLI.

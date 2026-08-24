@@ -5,7 +5,7 @@ Plan owner: Teamy
 Plan path: G:\Programming\Repos\teamy-transcriber\PLAN.md
 Public repository: https://github.com/TeamDman/teamy-transcriber
 Last updated: 2026-08-24
-Current focus: [~] finish direct native Whisper evidence: parity/JIT comparison, long-input controls, and broader quality checks
+Current focus: [~] finish direct native Whisper evidence: CUDA packaging, parity/JIT comparison, long-input controls, and broader quality checks
 
 This file is the living work contract. A fresh agent should be able to resume from it without reconstructing the project intent from conversation history.
 
@@ -391,6 +391,19 @@ status, the same exact transcript and CER/WER 0, successful replay, and 9,653
 ms total runtime (3,777 ms model load, 5,823 ms transcription). The receipt is
 an ignored local artifact; the corpus and model remain outside version control.
 
+2026-08-24: Audited the GPU environment against `teamy-tts`: the machine has
+an NVIDIA GeForce RTX 4090 with driver 610.88, and the selected LibTorch package
+is `2.11.0+cu128` with CUDA 12.8/cuDNN 9. The first GPU canary correctly found
+the executable and model but LibTorch reported CUDA unavailable because the
+Windows CUDA link anchor was compiled without a live reference. Mirroring
+teamy-tts's `#[used]` anchor made the direct safetensors path initialize CUDA.
+The resulting CUDA canary receipt records `cuda:0`, one available device,
+cuDART 12080, cuDNN 91900, exact text `If you can get it.`, CER/WER 0, and
+successful replay. The receipt also records the same model hash and normalized
+audio hash as the CPU canary. CUDA acceptance is currently bounded to this GPU,
+LibTorch build, and tiny model; multi-GPU, packaged-DLL, and large-model
+performance evidence remain pending.
+
 ## Plan operating rules
 
 1. Keep the requirements ledger and traceability current as decisions change.
@@ -427,9 +440,10 @@ versioned native package. The preferred runtime package is:
 - `tokenizer.json`: the tokenizer used for the language/task prompt and text
   decoding.
 
-Until the migration passes the VCTK canary, the existing Burn package remains
-readable as a compatibility/reference and conversion experiment. Its current
-package is:
+The VCTK canary has now passed with the direct tch/LibTorch path. The existing
+Burn package remains readable only as a legacy compatibility/reference and
+conversion experiment; it is not the CPU fallback. CPU mode uses the same tch
+model graph on `Device::Cpu`. Its current compatibility package is:
 
 - `model.bpk`: Burnpack weights for the handwritten Burn Whisper model;
 - `dims.json`: the dimensions needed to instantiate that model;
@@ -741,7 +755,7 @@ Completion: The app can run a fully observable transcription job without real in
 
 Work: Separate executable/runtime cache from model cache. For this phase, validate a locally supplied model directory, define versioned manifests, checksums, device selection, CUDA/CPU policy, and readiness diagnostics. The GUI may prepare a compatible local PyTorch checkpoint into the native package, but must not add a downloader or CDN dependency.
 
-Validation: `model show`, local inventory, `doctor`, backend readiness, and the GUI MODEL flow report the configured local model/runtime paths without downloading assets; canonical single-file and indexed-shard safetensor preparation is explicit, local, validated, and non-overwriting. A real `openai/whisper-tiny` package has been prepared and loaded with the pinned teamy-tts LibTorch runtime. Detailed runtime compatibility across model families, accelerator matrix, permission diagnostics, and clean-machine installation remain pending.
+Validation: `model show`, local inventory, `doctor`, backend readiness, and the GUI MODEL flow report the configured local model/runtime paths without downloading assets; canonical single-file and indexed-shard safetensor preparation is explicit, local, validated, and non-overwriting. A real `openai/whisper-tiny` package has been prepared and loaded with the pinned teamy-tts LibTorch runtime on both CPU and an RTX 4090 CUDA device. Detailed runtime compatibility across model families, multi-GPU matrix, permission diagnostics, packaged-DLL rehearsal, and clean-machine installation remain pending.
 
 Completion: The application explains which local model/runtime assets are present or missing, and no installed executable requires the source checkout. CDN acquisition remains explicitly deferred.
 
@@ -750,8 +764,9 @@ Completion: The application explains which local model/runtime assets are presen
 Work: Implement the first native Whisper ASR path behind the backend protocol,
 consuming Rust-prepared direct `tch` weights, dimensions, and tokenizer from the
 configured local model directory. An optional TorchScript `model.pt` path may
-serve measured hot subgraphs, and the existing Burn package remains a
-compatibility path. The current path accepts normalized 16 kHz mono input,
+serve measured hot subgraphs. Burnpack/packed-NPY remain legacy compatibility
+paths only; they are not selected as CPU fallback. The current path accepts
+normalized 16 kHz mono input,
 builds Whisper log-mel features in Rust, runs greedy decoder steps, and returns
 raw transcript text. VAD/alignment remain later capabilities.
 
@@ -762,7 +777,7 @@ hash, import, normalization, persisted artifacts, model fingerprinting,
 direct-safetensors inference, committed raw-ASR text, CER/WER, timing, and
 replay. Long-input ordering, bounded work, cancellation, Python logits parity,
 TorchScript/JIT performance, and a broader quality/timing matrix remain
-pending.
+pending; the real CUDA device path is now verified for the bounded canary.
 
 Completion: One imported audio fixture and one imported video fixture produce a local transcript with provenance and honest capability reporting.
 

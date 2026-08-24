@@ -12,6 +12,7 @@ fn main() {
 
 /// Keep the CUDA `LibTorch` import library alive in Windows release builds.
 fn add_windows_cuda_link_anchor() {
+    println!("cargo:rustc-check-cfg=cfg(teamy_transcriber_cuda_link)");
     if !cfg!(windows) || !cfg!(feature = "tch-native") {
         return;
     }
@@ -24,6 +25,7 @@ fn add_windows_cuda_link_anchor() {
     }
     println!("cargo:rerun-if-env-changed=LIBTORCH");
     println!("cargo:rerun-if-changed=src/native_whisper/cuda_link_anchor.cpp");
+    println!("cargo:rustc-cfg=teamy_transcriber_cuda_link");
     cc::Build::new()
         .cpp(true)
         .file("src/native_whisper/cuda_link_anchor.cpp")

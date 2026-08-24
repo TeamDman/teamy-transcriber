@@ -11,6 +11,7 @@ use crate::native_whisper::model::inspect_model_dir;
 use crate::paths::AppHome;
 use crate::paths::MODEL_DIR_ENV_VAR;
 use crate::paths::ModelHome;
+use crate::paths::TORCH_DEVICE_ENV_VAR;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
@@ -29,7 +30,7 @@ use std::time::Instant;
 
 const VCTK_DESCRIPTOR_JSON: &str = include_str!("../fixtures/vctk-p230-385.json");
 const DEFAULT_RECEIPT_PATH: &str = "artifacts/verification/vctk-p230-385.json";
-const RECEIPT_SCHEMA_VERSION: u16 = 1;
+const RECEIPT_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Facet)]
 struct VctkDescriptor {
@@ -123,6 +124,11 @@ pub struct ConfigurationReceipt {
     pub app_home_source: String,
     pub recording_store_root: Option<String>,
     pub max_decode_tokens: usize,
+    pub torch_device: String,
+    pub torch_cuda_available: bool,
+    pub torch_device_count: i64,
+    pub torch_cudart_version: String,
+    pub torch_cudnn_version: String,
     pub media_adapter: String,
     pub network_access: String,
 }
@@ -258,6 +264,13 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         |path| path.0.display().to_string(),
     );
     let binary = binary_receipt();
+    let (
+        torch_device,
+        torch_cuda_available,
+        torch_device_count,
+        torch_cudart_version,
+        torch_cudnn_version,
+    ) = torch_runtime_receipt();
     let mut receipt = CanaryReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
         logical_id: descriptor.logical_id.clone(),
@@ -289,6 +302,11 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
             app_home_source,
             recording_store_root: None,
             max_decode_tokens,
+            torch_device,
+            torch_cuda_available,
+            torch_device_count,
+            torch_cudart_version,
+            torch_cudnn_version,
             media_adapter: "native-wav".to_string(),
             network_access: "disabled-by-workflow-no-downloaders".to_string(),
         },
@@ -645,6 +663,42 @@ fn resolve_app_home() -> (Option<AppHome>, String, Option<String>) {
     match AppHome::resolve() {
         Ok(home) => (Some(home), source, None),
         Err(error) => (None, "unresolved".to_string(), Some(error.to_string())),
+    }
+}
+
+fn torch_runtime_receipt() -> (String, bool, i64, String, String) {
+    let requested = std::env::var(TORCH_DEVICE_ENV_VAR).unwrap_or_else(|_| "0".to_string());
+    let selected_device = requested.parse::<i32>().map_or_else(
+        |_| format!("invalid:{requested}"),
+        |device| {
+            if device < 0 {
+                "cpu".to_string()
+            } else {
+                format!("cuda:{device}")
+            }
+        },
+    );
+
+    #[cfg(feature = "tch-native")]
+    {
+        (
+            selected_device,
+            tch::Cuda::is_available(),
+            tch::Cuda::device_count(),
+            format!("{:?}", tch::utils::version_cudart()),
+            format!("{:?}", tch::utils::version_cudnn()),
+        )
+    }
+
+    #[cfg(not(feature = "tch-native"))]
+    {
+        (
+            selected_device,
+            false,
+            -1,
+            "tch-native feature disabled".to_string(),
+            "tch-native feature disabled".to_string(),
+        )
     }
 }
 
