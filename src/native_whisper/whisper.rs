@@ -27,7 +27,11 @@ use std::io::Read;
 use std::path::Path;
 
 pub type WhisperCpuBackend = NdArray<f32>;
-pub const DEFAULT_MAX_DECODE_TOKENS: usize = 64;
+/// Maximum generated tokens for one 30-second Whisper window by default.
+///
+/// The decoder still stops early at end-of-text; using the model context
+/// limit avoids silently truncating ordinary speech before that stop token.
+pub const DEFAULT_MAX_DECODE_TOKENS: usize = 448;
 const RUST_ONLY_REPEAT_TOKEN_LIMIT: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

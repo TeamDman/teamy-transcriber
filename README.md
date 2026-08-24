@@ -64,6 +64,8 @@ long recordings are not silently truncated. Video fixture verification, runtime
 installation, and model/CDN acquisition remain later slices. During
 chunked transcription, `CANCEL`/`Escape` cooperatively stop after the active
 clip and retain completed clip transcripts.
+The default decoder budget is the Whisper text-context limit; use
+`--max-decode-tokens` to choose a smaller bound for faster exploratory runs.
 
 The renderer-neutral presentation model in `src/presentation.rs` keeps stable
 UI/action IDs, contextual key resolution, transcript projection, and diagnostics

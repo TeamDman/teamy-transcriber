@@ -331,6 +331,9 @@ Rust tests pass. No compatible Whisper TorchScript model was found, so this is
 runtime/package evidence, not ASR quality evidence. Omitted transcription
 chunking now persists Whisper-sized 30-second ranges rather than allowing a
 long file to be silently truncated to its first window.
+The default per-window decode budget is now the Whisper text-context limit
+(448 generated tokens) and still stops early on end-of-text; callers can lower
+it explicitly when bounded latency is more important than completeness.
 
 ## Plan operating rules
 
