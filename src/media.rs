@@ -207,6 +207,59 @@ impl MediaAdapter for WavMediaAdapter {
         if spec.channels == 0 {
             return Err(MediaError::InvalidChannels);
         }
+        if spec.sample_rate == WHISPER_SAMPLE_RATE_HZ && spec.channels == 1 {
+            let source_duration_us = normalized_metadata(
+                usize::try_from(reader.duration())
+                    .map_err(|error| MediaError::TooManySamples(error.to_string()))?,
+            )
+            .duration_us;
+            if source_range.end_us > source_duration_us {
+                return Err(MediaError::InvalidClipRange(format!(
+                    "end {} exceeds source duration {source_duration_us}",
+                    source_range.end_us
+                )));
+            }
+            let start = sample_index_floor(source_range.start_us)?;
+            let end = sample_index_ceil(source_range.end_us)?;
+            if start >= end {
+                return Err(MediaError::EmptyClip);
+            }
+            let sample_count = end - start;
+            let seek_position = u32::try_from(start)
+                .map_err(|error| MediaError::TooManySamples(error.to_string()))?;
+            let mut reader = reader;
+            reader.seek(seek_position)?;
+            let mut samples = Vec::with_capacity(sample_count);
+            match spec.sample_format {
+                hound::SampleFormat::Float => {
+                    for sample in reader.samples::<f32>().take(sample_count) {
+                        samples.push(sample?);
+                    }
+                }
+                hound::SampleFormat::Int => {
+                    if spec.bits_per_sample > 16 {
+                        return Err(MediaError::UnsupportedIntegerBits(spec.bits_per_sample));
+                    }
+                    let scale = 2_f32.powi(i32::from(spec.bits_per_sample.saturating_sub(1)));
+                    for sample in reader.samples::<i16>().take(sample_count) {
+                        samples.push(f32::from(sample?) / scale);
+                    }
+                }
+            }
+            if samples.len() != sample_count {
+                return Err(MediaError::InvalidClipRange(format!(
+                    "requested {sample_count} samples but normalized source ended after {}",
+                    samples.len()
+                )));
+            }
+            std::fs::create_dir_all(output_dir)?;
+            let output_path = output_dir.join(format!("clip-{clip_id}.wav"));
+            write_normalized_wav(&output_path, &samples)?;
+            return Ok(PreparedAudio {
+                path: output_path,
+                metadata: normalized_metadata(samples.len()),
+            });
+        }
         let mono = decode_mono(reader)?;
         let normalized = resample_linear(&mono, spec.sample_rate, WHISPER_SAMPLE_RATE_HZ)?;
         let source_duration_us = normalized_metadata(normalized.len()).duration_us;
