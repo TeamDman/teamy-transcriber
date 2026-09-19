@@ -15,6 +15,7 @@ use crate::paths::TORCH_DEVICE_ENV_VAR;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
+use crate::transcription::TranscriptionBackend;
 use crate::workflow::MediaToolConfig;
 use crate::workflow::create_recording;
 use crate::workflow::prepare_recording_with_tools_and_profile;
@@ -30,7 +31,7 @@ use std::time::Instant;
 
 const VCTK_DESCRIPTOR_JSON: &str = include_str!("../fixtures/vctk-p230-385.json");
 const DEFAULT_RECEIPT_PATH: &str = "artifacts/verification/vctk-p230-385.json";
-const RECEIPT_SCHEMA_VERSION: u16 = 2;
+const RECEIPT_SCHEMA_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, Facet)]
 struct VctkDescriptor {
@@ -116,6 +117,7 @@ pub struct GitReceipt {
 
 #[derive(Clone, Debug, Facet)]
 pub struct ConfigurationReceipt {
+    pub backend_id: Option<String>,
     pub vctk_root: String,
     pub vctk_root_source: String,
     pub model_dir: String,
@@ -290,6 +292,7 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
             worktree_status: env!("GIT_WORKTREE_STATUS").to_string(),
         },
         configuration: ConfigurationReceipt {
+            backend_id: None,
             vctk_root: vctk_root_display,
             vctk_root_source: if vctk_root.is_some() {
                 "argument".to_string()
@@ -485,6 +488,7 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         max_decode_tokens,
     });
     let readiness = backend.readiness();
+    receipt.configuration.backend_id = Some(backend.capabilities().backend_id);
     receipt.model.readiness = Some(format!(
         "model_dir={} weights={} dims={} tokenizer={}",
         readiness.model_dir, readiness.weights, readiness.dims, readiness.tokenizer
@@ -681,12 +685,26 @@ fn torch_runtime_receipt() -> (String, bool, i64, String, String) {
 
     #[cfg(feature = "tch-native")]
     {
+        let available = tch::Cuda::is_available();
+        // CPU-only/unlinked CUDA builds can still produce a useful diagnostic.
+        // LibTorch's version accessors panic when its CUDA hooks are absent.
+        let (cudart, cudnn) = if available {
+            (
+                format!("{:?}", tch::utils::version_cudart()),
+                format!("{:?}", tch::utils::version_cudnn()),
+            )
+        } else {
+            (
+                "CUDA unavailable to LibTorch".to_string(),
+                "CUDA unavailable to LibTorch".to_string(),
+            )
+        };
         (
             selected_device,
-            tch::Cuda::is_available(),
+            available,
             tch::Cuda::device_count(),
-            format!("{:?}", tch::utils::version_cudart()),
-            format!("{:?}", tch::utils::version_cudnn()),
+            cudart,
+            cudnn,
         )
     }
 

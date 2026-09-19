@@ -6296,6 +6296,7 @@ dependencies = [
  "sha2",
  "tch",
  "teamy-cancellation",
+ "teamy-whisper-native",
  "thiserror 1.0.69",
  "tokenizers",
  "tokio",
@@ -6305,6 +6306,22 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "winit",
+]
+
+[[package]]
+name = "teamy-whisper-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "half",
+ "hound",
+ "memmap2",
+ "rustfft",
+ "safetensors 0.6.2",
+ "serde",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]

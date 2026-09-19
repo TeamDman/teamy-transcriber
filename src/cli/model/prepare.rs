@@ -34,7 +34,7 @@ impl ModelPrepareArgs {
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
     pub async fn invoke(self) -> Result<CliOutput> {
-        #[cfg(feature = "tch-native")]
+        #[cfg(any(feature = "tch-native", feature = "cuda-native"))]
         {
             let artifacts = crate::native_whisper::prepare::prepare_safetensors_model(
                 std::path::Path::new(&self.source_dir),
@@ -52,11 +52,11 @@ impl ModelPrepareArgs {
                 acquisition_policy: "local files only; no download or CDN mutation".to_string(),
             }))
         }
-        #[cfg(not(feature = "tch-native"))]
+        #[cfg(not(any(feature = "tch-native", feature = "cuda-native")))]
         {
             let _ = self;
             Err(eyre::eyre!(
-                "model preparation requires the tch-native feature"
+                "model preparation requires the cuda-native or tch-native feature"
             ))
         }
     }

@@ -1,0 +1,22 @@
+[package]
+name = "teamy-whisper-native"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "Source-defined Whisper inference with resident CUDA tensors"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+half = "2.7"
+memmap2 = "0.9"
+safetensors = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+rustfft = "6.4"
+hound = "3.5"
+
+[build-dependencies]
+cc = "1.2"

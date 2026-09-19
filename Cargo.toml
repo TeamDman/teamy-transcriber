@@ -11,7 +11,11 @@ keywords = ["transcription", "audio", "video", "whisper"]
 categories = ["multimedia::audio", "command-line-utilities"]
 documentation = "https://github.com/TeamDman/teamy-transcriber"
 
+[workspace]
+exclude = ["native"]
+
 [dependencies]
+teamy-whisper-native = { path = "native", optional = true }
 arbitrary = { version = "1.4.1", features = ["derive"] }
 arboard = { version = "3.6.1", default-features = false }
 ash = "0.38"
@@ -79,12 +83,17 @@ windows = { version = "0.62.2", features = [
 [features]
 default = ["tch-native"]
 tch-native = ["dep:tch", "dep:safetensors", "dep:half", "dep:memmap2"]
+cuda-native = ["dep:teamy-whisper-native", "dep:safetensors", "dep:half", "dep:memmap2"]
 extended_observability = []
 tracy = ["extended_observability", "dep:tracing-tracy"]
 
 [build-dependencies]
 cc = "1.2"
 embed-resource = "3.0.6"
+
+[[example]]
+name = "whisper_bench"
+required-features = ["tch-native"]
 
 [lints.rust]
 ambiguous_negative_literals = "warn"

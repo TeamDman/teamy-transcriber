@@ -139,6 +139,8 @@ pub struct NativeWhisperConfig {
 pub struct NativeWhisperBackend {
     config: NativeWhisperConfig,
     model_artifacts: Arc<OnceLock<Result<WhisperModelArtifacts, String>>>,
+    #[cfg(feature = "cuda-native")]
+    cuda_runtime: Arc<OnceLock<Result<crate::native_whisper::cuda::CudaWhisperRuntime, String>>>,
     #[cfg(feature = "tch-native")]
     tch_runtime: Arc<OnceLock<Result<Arc<crate::native_whisper::tch::TchWhisperRuntime>, String>>>,
     #[cfg(feature = "tch-native")]
@@ -158,6 +160,8 @@ impl NativeWhisperBackend {
         Self {
             config,
             model_artifacts: Arc::new(OnceLock::new()),
+            #[cfg(feature = "cuda-native")]
+            cuda_runtime: Arc::new(OnceLock::new()),
             #[cfg(feature = "tch-native")]
             tch_runtime: Arc::new(OnceLock::new()),
             #[cfg(feature = "tch-native")]
@@ -249,6 +253,30 @@ impl NativeWhisperBackend {
 
 impl TranscriptionBackend for NativeWhisperBackend {
     fn capabilities(&self) -> BackendCapabilities {
+        #[cfg(feature = "cuda-native")]
+        if crate::native_whisper::cuda::selected()
+            && (self
+                .config
+                .model_dir
+                .join(MODEL_SAFETENSORS_FILE_NAME)
+                .is_file()
+                || self
+                    .config
+                    .model_dir
+                    .join(MODEL_SAFETENSORS_INDEX_FILE_NAME)
+                    .is_file())
+            && !self
+                .config
+                .model_dir
+                .join(MODEL_TORCHSCRIPT_FILE_NAME)
+                .is_file()
+        {
+            return BackendCapabilities {
+                backend_id: "whisper-source-cuda".to_string(),
+                local_only: true,
+                accepts_normalized_audio: true,
+            };
+        }
         BackendCapabilities {
             backend_id: if self
                 .config
@@ -287,6 +315,28 @@ impl TranscriptionBackend for NativeWhisperBackend {
         self.validate_configuration(request)?;
         let artifacts = self.model_artifacts()?;
         let samples = read_normalized_wav(&request.audio_path)?;
+        #[cfg(feature = "cuda-native")]
+        if crate::native_whisper::cuda::selected()
+            && artifacts.layout == crate::native_whisper::model::WhisperModelLayout::TchSafetensors
+        {
+            let runtime = self
+                .cuda_runtime
+                .get_or_init(|| {
+                    crate::native_whisper::cuda::CudaWhisperRuntime::load(artifacts.root.clone())
+                })
+                .as_ref()
+                .map_err(|error| TranscriptionError::Inference(error.clone()))?;
+            let text = runtime
+                .transcribe(samples, self.config.max_decode_tokens)
+                .map_err(TranscriptionError::Inference)?;
+            if text.trim().is_empty() {
+                return Err(TranscriptionError::EmptyResult);
+            }
+            return Ok(TranscriptionResult {
+                provenance: TranscriptProvenance::RawAsr,
+                text,
+            });
+        }
         let features = whisper_log_mel_spectrogram(&samples);
         let text = match artifacts.layout {
             crate::native_whisper::model::WhisperModelLayout::TorchScript => {

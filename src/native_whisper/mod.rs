@@ -17,9 +17,13 @@
     reason = "The native Whisper implementation preserves the verified Burn model and frontend contracts; these localized numerical casts, Burn serialization derives, and tensor helper signatures are audited compatibility exceptions."
 )]
 
+#[cfg(feature = "cuda-native")]
+pub mod cuda;
 pub mod frontend;
 pub mod model;
 pub mod prepare;
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
+pub mod safetensors_manifest;
 #[cfg(feature = "tch-native")]
 pub mod tch;
 #[cfg(feature = "tch-native")]

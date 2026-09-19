@@ -1,15 +1,15 @@
 use super::model::MODEL_BURNPACK_FILE_NAME;
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 use super::model::MODEL_CONFIG_FILE_NAME;
 use super::model::MODEL_DIMS_FILE_NAME;
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 use super::model::MODEL_SAFETENSORS_FILE_NAME;
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 use super::model::MODEL_SAFETENSORS_INDEX_FILE_NAME;
 use super::model::TOKENIZER_FILE_NAME;
 use super::model::WhisperModelArtifacts;
 use super::model::inspect_model_dir;
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 use super::model::resolve_safetensor_paths;
 use super::whisper::AudioEncoderDims;
 use super::whisper::TextDecoderDims;
@@ -43,7 +43,7 @@ struct CheckpointDims {
     n_text_layer: usize,
 }
 
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 #[derive(Clone, Debug, Deserialize)]
 struct HuggingFaceWhisperConfig {
     num_mel_bins: usize,
@@ -57,7 +57,7 @@ struct HuggingFaceWhisperConfig {
     max_target_positions: usize,
 }
 
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 impl HuggingFaceWhisperConfig {
     fn into_whisper_dims(self) -> WhisperDims {
         WhisperDims {
@@ -290,7 +290,7 @@ pub fn convert_pytorch_checkpoint(
 /// dims.json sidecar consumed by the runtime. It intentionally does not
 /// convert `CTranslate2` `model.bin` files: those are a different runtime format
 /// and cannot be losslessly loaded by `LibTorch`.
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 pub fn prepare_safetensors_model(
     source_dir: &Path,
     output_dir: &Path,
@@ -348,7 +348,7 @@ pub fn prepare_safetensors_model(
     // Parse the safetensor header and verify the graph manifest before making
     // the package visible. The weights themselves are memory-mapped rather
     // than copied into a temporary buffer.
-    super::tch_safetensors::validate_safetensors_files(&model_paths, &dims)?;
+    super::safetensors_manifest::validate_safetensors_files(&model_paths, &dims)?;
 
     std::fs::create_dir(output_dir)
         .wrap_err_with(|| format!("failed to create model directory {}", output_dir.display()))?;
@@ -384,7 +384,7 @@ pub fn prepare_safetensors_model(
     Ok(artifacts)
 }
 
-#[cfg(feature = "tch-native")]
+#[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 fn copy_model_file(source: &Path, destination: &Path) -> eyre::Result<()> {
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).wrap_err_with(|| {

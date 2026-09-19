@@ -192,6 +192,12 @@ diagnostic.
 
 ## Development
 
+An optional source-defined CUDA Whisper backend is being validated. Its model
+topology is Rust code, its numerical kernels are CUDA, and its weights remain
+separate safetensors files. See [native inference](native/README.md) for building,
+comparison tools, and the current validation limits. The default build retains
+the existing tch backend during this work.
+
 Run the repository quality gate:
 
 ~~~powershell
