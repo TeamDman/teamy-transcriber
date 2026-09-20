@@ -14,6 +14,7 @@ pub mod frontend;
     reason = "Malformed external JSON fixtures exercise the safetensors loader boundary."
 )]
 mod loader_tests;
+pub mod vad;
 
 use anyhow::Context;
 use anyhow::Result;

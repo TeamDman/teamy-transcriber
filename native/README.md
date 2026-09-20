@@ -77,7 +77,8 @@ existing application workflow remains responsible for chunking longer audio.
 ```powershell
 cargo test --release --manifest-path native/Cargo.toml --lib
 # Explicit GPU kernel checks against scalar numerical oracles:
-cargo test --release --manifest-path native/Cargo.toml --lib -- --ignored
+cargo test --release --manifest-path native/Cargo.toml --lib cuda::tests -- --ignored
+cargo test --release --manifest-path native/Cargo.toml --lib loader_tests -- --ignored
 cargo run --release --manifest-path native/Cargo.toml --bin wav_bench -- <prepared-model> <mono-16k.wav> 6 - tf32
 ```
 
@@ -175,3 +176,60 @@ been checked on Whisper tiny and large-v3, including the 128-bin frontend.
 The development corpus is local VCTK speech; it does not establish accuracy on
 noisy, multilingual or conversational workloads. Existing clip-range timestamp
 exports continue to use the application workflow.
+
+## Source-defined speech detection
+
+`vad::Silero` implements the 16 kHz, 512-sample Silero model in Rust: context,
+reflection padding, spectral projection, four convolutions, recurrent LSTM state
+and the final speech probability. CPU dot products select AVX2/FMA when available
+and otherwise use scalar code. The runtime reads 15 FP32 safetensors tensors;
+it does not interpret a saved graph. The external weights occupy about 1.24 MB.
+The [Silero MIT notice](licenses/silero.txt) covers the upstream-derived model
+and segmentation behavior.
+
+Each `probabilities` call resets recording state and zero-pads its final frame.
+Streaming callers use `step` with 512 normalized mono samples and call `reset`
+between recordings. Inputs must be finite and within [-1, 1]. The timestamp
+helper implements the upstream default minimum speech/silence durations,
+padding and longest-silence splitting, with configurable threshold and maximum
+duration. It returns sample ranges; merging retains silence inside each span.
+Only 16 kHz is currently supported.
+
+This module and the development pipeline harness are available for integration;
+the installed CLI/GUI still use their existing fixed-chunk recording workflow.
+VAD weights are not downloaded or installed automatically. To prepare an exact
+reference pair, use the local Silero version that the Python benchmark loads:
+
+```powershell
+python tools/export_silero_weights.py <local-silero.jit> <new-silero.safetensors>
+python tools/benchmark_silero.py <local-silero-source> <silero.safetensors> <wav-list.json> <new-reference.json>
+cargo build --release --manifest-path native/Cargo.toml --bin vad_bench --bin pipeline_bench
+./native/target/release/vad_bench.exe <silero.safetensors> <wav-list.json> 2
+./native/target/release/pipeline_bench.exe <prepared-whisper-model> <silero.safetensors> <wav-list.json> 2 <generation_config.json>
+```
+
+The exporter needs Python/Torch only during artifact preparation, records
+source/output hashes, and refuses to overwrite existing outputs. A similarly
+named weights-only file may belong to another Silero revision even if its
+shapes match; the reference harness checks every tensor against its loaded model.
+`vad_bench` excludes audio I/O from VAD timing and emits all frame probabilities
+and boundaries. `pipeline_bench` includes PCM16 WAV loading, VAD, merging, native
+CUDA ASR and result assembly, currently at batch one. It follows WhisperX's
+seconds-to-samples truncation for comparable input slices. It excludes alignment,
+diarization, application persistence and export, so it is not full-goal acceptance.
+
+Additional opt-in CPU regression tests use explicit external fixtures:
+
+```powershell
+python tools/export_silero_policy_cases.py <local-silero-source> <new-policy-cases.json>
+$env:SILERO_TEST_WEIGHTS = '<silero.safetensors>'
+$env:SILERO_POLICY_CASES = '<policy-cases.json>'
+cargo test --release --manifest-path native/Cargo.toml --lib vad:: -- --include-ignored --test-threads=1
+```
+
+The policy cases come from upstream code with independent synthetic probability
+sequences. They cover threshold hysteresis, short speech, silence, final partial
+frames, and maximum-duration cuts at competing silences. Other tests check
+recording-state isolation, retry after invalid input, scalar/SIMD agreement,
+and malformed weights. Real-audio frame and timestamp parity is checked by the
+benchmark receipts rather than by committing model or audio data.
