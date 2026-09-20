@@ -201,6 +201,59 @@ pub struct TranscriptVersion {
 }
 
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum ClipPlanKind {
+    FixedDuration,
+    VoiceActivity { weights_sha256: String },
+}
+
+#[derive(Clone, Debug, Eq, Facet, PartialEq)]
+pub struct PlannedClip {
+    pub id: ClipId,
+    pub source_range: TimeRange,
+}
+
+/// The complete initial plan is one event, including a successful empty VAD plan.
+#[derive(Clone, Debug, Eq, Facet, PartialEq)]
+pub struct ClipPlan {
+    pub kind: ClipPlanKind,
+    pub duration_us: u64,
+    pub clips: Vec<PlannedClip>,
+}
+
+impl ClipPlan {
+    fn validate(&self) -> Result<(), DomainError> {
+        if self.duration_us == 0 {
+            return Err(DomainError::InvalidClipPlan);
+        }
+        if let ClipPlanKind::VoiceActivity { weights_sha256 } = &self.kind
+            && (weights_sha256.len() != 64
+                || !weights_sha256.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(DomainError::InvalidClipPlan);
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut end = 0;
+        for clip in &self.clips {
+            clip.source_range.validate()?;
+            if !ids.insert(clip.id)
+                || clip.source_range.start_us < end
+                || clip.source_range.end_us > self.duration_us
+                || (self.kind == ClipPlanKind::FixedDuration && clip.source_range.start_us != end)
+            {
+                return Err(DomainError::InvalidClipPlan);
+            }
+            end = clip.source_range.end_us;
+        }
+        if self.kind == ClipPlanKind::FixedDuration && end != self.duration_us {
+            return Err(DomainError::InvalidClipPlan);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, Facet, PartialEq)]
 pub struct Recording {
     pub id: RecordingId,
     pub source: SourceAsset,
@@ -208,6 +261,8 @@ pub struct Recording {
     pub failure: Option<String>,
     pub clips: Vec<Clip>,
     pub transcripts: Vec<TranscriptVersion>,
+    #[facet(default)]
+    pub clip_plan: Option<ClipPlan>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Facet, PartialEq)]
@@ -264,6 +319,7 @@ impl AppState {
                 recording_id,
                 clip_id,
             },
+            Command::PlanClips { recording_id, plan } => Event::ClipsPlanned { recording_id, plan },
             Command::CancelTranscription {
                 recording_id,
                 clip_id,
@@ -404,8 +460,27 @@ impl AppState {
                         failure: None,
                         clips: Vec::new(),
                         transcripts: Vec::new(),
+                        clip_plan: None,
                     },
                 );
+            }
+            Event::ClipsPlanned { recording_id, plan } => {
+                plan.validate()?;
+                let recording = self.recording_mut(*recording_id)?;
+                if !recording.clips.is_empty() {
+                    return Err(DomainError::ClipPlanAlreadyExists);
+                }
+                recording.clips = plan
+                    .clips
+                    .iter()
+                    .map(|clip| Clip {
+                        id: clip.id,
+                        source_range: clip.source_range,
+                        status: ClipStatus::Pending,
+                        failure: None,
+                    })
+                    .collect();
+                recording.clip_plan = Some(plan.clone());
             }
             Event::RecordingStarted { recording_id } => {
                 let recording = self.recording_mut(*recording_id)?;
@@ -660,6 +735,10 @@ impl AppState {
 #[facet(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Command {
+    PlanClips {
+        recording_id: RecordingId,
+        plan: ClipPlan,
+    },
     CreateRecording {
         recording_id: RecordingId,
         source: SourceAsset,
@@ -714,6 +793,10 @@ pub enum Command {
 #[facet(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Event {
+    ClipsPlanned {
+        recording_id: RecordingId,
+        plan: ClipPlan,
+    },
     RecordingCreated {
         recording_id: RecordingId,
         source: SourceAsset,
@@ -768,7 +851,8 @@ impl Event {
     #[must_use]
     pub fn recording_id(&self) -> RecordingId {
         match self {
-            Self::RecordingCreated { recording_id, .. }
+            Self::ClipsPlanned { recording_id, .. }
+            | Self::RecordingCreated { recording_id, .. }
             | Self::RecordingStarted { recording_id }
             | Self::RecordingSaved { recording_id }
             | Self::RecordingFailed { recording_id, .. }
@@ -792,6 +876,10 @@ pub struct EventRecord {
 
 #[derive(Debug, Error)]
 pub enum DomainError {
+    #[error("clip plan has invalid ranges, identifiers or model hash")]
+    InvalidClipPlan,
+    #[error("cannot replace a recording's existing clip history with a new plan")]
+    ClipPlanAlreadyExists,
     #[error("source path cannot be empty")]
     EmptySourcePath,
     #[error("invalid time range: start={start_us}, end={end_us}")]

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use teamy_transcriber::domain::AssetKind;
+use teamy_transcriber::domain::ClipPlanKind;
 use teamy_transcriber::media::AudioProfile;
 use teamy_transcriber::storage::RecordingStore;
 use teamy_transcriber::workflow::TranscriptionOptions;
@@ -34,6 +35,9 @@ struct Run {
     backend: String,
     chunks: Vec<Chunk>,
     text: String,
+    segmentation: Option<ClipPlanKind>,
+    no_speech: bool,
+    first_clip_ms: Option<f64>,
 }
 #[derive(Facet)]
 struct Receipt {
@@ -94,7 +98,7 @@ fn main() -> Result<()> {
         }
     }
     println!("{}", facet_json::to_string_pretty(&Receipt {
-        scope: "Application workflow: import, normalize, chunk, ASR, persist and timestamped export; clip ranges, no VAD/alignment/diarization".into(),
+        scope: "Application workflow: import, normalize, optional prepared VAD, chunk, ASR, persist and timestamped export; source clip ranges, no word alignment/diarization".into(),
         session_mode: mode.into(), revision: env!("GIT_REVISION").into(),
         worktree_status: env!("GIT_WORKTREE_STATUS").into(), runs,
     })?);
@@ -114,11 +118,17 @@ fn run_recording(
     let prepare_ms = started.elapsed().as_secs_f64() * 1000.;
     let decode_start = Instant::now();
     let mut events = Vec::new();
-    let mut progress = |completed, total| events.push((completed, total));
+    let mut first_clip_ms = None;
+    let mut progress = |completed, total| {
+        events.push((completed, total));
+        if completed > 0 && first_clip_ms.is_none() {
+            first_clip_ms = Some(started.elapsed().as_secs_f64() * 1000.);
+        }
+    };
     let report = session.transcribe(store, id, options.clone(), None, Some(&mut progress))?;
     let transcribe_ms = decode_start.elapsed().as_secs_f64() * 1000.;
     ensure!(
-        !report.cancelled && !report.chunks.is_empty(),
+        !report.cancelled && (!report.chunks.is_empty() || report.no_speech),
         "incomplete transcription"
     );
     ensure!(
@@ -127,15 +137,23 @@ fn run_recording(
         "incomplete progress delivery"
     );
     let mut cursor = 0;
+    let segmentation = store.load_recording(id)?.clip_plan.map(|plan| plan.kind);
+    let speech = matches!(segmentation, Some(ClipPlanKind::VoiceActivity { .. }));
     for chunk in &report.chunks {
         ensure!(
-            chunk.source_range.start_us == cursor && chunk.source_range.end_us > cursor,
-            "non-contiguous chunk coverage"
+            chunk.source_range.start_us >= cursor
+                && chunk.source_range.end_us > chunk.source_range.start_us
+                && chunk.source_range.end_us <= prepared.metadata.duration_us,
+            "invalid or overlapping source coverage"
+        );
+        ensure!(
+            speech || chunk.source_range.start_us == cursor,
+            "non-contiguous fixed chunks"
         );
         cursor = chunk.source_range.end_us;
     }
     ensure!(
-        cursor == prepared.metadata.duration_us,
+        speech || cursor == prepared.metadata.duration_us,
         "source duration was not fully covered"
     );
     let exported = export_recording_with_timestamps(store, id, None)?;
@@ -160,6 +178,9 @@ fn run_recording(
         total_ms,
         backend: report.backend_id,
         text,
+        segmentation,
+        no_speech: report.no_speech,
+        first_clip_ms,
         chunks: report
             .chunks
             .into_iter()

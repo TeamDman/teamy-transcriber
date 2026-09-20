@@ -147,8 +147,9 @@ The default comparison uses batches of 1 and 16, greedy English decoding and
 one Torch CPU thread. Receipts record the model/source hashes and individual
 speech-detection times. This exposes batching and segmentation costs that the
 per-chunk ASR harness excludes. Word alignment, diarization and file export
-remain outside this harness; its results cannot be treated as a feature-matched
-comparison against the current native fixed-chunk application workflow.
+remain outside this harness. Compare with the native application's optional
+speech-detection path using the same local Silero weights and suppression policy;
+account for application persistence/export separately.
 
 ```powershell
 python tools/benchmark_whisperx_pipeline.py <ct2-model> <wav-list.json> <new-receipt.json> --silero-repo <local-silero-source> --generation-config <canonical-generation-config.json> --dll-dir <ct2-runtime-directory>
@@ -160,7 +161,10 @@ or a JSON array of paths, a new output directory, repetition count, and
 `resident` or `cold` session mode. Each request creates a fresh recording;
 resident mode reuses only the inference session. Output distinguishes source
 clip coverage from transcription accuracy; cold totals include model release,
-reported separately as `release_ms`. Run with release/native features.
+reported separately as `release_ms`. A prepared `vad/` package selects speech
+windows; without it the harness uses fixed 30-second windows. Receipts include
+the segmentation kind, speech-weight checksum, silence outcome and elapsed time
+to the first committed clip. Run with release/native features.
 
 `tests/transcription_session.rs` is an opt-in real CUDA regression covering
 cancellation, persisted partial results, callback errors/panics, model repair at
@@ -194,7 +198,11 @@ to Python's `--generation-config` (or the runner's `-GenerationConfig`).
 `Engine::configure_greedy` applies those suppression fields, including blank/EOT
 suppression only on the first token and timestamp suppression for plain text.
 It does not interpret beam-search, sampling or language settings from that file.
-The application keeps its existing fixed-English greedy policy. Benchmark
+The application also reads these two suppression fields from an optional
+`generation_config.json` inside its prepared model directory. `model prepare`
+copies that file when supplied by the canonical source. Malformed policies and
+out-of-vocabulary tokens fail explicitly; packages without it retain the legacy
+policy. Language remains fixed English with greedy decoding. Benchmark
 summaries reject mismatched suppression; unavailable reference token IDs remain
 unavailable instead of being counted as a token match.
 
@@ -221,12 +229,12 @@ $env:WHISPER_BATCH_TEST_WAV = '<mono-16k.wav>'
 cargo test --release --manifest-path native/Cargo.toml --lib batch::tests -- --ignored --test-threads=1
 ```
 
-These tools do not establish a full WhisperX speed claim: VAD, beam-search
+These tools do not establish a full WhisperX speed claim: beam-search
 defaults, word alignment, diarization, long-form quality and comparison to a
 confirmed Rust WhisperX target remain acceptance work. Numerical parity has
 been checked on Whisper tiny and large-v3, including the 128-bin frontend.
-The development corpus is local VCTK speech; it does not establish accuracy on
-noisy, multilingual or conversational workloads. Existing clip-range timestamp
+Development checks include local VCTK, seeded noise and English earnings-call
+excerpts; these do not establish general or multilingual accuracy. Clip-range timestamp
 exports continue to use the application workflow.
 
 ## Source-defined speech detection
@@ -247,17 +255,50 @@ padding and longest-silence splitting, with configurable threshold and maximum
 duration. It returns sample ranges; merging retains silence inside each span.
 Only 16 kHz is currently supported.
 
-This module and the development pipeline harness are available for integration;
-the installed CLI/GUI still use their existing fixed-chunk recording workflow.
+Native CLI/GUI builds can use this detector in the normal recording workflow.
 VAD weights are not downloaded or installed automatically. To prepare an exact
 reference pair, use the local Silero version that the Python benchmark loads:
 
 ```powershell
 python tools/export_silero_weights.py <local-silero.jit> <new-silero.safetensors>
+./target/release/teamy-transcriber.exe model prepare-vad --model-dir <prepared-whisper-model> --source-weights <new-silero.safetensors>
 python tools/benchmark_silero.py <local-silero-source> <silero.safetensors> <wav-list.json> <new-reference.json>
 cargo build --release --manifest-path native/Cargo.toml --bin vad_bench --bin pipeline_bench
 ./native/target/release/vad_bench.exe <silero.safetensors> <wav-list.json> 2
 ./native/target/release/pipeline_bench.exe <prepared-whisper-model> <silero.safetensors> <wav-list.json> 2 <generation_config.json> 8
+```
+
+`model prepare-vad` requires a canonical safetensors Whisper package. It validates
+the detector tensors, stages a checksum/size/architecture manifest and MIT notice,
+then publishes the `vad/` directory with one rename. It refuses to overwrite an
+existing detector. Runtime loading verifies the manifest and weights before
+scanning audio, with cancellation checked every 512 samples. Silence is a
+successful `no_speech` result and does not initialize Whisper or CUDA.
+
+For a fresh recording, omitting `--chunk-duration-ms` (GUI `AUTO`) detects and
+merges speech into windows of at most 30 seconds. Without a prepared detector,
+the workflow uses fixed 30-second windows. An explicit duration selects fixed
+windows instead. Existing saved clip boundaries, splits and deletions remain
+authoritative; changing the detector does not resegment those clips. An empty
+silence plan can be retried or replaced by an explicit fixed-duration request.
+Every initial plan is one replayable event, so a failed manifest write cannot
+leave only part of the planned clips. Old recordings remain readable; new
+`ClipsPlanned` events require this version or newer when reopening a recording.
+
+Speech windows retain original source-time offsets and can contain gaps. The
+application extracts with integer floor-start/ceil-end sample positions, keeping
+the last partial sample. The reference harness follows Python's float-seconds
+truncation, which can produce a one-sample difference. Neither path provides word
+alignment or speaker diarization. A repeated transcription adds new raw-ASR
+versions while preserving earlier edit history.
+
+The opt-in `transcription_speech` test validates package integrity, cancellation,
+policy copying, retry and persisted silence. It uses `SILERO_TEST_WEIGHTS` and a
+small canonical prepared model in `TEAMY_TRANSCRIBER_TEST_MODEL`; it can run with
+an invalid CUDA device index to verify that silence avoids GPU initialization:
+
+```powershell
+cargo test --release --no-default-features --features cuda-native --test transcription_speech -- --ignored --test-threads=1
 ```
 
 The exporter needs Python/Torch only during artifact preparation, records

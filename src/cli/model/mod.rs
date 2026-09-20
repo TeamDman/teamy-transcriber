@@ -1,4 +1,5 @@
 pub mod prepare;
+pub mod prepare_vad;
 pub mod show;
 
 mod model_cli;

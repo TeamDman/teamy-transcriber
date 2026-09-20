@@ -65,12 +65,28 @@ impl CudaWhisperRuntime {
             _ => return Err("TEAMY_TRANSCRIBER_CUDA_MATH must be tf32 or fp32".to_string()),
         };
         let batch_size = configured_batch_size()?;
+        let generation = path.join("generation_config.json");
+        let policy = if generation.exists() {
+            Some(
+                serde_json::from_slice::<teamy_whisper_native::decoding::GreedySuppression>(
+                    &std::fs::read(&generation).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| format!("invalid generation_config.json: {e}"))?,
+            )
+        } else {
+            None
+        };
         let thread = std::thread::Builder::new()
             .name("whisper-cuda-inference".into())
             .spawn(move || {
                 let initialized = (|| {
-                    let engine = teamy_whisper_native::Engine::load(&path, device, tf32)
+                    let mut engine = teamy_whisper_native::Engine::load(&path, device, tf32)
                         .map_err(|error| error.to_string())?;
+                    if let Some(policy) = policy {
+                        engine
+                            .configure_greedy(&policy)
+                            .map_err(|e| e.to_string())?;
+                    }
                     let frontend =
                         teamy_whisper_native::frontend::Frontend::new(engine.dims().audio.n_mels)
                             .map_err(|error| error.to_string())?;

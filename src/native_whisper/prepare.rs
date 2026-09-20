@@ -79,20 +79,20 @@ impl HuggingFaceWhisperConfig {
     }
 }
 
-struct PartialModelDirectory {
+pub(crate) struct PartialModelDirectory {
     path: PathBuf,
     committed: bool,
 }
 
 impl PartialModelDirectory {
-    fn new(path: &Path) -> Self {
+    pub(crate) fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
             committed: false,
         }
     }
 
-    fn commit(&mut self) {
+    pub(crate) fn commit(&mut self) {
         self.committed = true;
     }
 }
@@ -372,6 +372,10 @@ pub fn prepare_safetensors_model(
     }
     copy_model_file(&config_path, &output_dir.join(MODEL_CONFIG_FILE_NAME))?;
     copy_model_file(&tokenizer_path, &output_dir.join(TOKENIZER_FILE_NAME))?;
+    let generation = source_dir.join("generation_config.json");
+    if generation.is_file() {
+        copy_model_file(&generation, &output_dir.join("generation_config.json"))?;
+    }
     let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
     std::fs::write(
         &dims_path,

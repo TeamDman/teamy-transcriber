@@ -670,7 +670,7 @@ impl GuiApplication {
     }
 
     fn cycle_chunk_duration(&mut self) {
-        const PRESETS_MS: [Option<u64>; 4] = [None, Some(10_000), Some(30_000), Some(60_000)];
+        const PRESETS_MS: [Option<u64>; 3] = [None, Some(10_000), Some(30_000)];
         let current_index = PRESETS_MS
             .iter()
             .position(|preset| *preset == self.state.chunk_duration_ms)
@@ -1371,6 +1371,10 @@ impl GuiApplication {
                         "Transcription cancelled after {} completed chunk(s); partial work retained",
                         report.chunks.len()
                     );
+                } else if report.no_speech {
+                    self.state.status_line = "No speech detected in this recording".to_string();
+                } else if report.chunks.is_empty() {
+                    self.state.status_line = "No active clips to transcribe".to_string();
                 } else {
                     self.state.status_line = format!(
                         "Transcription complete: {} chunk(s), {}",
@@ -2105,7 +2109,7 @@ impl GuiState {
 
     fn chunk_duration_label(&self) -> String {
         self.chunk_duration_ms.map_or_else(
-            || "FULL".to_string(),
+            || "AUTO".to_string(),
             |duration_ms| format!("{}S", duration_ms / 1_000),
         )
     }
@@ -4069,7 +4073,7 @@ mod tests {
         assert_eq!(state.cycled_clip_id(-1), Some(third));
         assert_eq!(state.cycled_clip_id(1), Some(second));
         assert_eq!(state.clip_label(), "CLIP 1/3");
-        assert_eq!(state.chunk_duration_label(), "FULL");
+        assert_eq!(state.chunk_duration_label(), "AUTO");
         state.chunk_duration_ms = Some(30_000);
         assert_eq!(state.chunk_duration_label(), "30S");
     }

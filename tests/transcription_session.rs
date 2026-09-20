@@ -65,6 +65,7 @@ fn exercise_session(
         "malformed model unexpectedly loaded"
     );
     std::fs::copy(model.join("dims.json"), staged.join("dims.json"))?;
+    check_policy_repair(&mut session, &store, id, &options)?;
     let cancelled = AtomicBool::new(false);
     let mut cancel_after_first = |completed, _| {
         if completed == 1 {
@@ -128,6 +129,33 @@ fn exercise_session(
             .eq(resumed.chunks.iter().map(|chunk| &chunk.text)),
         "a later recording inherited stale decoder state"
     );
+    Ok(())
+}
+
+fn check_policy_repair(
+    session: &mut TranscriptionSession,
+    store: &RecordingStore,
+    id: teamy_transcriber::domain::RecordingId,
+    options: &TranscriptionOptions,
+) -> Result<()> {
+    // Canonical suppression must fail explicitly and be repairable at the
+    // same path, without silently falling back to legacy decoding.
+    let policy = options.model_dir.join("generation_config.json");
+    for invalid in [
+        "invalid JSON",
+        r#"{"suppress_tokens":[999999],"begin_suppress_tokens":[]}"#,
+    ] {
+        std::fs::write(&policy, invalid)?;
+        ensure!(
+            session
+                .transcribe(store, id, options.clone(), None, None)
+                .is_err()
+        );
+    }
+    std::fs::write(
+        &policy,
+        r#"{"suppress_tokens":[],"begin_suppress_tokens":[]}"#,
+    )?;
     Ok(())
 }
 

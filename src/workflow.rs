@@ -12,8 +12,11 @@ use crate::domain::AppState;
 use crate::domain::AssetKind;
 use crate::domain::Clip;
 use crate::domain::ClipId;
+use crate::domain::ClipPlan;
+use crate::domain::ClipPlanKind;
 use crate::domain::ClipStatus;
 use crate::domain::Command;
+use crate::domain::PlannedClip;
 use crate::domain::RecordingId;
 use crate::domain::SourceAsset;
 use crate::domain::TimeRange;
@@ -30,6 +33,7 @@ use crate::media::plan_time_chunks;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
+use crate::transcription::SpeechPlan;
 use crate::transcription::TranscriptionBackend;
 use crate::transcription::TranscriptionError;
 use crate::transcription::TranscriptionRequest;
@@ -123,6 +127,7 @@ pub struct TranscriptionReport {
     pub backend_id: String,
     pub chunks: Vec<TranscribedChunk>,
     pub cancelled: bool,
+    pub no_speech: bool,
 }
 
 /// One application's resident model. Recordings share weights and workspaces,
@@ -841,33 +846,7 @@ fn transcribe_recording_inner(
         .wrap_err("recording is not prepared; prepare it from the GUI first")?;
     let full_range = TimeRange::new(0, metadata.duration_us)
         .wrap_err("prepared recording has no transcribable duration")?;
-    // The native Whisper frontend has a fixed 30-second context window. Keep
-    // the CLI/GUI safe for long recordings even when the caller omits the
-    // option; callers can still choose a shorter explicit duration.
-    let chunk_duration_us = chunk_duration_us.or_else(|| {
-        Some(
-            crate::native_whisper::frontend::N_SAMPLES as u64 * 1_000_000
-                / u64::from(crate::media::WHISPER_SAMPLE_RATE_HZ),
-        )
-    });
-    let clips = if let Some(chunk_duration_us) = chunk_duration_us {
-        let ranges = plan_time_chunks(metadata.duration_us, chunk_duration_us)?;
-        ensure_recording_chunks(store, &mut state, recording_id, &ranges)?
-    } else {
-        vec![ensure_recording_clip(
-            store,
-            &mut state,
-            recording_id,
-            full_range,
-        )?]
-    };
     let backend_id = backend.capabilities().backend_id;
-    let total_clips = clips.len();
-    if let Some(progress) = progress.as_deref_mut() {
-        progress(0, total_clips);
-    }
-    let mut chunks = Vec::with_capacity(clips.len());
-    let mut cancelled = false;
     let mut should_stop = || {
         stop_requested.is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
     };
@@ -878,6 +857,28 @@ fn transcribe_recording_inner(
         normalized_path: &normalized_path,
         backend,
     };
+    let Some(clips) = batch.plan(&mut state, chunk_duration_us, &mut should_stop)? else {
+        return Ok(TranscriptionReport {
+            backend_id,
+            chunks: Vec::new(),
+            cancelled: true,
+            no_speech: false,
+        });
+    };
+    let no_speech = clips.is_empty()
+        && state.recording(recording_id).is_some_and(|recording| {
+            recording.clips.is_empty()
+                && recording
+                    .clip_plan
+                    .as_ref()
+                    .is_some_and(|plan| matches!(plan.kind, ClipPlanKind::VoiceActivity { .. }))
+        });
+    let total_clips = clips.len();
+    if let Some(progress) = progress.as_deref_mut() {
+        progress(0, total_clips);
+    }
+    let mut chunks = Vec::with_capacity(clips.len());
+    let mut cancelled = false;
     for group in clips.chunks(backend.batch_capacity().clamp(1, 8)) {
         if should_stop() {
             cancelled = true;
@@ -897,6 +898,7 @@ fn transcribe_recording_inner(
         backend_id,
         chunks,
         cancelled,
+        no_speech,
     })
 }
 
@@ -1196,92 +1198,112 @@ impl BatchWorkflow<'_> {
     }
 }
 
-fn ensure_recording_clip(
-    store: &RecordingStore,
-    state: &mut AppState,
-    recording_id: RecordingId,
-    full_range: TimeRange,
-) -> Result<Clip> {
-    let existing_clip = state
-        .recording(recording_id)
-        .ok_or_else(|| eyre::eyre!("recording was not found in loaded state"))?
-        .clips
-        .iter()
-        .find(|clip| !matches!(clip.status, ClipStatus::Deleted))
-        .cloned();
-    if let Some(clip) = existing_clip {
-        return Ok(clip);
-    }
-    let clip_id = ClipId::new();
-    store
-        .apply_command(
-            state,
-            Command::AddClip {
-                recording_id,
-                clip_id,
-                source_range: full_range,
-            },
-        )
-        .wrap_err("failed to persist the full-recording clip")?;
-    state
-        .recording(recording_id)
-        .and_then(|recording| recording.clips.iter().find(|clip| clip.id == clip_id))
-        .cloned()
-        .ok_or_else(|| eyre::eyre!("new clip was not found after persistence"))
-}
-
-fn ensure_recording_chunks(
-    store: &RecordingStore,
-    state: &mut AppState,
-    recording_id: RecordingId,
-    ranges: &[TimeRange],
-) -> Result<Vec<Clip>> {
-    let mut active_clips = state
-        .recording(recording_id)
-        .ok_or_else(|| eyre::eyre!("recording was not found in loaded state"))?
-        .clips
-        .iter()
-        .filter(|clip| !matches!(clip.status, ClipStatus::Deleted))
-        .cloned()
-        .collect::<Vec<_>>();
-    active_clips.sort_by_key(|clip| clip.source_range.start_us);
-    let active_ranges = active_clips
-        .iter()
-        .map(|clip| clip.source_range)
-        .collect::<Vec<_>>();
-    if !active_clips.is_empty() {
-        if active_ranges != ranges {
-            bail!("recording already has active clips that do not match the selected chunk size");
+impl BatchWorkflow<'_> {
+    fn plan(
+        &self,
+        state: &mut AppState,
+        chunk_duration_us: Option<u64>,
+        should_stop: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<Vec<Clip>>> {
+        const WINDOW_US: u64 = 30_000_000;
+        if should_stop() {
+            return Ok(None);
         }
-        return Ok(active_clips);
-    }
-    let mut clip_ids = Vec::with_capacity(ranges.len());
-    for &source_range in ranges {
-        let clip_id = ClipId::new();
-        store
+        if let Some(duration) = chunk_duration_us {
+            eyre::ensure!(
+                (1..=WINDOW_US).contains(&duration),
+                "chunk duration must be greater than zero and at most thirty seconds"
+            );
+        }
+        let recording = state
+            .recording(self.recording_id)
+            .ok_or_else(|| eyre::eyre!("recording was not found in loaded state"))?;
+        if !recording.clips.is_empty() {
+            // Existing boundaries (including manual edits and deleted clips)
+            // are authoritative. Never silently re-segment a saved recording.
+            let mut active: Vec<_> = recording
+                .clips
+                .iter()
+                .filter(|c| c.status != ClipStatus::Deleted)
+                .cloned()
+                .collect();
+            active.sort_by_key(|c| c.source_range.start_us);
+            if let Some(duration) = chunk_duration_us {
+                let requested = plan_time_chunks(self.full_range.end_us, duration)?;
+                eyre::ensure!(
+                    active.iter().map(|c| c.source_range).collect::<Vec<_>>() == requested,
+                    "recording already has active clips that do not match the selected chunk size"
+                );
+            }
+            for clip in &active {
+                eyre::ensure!(
+                    clip.source_range.end_us <= self.full_range.end_us
+                        && clip.source_range.end_us - clip.source_range.start_us <= WINDOW_US,
+                    "existing clip is outside the recording or longer than Whisper's thirty-second window"
+                );
+            }
+            return Ok(Some(active));
+        }
+        let (kind, ranges) = if let Some(duration) = chunk_duration_us {
+            (
+                ClipPlanKind::FixedDuration,
+                plan_time_chunks(self.full_range.end_us, duration)?,
+            )
+        } else {
+            match self
+                .backend
+                .detect_speech(self.normalized_path, should_stop)?
+            {
+                SpeechPlan::Cancelled => return Ok(None),
+                SpeechPlan::Unavailable => (
+                    ClipPlanKind::FixedDuration,
+                    plan_time_chunks(self.full_range.end_us, WINDOW_US)?,
+                ),
+                SpeechPlan::Detected {
+                    ranges,
+                    weights_sha256,
+                } => (ClipPlanKind::VoiceActivity { weights_sha256 }, ranges),
+            }
+        };
+        for range in &ranges {
+            range.validate()?;
+            eyre::ensure!(
+                range.end_us - range.start_us <= WINDOW_US,
+                "planned clip exceeds Whisper's context window"
+            );
+        }
+        if should_stop() {
+            return Ok(None);
+        }
+        let plan = ClipPlan {
+            kind,
+            duration_us: self.full_range.end_us,
+            clips: ranges
+                .into_iter()
+                .map(|source_range| PlannedClip {
+                    id: ClipId::new(),
+                    source_range,
+                })
+                .collect(),
+        };
+        self.store
             .apply_command(
                 state,
-                Command::AddClip {
-                    recording_id,
-                    clip_id,
-                    source_range,
+                Command::PlanClips {
+                    recording_id: self.recording_id,
+                    plan,
                 },
             )
-            .wrap_err("failed to persist a planned transcription chunk")?;
-        clip_ids.push(clip_id);
-    }
-    clip_ids
-        .into_iter()
-        .map(|clip_id| {
+            .wrap_err("failed to persist the complete transcription plan")?;
+        Ok(Some(
             state
-                .recording(recording_id)
-                .and_then(|recording| recording.clips.iter().find(|clip| clip.id == clip_id))
-                .cloned()
-                .ok_or_else(|| eyre::eyre!("planned transcription chunk was not found"))
-        })
-        .collect()
+                .recording(self.recording_id)
+                .ok_or_else(|| eyre::eyre!("planned recording missing"))?
+                .clips
+                .clone(),
+        ))
+    }
 }
-
 fn provenance_label(provenance: TranscriptProvenance) -> &'static str {
     match provenance {
         TranscriptProvenance::RawAsr => "raw_asr",

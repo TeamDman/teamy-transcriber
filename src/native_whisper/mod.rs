@@ -24,6 +24,8 @@ pub mod model;
 pub mod prepare;
 #[cfg(any(feature = "tch-native", feature = "cuda-native"))]
 pub mod safetensors_manifest;
+#[cfg(feature = "cuda-native")]
+pub mod speech;
 #[cfg(feature = "tch-native")]
 pub mod tch;
 #[cfg(feature = "tch-native")]

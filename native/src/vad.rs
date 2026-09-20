@@ -307,7 +307,7 @@ impl Silero {
         )
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let tensors = SafeTensors::deserialize(bytes)?;
         ensure!(
             tensors.len() == 15,

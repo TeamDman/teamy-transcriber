@@ -60,8 +60,10 @@ Burnpack is retained only as a legacy compatibility layout and is not the CPU
 fallback. Persisted partial clips are materialized as
 separate normalized WAV artifacts first. `--chunk-duration-ms` creates
 contiguous, non-overlapping clip records and resumes from their stable IDs
-after a failure; omitted chunking uses Whisper's 30-second context window so
-long recordings are not silently truncated. Video fixture verification, runtime
+after a failure; omitted chunking reuses existing clips or creates windows of
+at most 30 seconds. Optional CUDA-native builds can use prepared local Silero
+weights for automatic speech windows and skip silence without loading Whisper;
+see [native inference and model preparation](native/README.md). Video fixture verification, runtime
 installation, and model/CDN acquisition remain later slices. During
 chunked transcription, `CANCEL`/`Escape` cooperatively stop after the active
 clip and retain completed clip transcripts.
@@ -90,8 +92,8 @@ microphone capture, Escape to stop capture, cancel transcription, or cancel
 transcript editing, and
 Ctrl+E to open transcript export. Mouse-wheel or PageUp/PageDown scrolling
 keeps long transcripts reviewable inside the text panel. The GUI also exposes
-full-recording or
-10/30/60-second chunk presets, previous/next clip review, and cycling through
+automatic or
+10/30-second chunk presets, previous/next clip review, and cycling through
 persisted recordings. `LEFT`/`RIGHT` reorder the selected clip through the
 replayable recording history; those choices survive restart.
 `DELETE` removes the selected clip from the active manifest after confirmation

@@ -4,9 +4,12 @@ use std::time::UNIX_EPOCH;
 use teamy_transcriber::domain::AppState;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipId;
+use teamy_transcriber::domain::ClipPlan;
+use teamy_transcriber::domain::ClipPlanKind;
 use teamy_transcriber::domain::ClipStatus;
 use teamy_transcriber::domain::Command;
 use teamy_transcriber::domain::DomainError;
+use teamy_transcriber::domain::PlannedClip;
 use teamy_transcriber::domain::RecordingId;
 use teamy_transcriber::domain::RecordingStatus;
 use teamy_transcriber::domain::SourceAsset;
@@ -645,4 +648,80 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
         .expect("clock should be after the Unix epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("{prefix}-{}-{timestamp}", std::process::id()))
+}
+
+#[test]
+fn complete_clip_plans_are_atomic_and_old_recordings_still_decode() -> eyre::Result<()> {
+    let root = unique_temp_dir("transcriber-atomic-plan");
+    let store = RecordingStore::new(&root);
+    let id = create_recording(&store, AssetKind::AudioFile, "fixture.wav")?;
+    let mut state = store.load_state(id)?;
+    let old_json = facet_json::to_string(state.recording(id).unwrap())?;
+    let legacy = old_json.replace(",\"clip_plan\":null", "");
+    assert_ne!(legacy, old_json);
+    let decoded: teamy_transcriber::domain::Recording = facet_json::from_str(&legacy)?;
+    assert!(decoded.clip_plan.is_none());
+    let plan = ClipPlan {
+        kind: ClipPlanKind::VoiceActivity {
+            weights_sha256: "0".repeat(64),
+        },
+        duration_us: 1_000_000,
+        clips: vec![
+            PlannedClip {
+                id: ClipId::new(),
+                source_range: TimeRange::new(100_000, 400_000)?,
+            },
+            PlannedClip {
+                id: ClipId::new(),
+                source_range: TimeRange::new(600_000, 900_000)?,
+            },
+        ],
+    };
+    let mut invalid = plan.clone();
+    invalid.clips[1].source_range.start_us = 200_000;
+    let before = state.clone();
+    store
+        .apply_command(
+            &mut state,
+            Command::PlanClips {
+                recording_id: id,
+                plan: invalid,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(state, before);
+    assert_eq!(
+        std::fs::read_to_string(store.events_path(id))?
+            .lines()
+            .count(),
+        1
+    );
+    store.apply_command(
+        &mut state,
+        Command::PlanClips {
+            recording_id: id,
+            plan: plan.clone(),
+        },
+    )?;
+    assert_eq!(
+        std::fs::read_to_string(store.events_path(id))?
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(store.load_state(id)?, state);
+    assert_eq!(state.recording(id).unwrap().clips.len(), 2);
+    assert_eq!(state.recording(id).unwrap().clip_plan.as_ref(), Some(&plan));
+    store
+        .apply_command(
+            &mut state,
+            Command::PlanClips {
+                recording_id: id,
+                plan,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(store.load_state(id)?, state);
+    std::fs::remove_dir_all(root)?;
+    Ok(())
 }

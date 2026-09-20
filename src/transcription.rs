@@ -70,7 +70,28 @@ pub struct TranscriptionResult {
     pub text: String,
 }
 
+#[derive(Debug)]
+pub enum SpeechPlan {
+    Unavailable,
+    Cancelled,
+    Detected {
+        ranges: Vec<crate::domain::TimeRange>,
+        weights_sha256: String,
+    },
+}
+
 pub trait TranscriptionBackend {
+    /// Plan speech windows when the backend has a prepared detector.
+    /// # Errors
+    /// Returns an error for corrupt detector assets or invalid audio.
+    fn detect_speech(
+        &self,
+        audio: &Path,
+        should_stop: &mut dyn FnMut() -> bool,
+    ) -> Result<SpeechPlan, TranscriptionError> {
+        let _ = (audio, should_stop);
+        Ok(SpeechPlan::Unavailable)
+    }
     /// Describe the backend without loading a model.
     fn capabilities(&self) -> BackendCapabilities;
 
@@ -237,17 +258,14 @@ impl NativeWhisperBackend {
         }
     }
 
-    fn validate_configuration(
-        &self,
-        request: &TranscriptionRequest,
-    ) -> Result<(), TranscriptionError> {
-        if request.audio_path.as_os_str().is_empty() {
+    fn validate_configuration(&self, audio_path: &Path) -> Result<(), TranscriptionError> {
+        if audio_path.as_os_str().is_empty() {
             return Err(TranscriptionError::EmptyAudioPath);
         }
-        if !request.audio_path.is_file() {
+        if !audio_path.is_file() {
             return Err(TranscriptionError::Configuration(format!(
                 "normalized audio is missing: {}",
-                request.audio_path.display()
+                audio_path.display()
             )));
         }
         if self.config.max_decode_tokens == 0 {
@@ -286,6 +304,30 @@ impl NativeWhisperBackend {
 }
 
 impl TranscriptionBackend for NativeWhisperBackend {
+    fn detect_speech(
+        &self,
+        audio: &Path,
+        should_stop: &mut dyn FnMut() -> bool,
+    ) -> Result<SpeechPlan, TranscriptionError> {
+        #[cfg(feature = "cuda-native")]
+        if self.capabilities().backend_id == "whisper-source-cuda"
+            && self
+                .config
+                .model_dir
+                .join(crate::native_whisper::speech::DIRECTORY)
+                .exists()
+        {
+            self.validate_configuration(audio)?;
+            return crate::native_whisper::speech::detect(
+                &self.config.model_dir,
+                audio,
+                should_stop,
+            )
+            .map_err(|e| TranscriptionError::Configuration(format!("speech detection: {e:#}")));
+        }
+        let _ = (audio, should_stop);
+        Ok(SpeechPlan::Unavailable)
+    }
     fn batch_capacity(&self) -> usize {
         #[cfg(feature = "cuda-native")]
         if self.capabilities().backend_id == "whisper-source-cuda" {
@@ -306,7 +348,7 @@ impl TranscriptionBackend for NativeWhisperBackend {
         #[cfg(feature = "cuda-native")]
         if crate::native_whisper::cuda::selected() && !requests.is_empty() {
             for request in requests {
-                self.validate_configuration(request)?;
+                self.validate_configuration(&request.audio_path)?;
             }
             let artifacts = self.model_artifacts()?;
             if artifacts.layout == crate::native_whisper::model::WhisperModelLayout::TchSafetensors
@@ -417,7 +459,7 @@ impl TranscriptionBackend for NativeWhisperBackend {
         &self,
         request: &TranscriptionRequest,
     ) -> Result<TranscriptionResult, TranscriptionError> {
-        self.validate_configuration(request)?;
+        self.validate_configuration(&request.audio_path)?;
         let artifacts = self.model_artifacts()?;
         let samples = read_normalized_wav(&request.audio_path)?;
         #[cfg(feature = "cuda-native")]

@@ -17,6 +17,7 @@ struct RecordingTranscribeReport {
     backend_id: String,
     chunk_count: usize,
     cancelled: bool,
+    no_speech: bool,
     chunks: Vec<TranscribedChunkReport>,
 }
 
@@ -42,7 +43,8 @@ pub struct RecordingTranscribeArgs {
     /// Maximum number of decoder tokens generated for each clip.
     #[facet(args::named)]
     pub max_decode_tokens: Option<usize>,
-    /// Maximum source chunk duration in milliseconds; omitted uses Whisper's 30-second window.
+    /// Fixed chunk duration in milliseconds (at most 30000); omitted preserves
+    /// existing clips or uses prepared speech detection, then 30-second chunks.
     #[facet(args::named)]
     pub chunk_duration_ms: Option<u64>,
 }
@@ -96,6 +98,7 @@ impl RecordingTranscribeArgs {
             backend_id: report.backend_id,
             chunk_count: chunks.len(),
             cancelled: report.cancelled,
+            no_speech: report.no_speech,
             chunks,
         }))
     }
