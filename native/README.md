@@ -44,6 +44,11 @@ storage and reductions. Set `TEAMY_TRANSCRIBER_CUDA_MATH=fp32` for the full-FP32
 numerical oracle path (`tf32` selects the default). This is a computation setting;
 the safetensors weights stay unchanged.
 
+Single-token decoder projections use a custom FP32 matrix-vector kernel that
+fuses bias, GELU and residual addition when requested. It uses vectorized reads
+for aligned buffers and a scalar fallback for other shapes/suballocations.
+Encoder and multi-token prompt matrix multiplications continue to use cuBLAS.
+
 Weights are loaded once, from single-file or indexed safetensors, into FP32
 device storage. Sequential file reads, SIMD FP16 conversion and bounded staging
 groups avoid a separate GPU allocation/transfer for every tensor. Decoder K/V
@@ -96,6 +101,28 @@ It can also rotate the pinned [Rust WhisperX ASR adapter](../tools/rust-whisperx
 The adapter calls the public upstream inference library without modifying it;
 it does not time the complete Rust WhisperX CLI.
 Python is used only by these development/reference tools.
+
+Benchmark manifests may use `null` for unavailable reference transcripts.
+Such audio remains in timing, engine-parity and repetition checks, while word
+error scores explicitly report the subset with available references. An empty
+reference string means known silence and counts hallucinated words as errors.
+
+`tools/benchmark_whisperx_pipeline.py` measures the larger Python execution path:
+audio loading, Silero speech detection, chunk merging, batched CUDA recognition
+and result assembly. Supply complete audio recordings, existing CT2 weights,
+the canonical generation configuration and a local Silero Hub checkout. It
+uses WhisperX's actual VAD and pipeline methods; only Silero's model resolution
+uses the supplied local checkout to avoid a network lookup during timing.
+The default comparison uses batches of 1 and 16, greedy English decoding and
+one Torch CPU thread. Receipts record the model/source hashes and individual
+speech-detection times. This exposes batching and segmentation costs that the
+per-chunk ASR harness excludes. Word alignment, diarization and file export
+remain outside this harness; its results cannot be treated as a feature-matched
+comparison against the current native fixed-chunk application workflow.
+
+```powershell
+python tools/benchmark_whisperx_pipeline.py <ct2-model> <wav-list.json> <new-receipt.json> --silero-repo <local-silero-source> --generation-config <canonical-generation-config.json> --dll-dir <ct2-runtime-directory>
+```
 
 `examples/workflow_bench.rs` exercises actual import, normalization, chunking,
 transcription, persistence and timestamped export. It accepts a model, one WAV

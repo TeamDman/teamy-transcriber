@@ -4,6 +4,7 @@
 #include <cublas_v2.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <new>
 
 struct Session { cudaStream_t stream{}; cublasHandle_t blas{}; };
@@ -54,7 +55,46 @@ __global__ void affine(float* x, const float* bias, const float* residual, int w
         x[i] = v;
     }
 }
+// Incremental decoding has one input row. Keep its dot product, bias, GELU
+// and residual in one launch instead of a general GEMM plus a second kernel.
+// One warp owns each output; all products and reductions remain FP32.
+template<bool Vectorized>
+__global__ void matvec(const float* x, const float* w, const float* b,
+                      const float* residual, float* y, int input, int output, int gelu) {
+    int lane = threadIdx.x & 31;
+    int row = blockIdx.x * 4 + (threadIdx.x >> 5);
+    if (row >= output) return;
+    float sum = 0.f;
+    if (Vectorized) {
+        const float4* xv = reinterpret_cast<const float4*>(x);
+        const float4* wv = reinterpret_cast<const float4*>(w + size_t(row) * input);
+        float a = 0.f, c = 0.f, d = 0.f, e = 0.f;
+        for (int j = lane; j < input / 4; j += 32) {
+            float4 vx = xv[j], vw = wv[j];
+            a = fmaf(vx.x, vw.x, a); c = fmaf(vx.y, vw.y, c);
+            d = fmaf(vx.z, vw.z, d); e = fmaf(vx.w, vw.w, e);
+        }
+        sum = (a + c) + (d + e);
+    } else {
+        for (int j = lane; j < input; j += 32)
+            sum = fmaf(x[j], w[size_t(row) * input + j], sum);
+    }
+    for (int step = 16; step; step >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, step);
+    if (!lane) {
+        float value = sum + (b ? b[row] : 0.f);
+        if (gelu) value = .5f * value * (1.f + erff(value * .7071067811865475f));
+        if (residual) value += residual[row];
+        y[row] = value;
+    }
+}
 extern "C" int tw_linear(Session* s, const float* x, const float* w, const float* b, const float* r, float* y, int rows, int input, int output, int gelu) {
+    if (rows == 1) {
+        bool aligned = input % 4 == 0 && ((reinterpret_cast<std::uintptr_t>(x) | reinterpret_cast<std::uintptr_t>(w)) & 15) == 0;
+        if (aligned) matvec<true><<<(output+3)/4,128,0,s->stream>>>(x,w,b,r,y,input,output,gelu);
+        else matvec<false><<<(output+3)/4,128,0,s->stream>>>(x,w,b,r,y,input,output,gelu);
+        CUDA(cudaGetLastError()); return 0;
+    }
     const float one=1.f, zero=0.f;
     BLAS(cublasSgemm(s->blas,CUBLAS_OP_T,CUBLAS_OP_N,output,rows,input,&one,w,input,x,input,&zero,y,output));
     size_t n = size_t(rows)*output;

@@ -37,9 +37,23 @@ fn add_windows_cuda_link_anchor() {
 
 /// Re-run the build script when normal binary inputs change so embedded build metadata stays fresh.
 fn add_build_script_inputs() {
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=src");
+    // Native dependency edits relink the application even when src/ is
+    // unchanged. Track their source inputs so its embedded Git/build receipt
+    // is regenerated too; never watch nested target/ build-output directories.
+    for path in [
+        "build.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "src",
+        "examples",
+        "native/Cargo.toml",
+        "native/Cargo.lock",
+        "native/build.rs",
+        "native/src",
+        "native/kernels",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+    }
 }
 
 /// Embeds Windows resources (like application icon) into the executable.

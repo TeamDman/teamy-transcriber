@@ -433,6 +433,71 @@ mod tests {
     }
     #[test]
     #[ignore = "requires a CUDA device; run explicitly in release mode"]
+    fn single_row_linear_matches_scalar_oracle() -> Result<()> {
+        let device = Device::new(0, false)?;
+        // Covers scalar tails, vectorized reads and deliberately unaligned
+        // suballocations, with the same shapes used by large-v3's decoder.
+        for input in [3, 37, 1280, 5120] {
+            let output = 7;
+            let xs: Vec<f32> = (0..input).map(|i| (i % 19) as f32 * 0.03 - 0.27).collect();
+            let ws: Vec<f32> = (0..input * output)
+                .map(|i| (i % 23) as f32 * 0.02 - 0.22)
+                .collect();
+            let bs: Vec<f32> = (0..output).map(|i| i as f32 * 0.05 - 0.1).collect();
+            let rs: Vec<f32> = (0..output).map(|i| i as f32 * 0.07 - 0.2).collect();
+            for offset in [0, 1] {
+                let mut padded_x = vec![0.; offset];
+                padded_x.extend_from_slice(&xs);
+                let mut padded_w = vec![0.; offset];
+                padded_w.extend_from_slice(&ws);
+                let x = device.upload(&padded_x)?.slice(offset, input)?;
+                let w = device.upload(&padded_w)?.slice(offset, input * output)?;
+                let b = device.upload(&bs)?;
+                let y = device.alloc(output)?;
+                for fused in [false, true] {
+                    y.write(&rs)?;
+                    x.linear(
+                        &w,
+                        fused.then_some(&b),
+                        fused.then_some(&y),
+                        &y,
+                        1,
+                        input,
+                        output,
+                        fused,
+                    )?;
+                    let expected: Vec<f32> = (0..output)
+                        .map(|row| {
+                            let mut value: f64 = (0..input)
+                                .map(|j| f64::from(xs[j]) * f64::from(ws[row * input + j]))
+                                .sum();
+                            if fused {
+                                value += f64::from(bs[row]);
+                                let z = value / std::f64::consts::SQRT_2;
+                                let t = 1. / (1. + 0.3275911 * z.abs());
+                                let erf = z.signum()
+                                    * (1.
+                                        - (((((1.061405429 * t - 1.453152027) * t)
+                                            + 1.421413741)
+                                            * t
+                                            - 0.284496736)
+                                            * t
+                                            + 0.254829592)
+                                            * t
+                                            * (-z * z).exp());
+                                value = 0.5 * value * (1. + erf) + f64::from(rs[row]);
+                            }
+                            value as f32
+                        })
+                        .collect();
+                    close(&y.read(output)?, &expected, 5e-5);
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires a CUDA device; run explicitly in release mode"]
     fn cuda_primitives_match_scalar_oracles() -> Result<()> {
         let d = Device::new(0, false)?;
         let input = vec![1., 2., 3., 4., 5., 6.];
