@@ -16,7 +16,7 @@ fn native_whisper_rejects_missing_configuration_before_model_load() {
     });
 
     let capabilities = backend.capabilities();
-    assert_eq!(capabilities.backend_id, "whisper-burn-native-cpu");
+    assert_eq!(capabilities.backend_id, "whisper-source-cuda");
     assert!(capabilities.local_only);
     assert!(capabilities.accepts_normalized_audio);
 

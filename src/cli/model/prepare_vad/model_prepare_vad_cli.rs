@@ -23,18 +23,10 @@ impl ModelPrepareVadArgs {
         reason = "CLI dispatch uses async invoke methods"
     )]
     pub async fn invoke(self) -> Result<CliOutput> {
-        #[cfg(feature = "cuda-native")]
-        {
-            let report = crate::native_whisper::speech::prepare(
-                std::path::Path::new(&self.source_weights),
-                std::path::Path::new(&self.model_dir),
-            )?;
-            Ok(CliOutput::facet(report))
-        }
-        #[cfg(not(feature = "cuda-native"))]
-        {
-            let _ = self;
-            eyre::bail!("source-defined speech detection requires a cuda-native build")
-        }
+        let report = crate::native_whisper::speech::prepare(
+            std::path::Path::new(&self.source_weights),
+            std::path::Path::new(&self.model_dir),
+        )?;
+        Ok(CliOutput::facet(report))
     }
 }

@@ -214,7 +214,7 @@ fn configured_batch_size() -> Result<usize, String> {
         Err(std::env::VarError::NotPresent) => teamy_whisper_native::MAX_BATCH_SIZE,
         Ok(value) => value
             .parse()
-            .map_err(|_| format!("{BATCH_SIZE_ENV} must be 1..=8"))?,
+            .map_err(|error| format!("{BATCH_SIZE_ENV} must be 1..=8: {error}"))?,
         Err(error) => return Err(error.to_string()),
     };
     if !(1..=teamy_whisper_native::MAX_BATCH_SIZE).contains(&size) {
@@ -289,16 +289,4 @@ fn run_request(
         offset += count;
     }
     Ok(should_stop())
-}
-
-/// Optional native builds select CUDA unless the caller explicitly requests
-/// the retained tch backend (including its established negative-device CPU setting).
-#[must_use]
-pub fn selected() -> bool {
-    std::env::var("TEAMY_TRANSCRIBER_BACKEND").is_ok_and(|value| value == "cuda")
-        || (std::env::var("TEAMY_TRANSCRIBER_BACKEND").is_err()
-            && std::env::var(crate::paths::TORCH_DEVICE_ENV_VAR)
-                .ok()
-                .and_then(|value| value.parse::<i32>().ok())
-                .is_none_or(|value| value >= 0))
 }

@@ -1,4 +1,4 @@
-//! Weight manifest validation shared by native CUDA and retained `LibTorch` builds.
+//! Weight manifest validation for source-defined CUDA Whisper.
 use super::whisper::WhisperDims;
 use eyre::Context;
 use eyre::bail;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-/// Validate the names required by the direct tch graph without materializing
+/// Validate the names required by the source-defined CUDA graph without materializing
 /// the model tensors.  This is used by model preparation for early diagnostics.
 pub fn validate_safetensors_file(path: &Path, dims: &WhisperDims) -> eyre::Result<()> {
     validate_safetensors_files(&[path.to_path_buf()], dims)

@@ -4,8 +4,6 @@ use eyre::bail;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub const MODEL_BURNPACK_FILE_NAME: &str = "model.bpk";
-pub const MODEL_TORCHSCRIPT_FILE_NAME: &str = "model.pt";
 pub const MODEL_SAFETENSORS_FILE_NAME: &str = "model.safetensors";
 pub const MODEL_SAFETENSORS_INDEX_FILE_NAME: &str = "model.safetensors.index.json";
 pub const MODEL_CONFIG_FILE_NAME: &str = "config.json";
@@ -14,20 +12,14 @@ pub const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WhisperModelLayout {
-    TorchScript,
-    TchSafetensors,
-    WhisperBurnNpy,
-    BurnPack,
+    Safetensors,
 }
 
 impl WhisperModelLayout {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::TorchScript => "whisper-torchscript",
-            Self::TchSafetensors => "whisper-tch-safetensors",
-            Self::WhisperBurnNpy => "whisper-burn-npy",
-            Self::BurnPack => "burnpack",
+            Self::Safetensors => "whisper-cuda-safetensors",
         }
     }
 }
@@ -43,10 +35,6 @@ pub struct WhisperModelArtifacts {
     pub root: PathBuf,
     pub layout: WhisperModelLayout,
     pub tokenizer: TokenizerMetadata,
-    pub encoder_dir: Option<PathBuf>,
-    pub decoder_dir: Option<PathBuf>,
-    pub burnpack_path: Option<PathBuf>,
-    pub torchscript_path: Option<PathBuf>,
     pub safetensors_path: Option<PathBuf>,
     pub safetensors_paths: Vec<PathBuf>,
     pub config_path: Option<PathBuf>,
@@ -56,18 +44,12 @@ pub struct WhisperModelArtifacts {
 
 /// Inspect a locally supplied native Whisper model directory.
 ///
-/// The preferred tch layouts are a `TorchScript` `model.pt` or canonical
-/// Hugging Face `model.safetensors`, each with `dims.json` and `tokenizer.json`.
-/// Both are loaded through the same tch/LibTorch family as `teamy-tts`.
-/// Burnpack and packed-NPY remain compatibility paths.
+/// Canonical safetensors, dims.json and tokenizer.json are required.
+/// Model computation is defined in the native Rust/CUDA implementation.
 ///
 /// # Errors
 ///
 /// Returns an error when required model files are absent or malformed.
-#[expect(
-    clippy::too_many_lines,
-    reason = "The inspector keeps all native model layout detection and validation in one boundary"
-)]
 pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     if !root.is_dir() {
         bail!(
@@ -89,42 +71,17 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
         vocab_size: tokenizer.get_vocab_size(true),
     };
 
-    let burnpack_path = root.join(MODEL_BURNPACK_FILE_NAME);
-    let torchscript_path = root.join(MODEL_TORCHSCRIPT_FILE_NAME);
     let safetensors_path = root.join(MODEL_SAFETENSORS_FILE_NAME);
     let safetensors_index_path = root.join(MODEL_SAFETENSORS_INDEX_FILE_NAME);
     let config_path = root.join(MODEL_CONFIG_FILE_NAME);
     let dims_path = root.join(MODEL_DIMS_FILE_NAME);
-    if torchscript_path.is_file() && dims_path.is_file() {
-        let dims = read_dims_file(&dims_path)?;
-        let artifacts = WhisperModelArtifacts {
-            root: root.to_path_buf(),
-            layout: WhisperModelLayout::TorchScript,
-            tokenizer,
-            encoder_dir: None,
-            decoder_dir: None,
-            burnpack_path: None,
-            torchscript_path: Some(torchscript_path),
-            safetensors_path: None,
-            safetensors_paths: Vec::new(),
-            config_path: config_path.is_file().then_some(config_path.clone()),
-            dims_path: Some(dims_path),
-            dims: Some(dims),
-        };
-        validate_model_artifacts(&artifacts)?;
-        return Ok(artifacts);
-    }
     if dims_path.is_file() && (safetensors_path.is_file() || safetensors_index_path.is_file()) {
         let dims = read_dims_file(&dims_path)?;
         let safetensors_paths = resolve_safetensor_paths(root)?;
         let artifacts = WhisperModelArtifacts {
             root: root.to_path_buf(),
-            layout: WhisperModelLayout::TchSafetensors,
+            layout: WhisperModelLayout::Safetensors,
             tokenizer,
-            encoder_dir: None,
-            decoder_dir: None,
-            burnpack_path: None,
-            torchscript_path: None,
             safetensors_path: safetensors_path.is_file().then_some(safetensors_path),
             safetensors_paths,
             config_path: config_path.is_file().then_some(config_path),
@@ -134,59 +91,9 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
         validate_model_artifacts(&artifacts)?;
         return Ok(artifacts);
     }
-    if burnpack_path.is_file() && dims_path.is_file() {
-        let dims = read_dims_file(&dims_path)?;
-        let artifacts = WhisperModelArtifacts {
-            root: root.to_path_buf(),
-            layout: WhisperModelLayout::BurnPack,
-            tokenizer,
-            encoder_dir: None,
-            decoder_dir: None,
-            burnpack_path: Some(burnpack_path),
-            torchscript_path: None,
-            safetensors_path: None,
-            safetensors_paths: Vec::new(),
-            config_path: None,
-            dims_path: Some(dims_path),
-            dims: Some(dims),
-        };
-        validate_model_artifacts(&artifacts)?;
-        return Ok(artifacts);
-    }
-
-    let encoder_dir = root.join("encoder");
-    let decoder_dir = root.join("decoder");
-    if encoder_dir.is_dir() && decoder_dir.is_dir() {
-        let mut artifacts = WhisperModelArtifacts {
-            root: root.to_path_buf(),
-            layout: WhisperModelLayout::WhisperBurnNpy,
-            tokenizer,
-            encoder_dir: Some(encoder_dir),
-            decoder_dir: Some(decoder_dir),
-            burnpack_path: None,
-            torchscript_path: None,
-            safetensors_path: None,
-            safetensors_paths: Vec::new(),
-            config_path: None,
-            dims_path: None,
-            dims: None,
-        };
-        artifacts.dims = super::whisper::infer_dims_from_artifacts(&artifacts).ok();
-        validate_model_artifacts(&artifacts)?;
-        return Ok(artifacts);
-    }
-
     bail!(
-        "native Whisper model {} is incomplete; expected {} or {} or {} + {} + {} for tch/LibTorch, or {} + {} + {} for the legacy Burn path or encoder/decoder packed-NPY directories",
-        root.display(),
-        MODEL_TORCHSCRIPT_FILE_NAME,
-        MODEL_SAFETENSORS_FILE_NAME,
-        MODEL_SAFETENSORS_INDEX_FILE_NAME,
-        MODEL_DIMS_FILE_NAME,
-        TOKENIZER_FILE_NAME,
-        MODEL_BURNPACK_FILE_NAME,
-        MODEL_DIMS_FILE_NAME,
-        TOKENIZER_FILE_NAME,
+        "native CUDA model {} requires model.safetensors or indexed shards, dims.json and tokenizer.json; use model prepare with canonical safetensors. TorchScript, Burnpack and packed-NPY models are no longer supported",
+        root.display()
     )
 }
 

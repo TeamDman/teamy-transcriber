@@ -13,7 +13,7 @@ $savedCuda = $env:CUDA_PATH
 Push-Location $repo
 try {
     $env:CUDA_PATH = $cuda
-    & cargo build --release --locked --no-default-features --features cuda-native
+    & cargo build --release --locked
     if ($LASTEXITCODE -ne 0) { throw 'Native release build failed.' }
     $metadata = & cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the Cargo target directory.' }

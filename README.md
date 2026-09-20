@@ -6,12 +6,12 @@ The first release is deliberately narrow:
 
 - capture or import audio;
 - save an authoritative recording and clip manifest;
-- transcribe locally through source-defined Rust/CUDA Whisper, with an explicit LibTorch/CPU build available;
+- transcribe locally through source-defined Rust/CUDA Whisper on an NVIDIA GPU;
 - present staged transcript text without silently typing into another application;
 - provide predictable clip movement and a small set of reversible audio-preparation operations;
 - keep the GUI, tray behavior, renderer, and model runtime observable and testable.
 
-This is not intended to become a digital audio workstation or nonlinear editor. The active design contract is in [PLAN.md](G:/Programming/Repos/teamy-transcriber/PLAN.md).
+This is not intended to become a digital audio workstation or nonlinear editor. [PLAN.md](PLAN.md) records the recording and workflow design; the CUDA runtime instructions below supersede its historical backend choices.
 
 The project is informed by Teamy-Studio, teamy-llm-service, teamy-terminal, whisper-burn, whisperX, voice2text, teamy-subs, piing, tb, cursor-latency, and the Poche/SFM transfer briefs. Those sources are evidence and prior art, not permission to copy their unfinished assumptions into this project.
 
@@ -53,15 +53,13 @@ paths are persisted with the other GUI settings. If the selected `ffprobe`
 executable is unavailable or rejects the probe request, the adapter falls back
 to parsing the selected `ffmpeg` binary's stream diagnostics; cancelling the
 GUI's optional ffprobe picker selects that fallback explicitly.
-`recording transcribe` invokes the native tch/LibTorch Whisper encoder/decoder
-when a TorchScript or canonical safetensors package is selected and commits raw ASR text through the
-same event receipt. CPU mode uses the same tch/LibTorch graph on `Device::Cpu`;
-Burnpack is retained only as a legacy compatibility layout and is not the CPU
-fallback. Persisted partial clips are materialized as
+`recording transcribe` invokes the source-defined CUDA Whisper encoder/decoder
+with canonical safetensors weights and commits raw ASR text through the same
+event receipt. Persisted partial clips are materialized as
 separate normalized WAV artifacts first. `--chunk-duration-ms` creates
 contiguous, non-overlapping clip records and resumes from their stable IDs
 after a failure; omitted chunking reuses existing clips or creates windows of
-at most 30 seconds. Optional CUDA-native builds can use prepared local Silero
+at most 30 seconds. The native runtime can use prepared local Silero
 weights for automatic speech windows and skip silence without loading Whisper;
 see [native inference and model preparation](native/README.md). Video fixture verification, runtime
 installation, and model/CDN acquisition remain later slices. During
@@ -121,12 +119,11 @@ provenance events. Restarting the GUI reopens the selected persisted recording
 (falling back to the available recordings) and restores the selected model,
 microphone, and export directory
 from its app-owned settings file. Selecting MODEL validates the tokenizer,
-dimensions, and TorchScript/safetensors/Burnpack/legacy layout before TRANSCRIBE is enabled.
+dimensions and safetensors layout before TRANSCRIBE is enabled.
 The GUI
 also offers a local-only preparation path: choose `No` in the model setup
-dialog, select a Whisper PyTorch checkpoint, select its local `tokenizer.json`
-when it is not beside the checkpoint, and choose an output parent directory.
-The conversion runs asynchronously and selects the resulting native package
+dialog, select a canonical safetensors folder containing `config.json` and
+`tokenizer.json`, and choose an output parent directory. Preparation runs asynchronously and selects the resulting native package
 after validation. The headless equivalent is:
 
 ~~~powershell
@@ -146,27 +143,18 @@ model assets. The preferred package contains canonical safetensors plus
 `dims.json` and `tokenizer.json`; the Rust preparation path has been exercised
 with real `openai/whisper-tiny` and `openai/whisper-large-v3` packages. The default
 CUDA build defines computation in Rust and CUDA source and reads the tensor
-weights directly. An optional TorchScript package
-contains `model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
-`encoder` and `decoder` methods and is loaded through the same pinned
-`tch`/LibTorch family as `teamy-tts`; use `--no-default-features --features tch-native`
-and set `LIBTORCH` for that build. CUDA device 0
-is the default when LibTorch reports CUDA availability; set
-`TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` to run the same tch graph on the CPU. When
-running from a checkout, put the matching LibTorch `bin` directory on `PATH`;
-packaged builds must ship the matching LibTorch DLLs beside the executable. The runtime also
-recognizes the existing Burnpack `model.bpk` package and older packed-NPY
-`encoder/`/`decoder/` layout during migration, but those are legacy compatibility
-paths. If a selected folder contains a
-CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
-incompatible format; CTranslate2 is not a supported native model and is not loaded
-by this Python-free CLI.
+weights directly. `TEAMY_TRANSCRIBER_CUDA_DEVICE` selects the NVIDIA device
+(default zero). Build and installer scripts stage the CUDA runtime and cuBLAS
+DLLs beside the executable.
 
-The Rust preparation path accepts a canonical Whisper `model.safetensors`
-file or indexed shard set plus matching config and tokenizer files, validates
-the manifest, and packages the sidecar dimensions for native CUDA or `tch` inference.
-Optional TorchScript generation remains later work; CTranslate2 `model.bin`
-is not reverse-converted.
+TorchScript, LibTorch/CPU, Burnpack and packed-NPY inference have been removed.
+The local `pre-cuda-only` Git tag retains the previous implementation. Existing
+recordings and transcript history remain readable; legacy model files need to
+be replaced with canonical safetensors. CTranslate2 `model.bin` is also unsupported.
+No automatic model conversion or download occurs.
+
+The preparation path validates a single safetensors file or indexed shards and
+packages config, tokenizer and sidecar dimensions for direct CUDA inference.
 
 For local media validation, a user-owned VCTK sample corpus can be used when
 available at `G:\Datasets\VCTK\VCTK-Corpus-smaller\`. It is not required for
@@ -187,21 +175,17 @@ The command never downloads the corpus or model. It writes a versioned
 receipt for `passed`, `failed`, or `unavailable` outcomes and only reports
 `passed` when the real WAV is imported, normalized to 16 kHz mono, persisted,
 transcribed by the native backend, committed as raw ASR, and matched to the
-descriptor reference. The preferred model directory must contain either the
-canonical safetensors package (`model.safetensors` or indexed shards + `dims.json` +
-`tokenizer.json`) or the native TorchScript (`model.pt` + `dims.json` +
-`tokenizer.json`) package; the existing
-Burnpack/packed-NPY layouts remain accepted compatibility paths. A
-CTranslate2/faster-whisper `model.bin` directory is an honest non-passing
-diagnostic.
+descriptor reference. The model directory must contain canonical safetensors
+weights (single file or indexed shards), `dims.json` and `tokenizer.json`.
+Unsupported model layouts produce a non-passing diagnostic. Version 4 receipts
+record the native CUDA device/math/batch settings instead of LibTorch diagnostics.
 
 ## Development
 
-Native CUDA is the default build and installer backend. Model topology is Rust
+Native CUDA is the only inference backend. Model topology is Rust
 code, numerical kernels are CUDA, and weights remain separate safetensors files.
 Run `./tools/build-cuda-native.ps1` to build and stage runtime DLLs, or
-`./update.ps1 -Root <install-directory>` to install. Use `./update.ps1 -Backend tch`
-for the retained LibTorch/CPU implementation. Neither installer downloads weights.
+`./update.ps1 -Root <install-directory>` to install. The installer does not download weights.
 See [native inference](native/README.md) for prerequisites, model preparation,
 comparison tools and validation limits. Current measured hardware is Windows x64
 with an RTX 4090; the native build requires a compatible CUDA toolkit and GPU.

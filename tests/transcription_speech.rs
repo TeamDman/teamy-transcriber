@@ -1,5 +1,3 @@
-#![cfg(feature = "cuda-native")]
-
 use eyre::Result;
 use eyre::ensure;
 use std::path::Path;

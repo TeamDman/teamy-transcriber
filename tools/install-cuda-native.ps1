@@ -43,7 +43,7 @@ try {
     $savedCuda = $env:CUDA_PATH
     try {
         $env:CUDA_PATH = $cuda
-        & cargo install --path $repo --root $installRoot --locked --no-default-features --features cuda-native --bin teamy-transcriber --force
+        & cargo install --path $repo --root $installRoot --locked --bin teamy-transcriber --force
         if ($LASTEXITCODE -ne 0) { throw 'Native installation failed.' }
     } finally {
         $env:CUDA_PATH = $savedCuda

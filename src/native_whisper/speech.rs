@@ -44,11 +44,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 /// Validate and stage local data weights beneath an existing Whisper package.
 /// Publication is one directory rename; existing assets are never replaced.
 pub fn prepare(source: &Path, model_dir: &Path) -> Result<SpeechModelManifest> {
-    let artifacts = super::model::inspect_model_dir(model_dir)?;
-    ensure!(
-        artifacts.layout == super::model::WhisperModelLayout::TchSafetensors,
-        "speech detection requires a canonical safetensors Whisper package"
-    );
+    super::model::inspect_model_dir(model_dir)?;
     let destination = model_dir.join(DIRECTORY);
     ensure!(
         !destination.exists(),
@@ -123,7 +119,7 @@ pub fn detect(
                 (1..=16).contains(&spec.bits_per_sample),
                 "speech detection expects at most 16-bit PCM"
             );
-            let divisor = (1u32 << (spec.bits_per_sample - 1)) as f32;
+            let divisor = f32::from(1u16 << (spec.bits_per_sample - 1));
             analyze(
                 &mut model,
                 wav.samples::<i16>()

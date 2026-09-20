@@ -16,7 +16,7 @@ use crate::domain::RecordingStatus;
 use crate::media::AudioProfile;
 use crate::media::read_waveform_peaks;
 use crate::native_whisper::model::inspect_model_dir;
-use crate::native_whisper::prepare::convert_pytorch_checkpoint;
+use crate::native_whisper::prepare::prepare_safetensors_model;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
 use crate::storage::RecordingStore;
@@ -435,7 +435,7 @@ impl GuiApplication {
             .set_level(MessageLevel::Info)
             .set_title("Model setup")
             .set_description(
-                "Yes: choose an existing native TorchScript or Burnpack folder. No: prepare a local Whisper PyTorch checkpoint and tokenizer. Cancel: leave the current model unchanged.",
+                "Yes: choose an existing prepared safetensors model folder. No: prepare a local canonical safetensors folder containing config.json and tokenizer.json. Cancel: keep the current model.",
             )
             .set_buttons(MessageButtons::YesNoCancel)
             .show();
@@ -467,54 +467,34 @@ impl GuiApplication {
             );
         } else if self.state.model_status.starts_with("MODEL CTRANSLATE2") {
             self.state.status_line =
-                "CTranslate2 model detected; choose a local tch/LibTorch TorchScript Whisper folder"
+                "CTranslate2 model detected; choose or prepare a canonical safetensors Whisper folder"
                     .to_string();
         } else {
             self.state.status_line =
-                "Model incomplete: select a folder containing model.pt or model.safetensors, dims.json, tokenizer.json"
+                "Model incomplete: select a folder containing safetensors weights, dims.json and tokenizer.json"
                     .to_string();
         }
     }
 
     fn prepare_local_model(&mut self) {
-        let Some(checkpoint) = FileDialog::new()
-            .add_filter("Whisper PyTorch checkpoint", &["pt", "pth", "bin", "ckpt"])
-            .pick_file()
-        else {
-            return;
-        };
-        let tokenizer = checkpoint
-            .parent()
-            .map(|parent| parent.join("tokenizer.json"))
-            .filter(|path| path.is_file())
-            .or_else(|| {
-                FileDialog::new()
-                    .add_filter("Tokenizer", &["json"])
-                    .set_directory(checkpoint.parent().unwrap_or_else(|| Path::new(".")))
-                    .pick_file()
-            });
-        let Some(tokenizer) = tokenizer else {
-            self.state.status_line =
-                "Model preparation cancelled: choose a local tokenizer.json next to the checkpoint"
-                    .to_string();
-            return;
-        };
-        let initial_directory = checkpoint
-            .parent()
-            .filter(|path| path.is_dir())
-            .unwrap_or_else(|| Path::new("."));
-        let Some(output_parent) = FileDialog::new()
-            .set_directory(initial_directory)
+        let Some(source_dir) = FileDialog::new()
+            .set_title("Choose canonical Whisper source (safetensors, config.json, tokenizer.json)")
             .pick_folder()
         else {
             return;
         };
-        let Some(checkpoint_stem) = checkpoint.file_stem().and_then(|stem| stem.to_str()) else {
-            self.state.status_line =
-                "ERROR: checkpoint filename has no usable model name".to_string();
+        let Some(output_parent) = FileDialog::new()
+            .set_title("Choose where to create the prepared model folder")
+            .set_directory(source_dir.parent().unwrap_or_else(|| Path::new(".")))
+            .pick_folder()
+        else {
             return;
         };
-        let output_dir = output_parent.join(format!("{checkpoint_stem}-burnpack"));
+        let Some(model_name) = source_dir.file_name().and_then(|name| name.to_str()) else {
+            self.state.status_line = "ERROR: source folder has no usable model name".to_string();
+            return;
+        };
+        let output_dir = output_parent.join(format!("{model_name}-native"));
         if output_dir.exists() {
             self.state.status_line = format!(
                 "ERROR: refusing to overwrite existing model directory {}",
@@ -526,20 +506,19 @@ impl GuiApplication {
         self.state.operation = GuiOperation::PreparingModel;
         self.state.status_line = format!(
             "Preparing native model from {}; this may take a while...",
-            display_path(&checkpoint)
+            display_path(&source_dir)
         );
         std::thread::spawn(move || {
-            let message = convert_pytorch_checkpoint(&checkpoint, &tokenizer, &output_dir)
-                .map_or_else(
-                    |error| GuiMessage::Failure {
-                        recording_id: None,
-                        operation: "model preparation".to_string(),
-                        message: error.to_string(),
-                    },
-                    |artifacts| GuiMessage::ModelPrepared {
-                        model_dir: artifacts.root,
-                    },
-                );
+            let message = prepare_safetensors_model(&source_dir, &output_dir).map_or_else(
+                |error| GuiMessage::Failure {
+                    recording_id: None,
+                    operation: "model preparation".to_string(),
+                    message: error.to_string(),
+                },
+                |artifacts| GuiMessage::ModelPrepared {
+                    model_dir: artifacts.root,
+                },
+            );
             let _ = sender.send(message);
         });
     }
@@ -1628,7 +1607,7 @@ impl ApplicationHandler for GuiApplication {
     }
 }
 
-#[cfg(all(test, windows, feature = "cuda-native"))]
+#[cfg(all(test, windows))]
 #[path = "gui_runtime_test.rs"]
 mod runtime_test;
 

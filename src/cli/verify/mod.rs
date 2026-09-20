@@ -43,7 +43,7 @@ pub struct VctkCanaryArgs {
     /// Receipt destination. The parent directory is created when needed.
     #[facet(args::named)]
     pub receipt: Option<String>,
-    /// Local native tch/LibTorch `TorchScript` or legacy Burn Whisper model directory.
+    /// Local canonical safetensors Whisper model directory.
     #[facet(args::named)]
     pub model_dir: Option<String>,
     /// Maximum decoder tokens for the canary.

@@ -52,14 +52,13 @@ Get-FileHash -LiteralPath $paths -Algorithm SHA256 | ConvertTo-Json | Set-Conten
 } | ConvertTo-Json | Set-Content "$out/settings.json"
 
 $savedEnvironment = @{}
-foreach ($name in @('ORT_DYLIB_PATH', 'TEAMY_TRANSCRIBER_CUDA_DEVICE', 'TEAMY_TRANSCRIBER_BACKEND',
+foreach ($name in @('ORT_DYLIB_PATH', 'TEAMY_TRANSCRIBER_CUDA_DEVICE',
     'TEAMY_TRANSCRIBER_CUDA_BATCH_SIZE', 'TEAMY_TRANSCRIBER_CUDA_MATH')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
     $env:ORT_DYLIB_PATH = $OnnxRuntimeDll
     $env:TEAMY_TRANSCRIBER_CUDA_DEVICE = '0'
-    $env:TEAMY_TRANSCRIBER_BACKEND = 'cuda'
     $env:TEAMY_TRANSCRIBER_CUDA_BATCH_SIZE = [string]$NativeBatch
     $env:TEAMY_TRANSCRIBER_CUDA_MATH = 'tf32'
     $engines = @('native', 'python', 'rust')

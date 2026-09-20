@@ -1,6 +1,6 @@
 # Native Whisper inference
 
-The default backend defines Whisper's encoder and decoder in Rust and
+The inference backend defines Whisper's encoder and decoder in Rust and
 uses custom CUDA kernels plus cuBLAS. Model files contain numerical tensors,
 dimensions, and tokenizer data. The native build has no LibTorch, TorchScript,
 Python, or cuDNN runtime dependency.
@@ -33,26 +33,15 @@ that case. With no `-Root`, `./update.ps1` installs into `CARGO_INSTALL_ROOT`,
 then `CARGO_HOME`, or the user's `.cargo` directory, in that order. Pass `-Root`
 explicitly if you use Cargo's `install.root` configuration.
 
-For the retained LibTorch implementation, including CPU and TorchScript models:
+The application requires an NVIDIA GPU. CPU Whisper, TorchScript, LibTorch,
+Burnpack and packed-NPY backends have been removed; the local `pre-cuda-only` tag
+preserves them. Existing recordings and transcript history remain readable.
+Supply canonical safetensors weights for this runtime. The build has no inference
+backend feature switch, and the installer has no `-Backend` option.
 
-```powershell
-./update.ps1 -Backend tch -Root <legacy-install-directory>
-# Equivalent build selection (requires the matching LIBTORCH):
-cargo build --release --no-default-features --features tch-native
-$env:TEAMY_TRANSCRIBER_TORCH_DEVICE = '-1' # CPU
-```
-
-The default CUDA build requires an NVIDIA GPU; it does not fall back to LibTorch.
-The explicit `tch-native` build needs no custom CUDA toolkit. To include both
-backends, build with `--features tch-native` and supply both sets of runtime DLLs.
-
-Use the existing recording workflow with `--model-dir <prepared-model>`. The
-`cuda-native` feature selects the CUDA implementation for safetensors packages.
-`TEAMY_TRANSCRIBER_CUDA_DEVICE` selects a device index (default zero). A combined
-build can use `TEAMY_TRANSCRIBER_BACKEND=tch` for the retained implementation;
-its existing `TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` CPU selection is preserved.
-TorchScript requires the explicit LibTorch build; Burn packages retain their
-previous compatibility path. Model preparation and inference remain offline.
+Use the recording workflow with `--model-dir <prepared-model>`.
+`TEAMY_TRANSCRIBER_CUDA_DEVICE` selects a device index (default zero). Model
+preparation and inference remain offline.
 
 Native application builds use TF32 tensor-core matrix multiplication with FP32
 storage and reductions. Set `TEAMY_TRANSCRIBER_CUDA_MATH=fp32` for the full-FP32
@@ -104,8 +93,7 @@ requests. Cancelled clips restore their latest transcript state, including edits
 or return to pending when no transcript exists. Failure preserves completed
 transcripts and records failure for the remaining started clips. The resident
 worker drains cancelled requests before reuse and joins when its owner closes.
-Legacy backends retain sequential decoding. Clip boundaries and export ordering
-are unchanged by batching.
+Clip boundaries and export ordering are unchanged by batching.
 
 The desktop event loop sleeps when idle. Worker and tray messages wake it
 directly, and text/progress/input changes request a new frame. Microphone
@@ -139,7 +127,6 @@ with explicit CUDA precision and greedy decoding. It accepts the same supplied
 mel features, or `--wav-input` uses WhisperX's own CPU frontend for complete
 WAV-to-text comparison. `tools/summarize_asr.py` checks repeated output stability,
 termination, token matches, word errors, cold process startup and warm latency.
-`examples/whisper_bench.rs` preserves the existing Rust/tch comparison.
 `tools/compare-asr.ps1` alternates fresh native/Python processes over several
 rounds, captures GPU state and binary/script hashes, and produces local summaries.
 It can also rotate the pinned [Rust WhisperX ASR adapter](../tools/rust-whisperx-bench/README.md).
@@ -188,7 +175,7 @@ to a small prepared single-file model and `TEAMY_TRANSCRIBER_TEST_WAV` to a shor
 speech WAV, then run:
 
 ```powershell
-cargo test --release --no-default-features --features cuda-native --test transcription_session -- --ignored --test-threads=1
+cargo test --release --test transcription_session -- --ignored --test-threads=1
 ```
 
 On Windows, `gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription`
@@ -204,7 +191,7 @@ a visual-appearance test. The deadline helper does not poll the application
 during inference, so missing worker wakeups cannot pass accidentally.
 
 ```powershell
-cargo test --release --no-default-features --features cuda-native --lib gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription -- --ignored --exact --test-threads=1
+cargo test --release --lib gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription -- --ignored --exact --test-threads=1
 ```
 
 For standard Whisper suppression, pass the canonical `generation_config.json`
@@ -319,7 +306,7 @@ small canonical prepared model in `TEAMY_TRANSCRIBER_TEST_MODEL`; it can run wit
 an invalid CUDA device index to verify that silence avoids GPU initialization:
 
 ```powershell
-cargo test --release --no-default-features --features cuda-native --test transcription_speech -- --ignored --test-threads=1
+cargo test --release --test transcription_speech -- --ignored --test-threads=1
 ```
 
 The exporter needs Python/Torch only during artifact preparation, records
