@@ -1,12 +1,11 @@
 # Native Whisper inference
 
-This experimental backend defines Whisper's encoder and decoder in Rust and
+The default backend defines Whisper's encoder and decoder in Rust and
 uses custom CUDA kernels plus cuBLAS. Model files contain numerical tensors,
 dimensions, and tokenizer data. The native build has no LibTorch, TorchScript,
 Python, or cuDNN runtime dependency.
 
-The default application build retains its existing `tch-native` backend while
-the performance and quality comparison is underway. Build the native option:
+Build the native release and stage its runtime DLLs:
 
 ```powershell
 ./tools/build-cuda-native.ps1
@@ -23,21 +22,37 @@ Install the native release into an explicit directory with its CUDA runtime and
 cuBLAS DLLs:
 
 ```powershell
-./update.ps1 -Backend cuda -Root <install-directory>
+./update.ps1 -Root <install-directory>
 ```
 
 The executable is `<install-directory>/bin/teamy-transcriber.exe`. Put that
 directory before other installations on your terminal's `PATH` to select it.
 The script does not change `PATH` or install weights. It refuses to replace a
 different CUDA DLL in a shared directory; use a separate install directory in
-that case. `./update.ps1` retains the existing default tch installation.
+that case. With no `-Root`, `./update.ps1` installs into `CARGO_INSTALL_ROOT`,
+then `CARGO_HOME`, or the user's `.cargo` directory, in that order. Pass `-Root`
+explicitly if you use Cargo's `install.root` configuration.
+
+For the retained LibTorch implementation, including CPU and TorchScript models:
+
+```powershell
+./update.ps1 -Backend tch -Root <legacy-install-directory>
+# Equivalent build selection (requires the matching LIBTORCH):
+cargo build --release --no-default-features --features tch-native
+$env:TEAMY_TRANSCRIBER_TORCH_DEVICE = '-1' # CPU
+```
+
+The default CUDA build requires an NVIDIA GPU; it does not fall back to LibTorch.
+The explicit `tch-native` build needs no custom CUDA toolkit. To include both
+backends, build with `--features tch-native` and supply both sets of runtime DLLs.
 
 Use the existing recording workflow with `--model-dir <prepared-model>`. The
 `cuda-native` feature selects the CUDA implementation for safetensors packages.
 `TEAMY_TRANSCRIBER_CUDA_DEVICE` selects a device index (default zero). A combined
 build can use `TEAMY_TRANSCRIBER_BACKEND=tch` for the retained implementation;
 its existing `TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` CPU selection is preserved.
-TorchScript and Burn packages retain their previous feature requirements.
+TorchScript requires the explicit LibTorch build; Burn packages retain their
+previous compatibility path. Model preparation and inference remain offline.
 
 Native application builds use TF32 tensor-core matrix multiplication with FP32
 storage and reductions. Set `TEAMY_TRANSCRIBER_CUDA_MATH=fp32` for the full-FP32
@@ -229,13 +244,19 @@ $env:WHISPER_BATCH_TEST_WAV = '<mono-16k.wav>'
 cargo test --release --manifest-path native/Cargo.toml --lib batch::tests -- --ignored --test-threads=1
 ```
 
-These tools do not establish a full WhisperX speed claim: beam-search
-defaults, word alignment, diarization, long-form quality and comparison to a
-confirmed Rust WhisperX target remain acceptance work. Numerical parity has
-been checked on Whisper tiny and large-v3, including the 128-bin frontend.
-Development checks include local VCTK, seeded noise and English earnings-call
-excerpts; these do not establish general or multilingual accuracy. Clip-range timestamp
-exports continue to use the application workflow.
+The complete-pipeline runner `tools/compare-pipelines.ps1` compares the real
+application workflow with Python WhisperX and the pinned Rust WhisperX public
+pipeline, using matching speech detection and greedy English decoding. The Rust
+adapter selects active-row batching through public controls; it does not measure
+the stock CLI's timestamp-decoding defaults. The application also persists and
+exports recordings, while reference timers end after text assembly.
+
+This covers speech detection, transcription and source clip ranges. Beam search,
+word alignment, diarization, translation and multilingual accuracy are outside
+the validated profile. Numerical checks cover Whisper tiny and large-v3,
+including its 128-bin frontend; quality checks include local VCTK, seeded noise
+and continuous English earnings-call excerpts. Use the complete pipeline for
+end-to-end comparisons; kernel/ASR-only tools describe components.
 
 ## Source-defined speech detection
 

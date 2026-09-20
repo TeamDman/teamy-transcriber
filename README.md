@@ -6,7 +6,7 @@ The first release is deliberately narrow:
 
 - capture or import audio;
 - save an authoritative recording and clip manifest;
-- transcribe locally through a Python-free Rust `tch`/LibTorch Whisper runtime;
+- transcribe locally through source-defined Rust/CUDA Whisper, with an explicit LibTorch/CPU build available;
 - present staged transcript text without silently typing into another application;
 - provide predictable clip movement and a small set of reversible audio-preparation operations;
 - keep the GUI, tray behavior, renderer, and model runtime observable and testable.
@@ -140,28 +140,31 @@ This command accepts one `model.safetensors` file or an indexed
 `tokenizer.json`; it performs no download and refuses to overwrite an
 existing directory.
 
-The native model package or source checkpoint is assumed to be available
-locally for this implementation slice; the application does not download
+The native model package or source checkpoint must be available
+locally; the application does not download
 model assets. The preferred package contains canonical safetensors plus
 `dims.json` and `tokenizer.json`; the Rust preparation path has been exercised
-with a real `openai/whisper-tiny` package. An optional TorchScript package
+with real `openai/whisper-tiny` and `openai/whisper-large-v3` packages. The default
+CUDA build defines computation in Rust and CUDA source and reads the tensor
+weights directly. An optional TorchScript package
 contains `model.pt`, `dims.json`, and `tokenizer.json`. The TorchScript graph must expose
 `encoder` and `decoder` methods and is loaded through the same pinned
-`tch`/LibTorch family as `teamy-tts`; set `LIBTORCH` for builds. CUDA device 0
+`tch`/LibTorch family as `teamy-tts`; use `--no-default-features --features tch-native`
+and set `LIBTORCH` for that build. CUDA device 0
 is the default when LibTorch reports CUDA availability; set
 `TEAMY_TRANSCRIBER_TORCH_DEVICE=-1` to run the same tch graph on the CPU. When
 running from a checkout, put the matching LibTorch `bin` directory on `PATH`;
 packaged builds must ship the matching LibTorch DLLs beside the executable. The runtime also
 recognizes the existing Burnpack `model.bpk` package and older packed-NPY
 `encoder/`/`decoder/` layout during migration, but those are legacy compatibility
-paths rather than the active tch CPU/GPU runtime. If a selected folder contains a
+paths. If a selected folder contains a
 CTranslate2/faster-whisper `model.bin` instead, the GUI identifies that
-incompatible format; CTranslate2 is not a native tch model and is not loaded
+incompatible format; CTranslate2 is not a supported native model and is not loaded
 by this Python-free CLI.
 
 The Rust preparation path accepts a canonical Whisper `model.safetensors`
 file or indexed shard set plus matching config and tokenizer files, validates
-the manifest, and packages the sidecar dimensions for direct `tch` inference.
+the manifest, and packages the sidecar dimensions for native CUDA or `tch` inference.
 Optional TorchScript generation remains later work; CTranslate2 `model.bin`
 is not reverse-converted.
 
@@ -194,11 +197,14 @@ diagnostic.
 
 ## Development
 
-An optional source-defined CUDA Whisper backend is being validated. Its model
-topology is Rust code, its numerical kernels are CUDA, and its weights remain
-separate safetensors files. See [native inference](native/README.md) for building,
-comparison tools, and the current validation limits. The default build retains
-the existing tch backend during this work.
+Native CUDA is the default build and installer backend. Model topology is Rust
+code, numerical kernels are CUDA, and weights remain separate safetensors files.
+Run `./tools/build-cuda-native.ps1` to build and stage runtime DLLs, or
+`./update.ps1 -Root <install-directory>` to install. Use `./update.ps1 -Backend tch`
+for the retained LibTorch/CPU implementation. Neither installer downloads weights.
+See [native inference](native/README.md) for prerequisites, model preparation,
+comparison tools and validation limits. Current measured hardware is Windows x64
+with an RTX 4090; the native build requires a compatible CUDA toolkit and GPU.
 
 Run the repository quality gate:
 

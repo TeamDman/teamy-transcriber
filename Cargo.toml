@@ -81,7 +81,7 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [features]
-default = ["tch-native"]
+default = ["cuda-native"]
 tch-native = ["dep:tch", "dep:safetensors", "dep:half", "dep:memmap2"]
 cuda-native = ["dep:teamy-whisper-native", "dep:safetensors", "dep:half", "dep:memmap2"]
 extended_observability = []
