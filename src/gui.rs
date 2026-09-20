@@ -69,6 +69,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::channel;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::dpi::PhysicalSize;
@@ -81,6 +82,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::ControlFlow;
 use winit::event_loop::EventLoop;
+use winit::event_loop::EventLoopProxy;
 use winit::keyboard::Key;
 use winit::keyboard::ModifiersState;
 use winit::keyboard::NamedKey;
@@ -110,8 +112,8 @@ const INACTIVE: Rgba = Rgba::new(0x81, 0xa9, 0x91, 0xff);
 /// presentation device cannot be initialized.
 pub fn run() -> Result<()> {
     let event_loop = EventLoop::new().wrap_err("failed to create GUI event loop")?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut application = GuiApplication::new()?;
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let mut application = GuiApplication::new(event_loop.create_proxy())?;
     event_loop
         .run_app(&mut application)
         .wrap_err("GUI event loop failed")
@@ -119,25 +121,36 @@ pub fn run() -> Result<()> {
 
 struct GuiApplication {
     window: Option<Window>,
+    window_attributes: winit::window::WindowAttributes,
     renderer: Option<VulkanRenderer>,
     state: GuiState,
     app_home: AppHome,
     store: RecordingStore,
     media_tools: MediaToolConfig,
     preferences: GuiPreferences,
-    message_tx: Sender<GuiMessage>,
+    message_tx: GuiMessageSender,
     message_rx: Receiver<GuiMessage>,
     stop_recording: Option<Arc<AtomicBool>>,
     operation_cancel: Option<Arc<AtomicBool>>,
     transcription_session: Arc<Mutex<TranscriptionSession>>,
     close_requested: bool,
+    redraw_pending: bool,
+    last_animation: Instant,
     #[cfg(windows)]
     tray: Option<tray::TrayController>,
 }
 
 impl GuiApplication {
-    fn new() -> Result<Self> {
+    fn new(wake: EventLoopProxy<()>) -> Result<Self> {
         let app_home = resolve_gui_app_home()?;
+        Self::from_home(app_home, true, wake)
+    }
+
+    fn from_home(
+        app_home: AppHome,
+        desktop_integration: bool,
+        wake: EventLoopProxy<()>,
+    ) -> Result<Self> {
         let store = RecordingStore::new(app_home.0.clone());
         let preferences = load_preferences(&app_home);
         let model_dir = preferences
@@ -180,7 +193,8 @@ impl GuiApplication {
                     .cloned()
             });
         let current_recording = preferred_recording.or_else(|| recordings.last().cloned());
-        let (message_tx, message_rx) = channel();
+        let (sender, message_rx) = channel();
+        let message_tx = GuiMessageSender { sender, wake };
         let mut state = GuiState::new(
             model_dir,
             save_dir,
@@ -192,6 +206,10 @@ impl GuiApplication {
         state.set_recording(current_recording.as_ref(), &store);
         let mut application = Self {
             window: None,
+            window_attributes: Window::default_attributes()
+                .with_title("Teamy-Transcriber")
+                .with_inner_size(PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT))
+                .with_min_inner_size(PhysicalSize::new(720, 520)),
             renderer: None,
             state,
             app_home,
@@ -204,11 +222,13 @@ impl GuiApplication {
             operation_cancel: None,
             transcription_session: Arc::default(),
             close_requested: false,
+            redraw_pending: false,
+            last_animation: Instant::now(),
             #[cfg(windows)]
             tray: None,
         };
         #[cfg(windows)]
-        {
+        if desktop_integration {
             let hotkey_enabled = application
                 .preferences
                 .global_hotkey_enabled
@@ -221,7 +241,9 @@ impl GuiApplication {
             }
         }
         application.inspect_model();
-        application.refresh_devices();
+        if desktop_integration {
+            application.refresh_devices();
+        }
         Ok(application)
     }
 
@@ -1161,10 +1183,13 @@ impl GuiApplication {
         });
     }
 
-    fn drain_messages(&mut self) {
+    fn drain_messages(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(message) = self.message_rx.try_recv() {
             self.handle_message(message);
+            changed = true;
         }
+        changed
     }
 
     #[expect(
@@ -1199,8 +1224,8 @@ impl GuiApplication {
                 TrayAction::ShowWindow => {
                     if let Some(window) = self.window.as_ref() {
                         window.set_visible(true);
-                        window.request_redraw();
                     }
+                    self.request_redraw();
                 }
                 TrayAction::ToggleRecording => self.handle_action(GuiAction::ToggleRecording),
                 TrayAction::Exit => {
@@ -1449,16 +1474,21 @@ impl GuiApplication {
 }
 
 impl ApplicationHandler for GuiApplication {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        if self.drain_messages() {
+            self.request_redraw();
+        }
+        if self.close_requested && matches!(self.state.operation, GuiOperation::Idle) {
+            event_loop.exit();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
 
-        let attributes = Window::default_attributes()
-            .with_title("Teamy-Transcriber")
-            .with_inner_size(PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT))
-            .with_min_inner_size(PhysicalSize::new(720, 520));
-        let Ok(window) = event_loop.create_window(attributes) else {
+        let Ok(window) = event_loop.create_window(self.window_attributes.clone()) else {
             event_loop.exit();
             return;
         };
@@ -1467,6 +1497,7 @@ impl ApplicationHandler for GuiApplication {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
+                self.request_redraw();
             }
             Err(error) => {
                 eprintln!("failed to initialize Teamy-Transcriber GUI: {error:#}");
@@ -1481,6 +1512,7 @@ impl ApplicationHandler for GuiApplication {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let redraw = matches!(event, WindowEvent::RedrawRequested);
         match event {
             WindowEvent::CloseRequested => {
                 if matches!(self.state.operation, GuiOperation::Idle) {
@@ -1562,21 +1594,49 @@ impl ApplicationHandler for GuiApplication {
             WindowEvent::RedrawRequested => self.draw(event_loop),
             _ => {}
         }
+        if !redraw {
+            self.request_redraw();
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.drain_messages();
+        if self.drain_messages() {
+            self.request_redraw();
+        }
         if self.close_requested && matches!(self.state.operation, GuiOperation::Idle) {
             event_loop.exit();
             return;
         }
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        // Worker/tray messages wake the loop through GuiMessageSender. Idle
+        // windows need no polling or repeated CPU rasterization/GPU uploads.
+        if self.state.recording {
+            let now = Instant::now();
+            let interval = Duration::from_millis(16);
+            if now.duration_since(self.last_animation) >= interval {
+                self.last_animation = now;
+                self.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_animation + interval));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
 
+#[cfg(all(test, windows, feature = "cuda-native"))]
+#[path = "gui_runtime_test.rs"]
+mod runtime_test;
+
 impl GuiApplication {
+    fn request_redraw(&mut self) {
+        if !self.redraw_pending
+            && let Some(window) = self.window.as_ref()
+        {
+            self.redraw_pending = true;
+            window.request_redraw();
+        }
+    }
+
     fn window_size(&self) -> PhysicalSize<u32> {
         self.window.as_ref().map_or(
             PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT),
@@ -1588,12 +1648,17 @@ impl GuiApplication {
         let (Some(window), Some(renderer)) = (self.window.as_ref(), self.renderer.as_mut()) else {
             return;
         };
+        self.redraw_pending = false;
         self.state.phase += 0.025;
         match renderer.draw(&self.state) {
             Ok(true) => {
                 if let Err(error) = renderer.recreate_swapchain(window) {
                     eprintln!("failed to recreate GUI swapchain: {error:#}");
                     event_loop.exit();
+                } else {
+                    // An out-of-date acquisition may not have presented a
+                    // frame. Schedule its replacement even without new input.
+                    self.request_redraw();
                 }
             }
             Ok(false) => {}
@@ -1602,6 +1667,25 @@ impl GuiApplication {
                 event_loop.exit();
             }
         }
+    }
+}
+
+/// A worker result both enters the existing reducer queue and wakes the GUI.
+/// Sending the wake after the message avoids sleeping with an unread result.
+#[derive(Clone, Debug)]
+pub(crate) struct GuiMessageSender {
+    sender: Sender<GuiMessage>,
+    wake: EventLoopProxy<()>,
+}
+
+impl GuiMessageSender {
+    fn send(
+        &self,
+        message: GuiMessage,
+    ) -> std::result::Result<(), std::sync::mpsc::SendError<GuiMessage>> {
+        self.sender.send(message)?;
+        let _ = self.wake.send_event(());
+        Ok(())
     }
 }
 

@@ -7,13 +7,13 @@
 )]
 
 use super::GuiMessage;
+use super::GuiMessageSender;
 use super::TrayAction;
 use eyre::Context;
 use eyre::ContextCompat;
 use eyre::Result;
 use eyre::bail;
 use std::ffi::c_void;
-use std::sync::mpsc::Sender;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::sync_channel;
 use std::thread;
@@ -93,7 +93,7 @@ pub(crate) struct TrayController {
 }
 
 impl TrayController {
-    pub(crate) fn start(sender: Sender<GuiMessage>, hotkey_enabled: bool) -> Result<Self> {
+    pub(crate) fn start(sender: GuiMessageSender, hotkey_enabled: bool) -> Result<Self> {
         let (ready_sender, ready_receiver) = sync_channel(1);
         let thread = thread::Builder::new()
             .name("teamy-transcriber-tray".to_string())
@@ -149,13 +149,13 @@ impl Drop for TrayController {
 
 #[derive(Debug)]
 struct TrayState {
-    sender: Sender<GuiMessage>,
+    sender: GuiMessageSender,
     hotkey_enabled: bool,
     taskbar_created_message: u32,
 }
 
 fn run_tray(
-    sender: Sender<GuiMessage>,
+    sender: GuiMessageSender,
     hotkey_enabled: bool,
     ready_sender: &SyncSender<std::result::Result<isize, String>>,
 ) -> Result<()> {

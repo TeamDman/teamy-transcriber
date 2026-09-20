@@ -58,6 +58,11 @@ the cache so repaired model files can be retried. Cancellation retains completed
 clip transcripts and leaves the session available for the next request. The
 one-shot recording CLI loads a model for each process.
 
+The desktop event loop sleeps when idle. Worker and tray messages wake it
+directly, and text/progress/input changes request a new frame. Microphone
+animation retains a bounded timer while recording. Inference no longer shares
+the CPU with continuous rasterization of an unchanged transcript.
+
 The resident frontend reuses its FFT plan and skips zero filter coefficients
 and wholly padded frames. It accepts complete windows up to 30 seconds; the
 existing application workflow remains responsible for chunking longer audio.
@@ -108,6 +113,22 @@ speech WAV, then run:
 
 ```powershell
 cargo test --release --no-default-features --features cuda-native --test transcription_session -- --ignored
+```
+
+On Windows, `gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription`
+is an opt-in release GUI test. Set `TEAMY_TRANSCRIBER_TEST_MODEL`, a speech WAV
+longer than 60 seconds in `TEAMY_TRANSCRIBER_TEST_WAV`, and a new directory in
+`TEAMY_TRANSCRIBER_GUI_TEST_HOME`. It opens an invisible Winit/Vulkan window,
+resizes it, uses real import/transcribe handlers, checks two complete requests, then closes
+during a third. It checks projected/persisted text, idle event counts and session
+release, and saves `gui-receipt.json` in that isolated home. No tray, hotkey,
+microphone capture or dialogs are enabled. The hidden HWND needs explicit
+delivery of requested redraws; no desktop screenshot is taken and this is not
+a visual-appearance test. The deadline helper does not poll the application
+during inference, so missing worker wakeups cannot pass accidentally.
+
+```powershell
+cargo test --release --no-default-features --features cuda-native --lib gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription -- --ignored --exact --test-threads=1
 ```
 
 For standard Whisper suppression, pass the canonical `generation_config.json`
