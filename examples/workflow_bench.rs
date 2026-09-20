@@ -156,11 +156,17 @@ fn run_recording(
         speech || cursor == prepared.metadata.duration_us,
         "source duration was not fully covered"
     );
-    let exported = export_recording_with_timestamps(store, id, None)?;
-    ensure!(
-        exported.transcript_count == report.chunks.len(),
-        "persisted transcript count mismatch"
-    );
+    if report.no_speech {
+        ensure!(report.chunks.is_empty(), "silent recording has transcripts");
+        // The application has no transcript to export for a silent recording.
+        // Keep the completed VAD/import/persistence request in the receipt.
+    } else {
+        let exported = export_recording_with_timestamps(store, id, None)?;
+        ensure!(
+            exported.transcript_count == report.chunks.len(),
+            "persisted transcript count mismatch"
+        );
+    }
     let text = report
         .chunks
         .iter()

@@ -3,13 +3,47 @@
 use eyre::Context;
 use eyre::Result;
 use eyre::ensure;
-use serde_json::json;
+use facet::Facet;
 use sha2::Digest;
 use sha2::Sha256;
 use std::path::Path;
 use std::time::Instant;
 use teamy_transcriber::native_whisper::frontend;
 use teamy_transcriber::native_whisper::model;
+
+#[derive(Facet)]
+struct Run {
+    index: usize,
+    frontend_ms: f64,
+    inference_ms: f64,
+    total_ms: f64,
+    text: String,
+}
+
+#[derive(Facet)]
+struct ModelHash {
+    name: Option<String>,
+    sha256: String,
+}
+
+#[derive(Facet)]
+struct Receipt {
+    schema: u32,
+    backend: String,
+    scope: String,
+    device_setting: String,
+    cuda_available: bool,
+    cuda_device_count: i64,
+    revision: String,
+    profile: String,
+    audio_sha256: String,
+    audio_seconds: f64,
+    model_hashes: Vec<ModelHash>,
+    inspect_ms: f64,
+    load_ms: f64,
+    measured_elapsed_ms: f64,
+    runs: Vec<Run>,
+}
 
 fn main() -> Result<()> {
     let started = Instant::now();
@@ -71,27 +105,57 @@ fn main() -> Result<()> {
             .wrap_err("real Whisper inference failed")?;
         let inference_ms = decode_start.elapsed().as_secs_f64() * 1_000.0;
         let total_ms = frontend_ms + inference_ms;
-        runs.push(json!({"index":index,"frontend_ms":frontend_ms,"inference_ms":inference_ms,"total_ms":total_ms,"text":text}));
+        runs.push(Run {
+            index,
+            frontend_ms,
+            inference_ms,
+            total_ms,
+            text,
+        });
     }
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
     // Hash after timing: verification IO must not masquerade as inference work.
-    let mut model_hashes = Vec::new();
-    for path in &artifacts.safetensors_paths {
-        let bytes = std::fs::read(path)?;
-        model_hashes
-            .push(json!({"name":path.file_name().map(|name| name.to_string_lossy()),"sha256":format!("{:x}",Sha256::digest(&bytes))}));
-    }
+    let model_hashes = hash_model(&artifacts)?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({
-            "schema":1,"backend":"rust-tch","scope":"ASR only; fixed English greedy prompt, no word alignment or diarization",
-            "device_setting":std::env::var("TEAMY_TRANSCRIBER_TORCH_DEVICE").unwrap_or_else(|_| "0".to_string()),
-            "cuda_available":tch::Cuda::is_available(),"cuda_device_count":tch::Cuda::device_count(),
-            "revision":env!("GIT_REVISION"),"profile":if cfg!(debug_assertions) {"debug"} else {"release"},
-            "audio_sha256":format!("{:x}",Sha256::digest(std::fs::read(audio_path)?)),
-            "audio_seconds":samples.len() as f64 / 16_000.0,"model_hashes":model_hashes,
-            "inspect_ms":inspect_ms,"load_ms":load_ms,"measured_elapsed_ms":elapsed_ms,"runs":runs
-        }))?
+        facet_json::to_string_pretty(&Receipt {
+            schema: 1,
+            backend: "rust-tch".into(),
+            scope: "ASR only; fixed English greedy prompt, no word alignment or diarization".into(),
+            device_setting: std::env::var("TEAMY_TRANSCRIBER_TORCH_DEVICE")
+                .unwrap_or_else(|_| "0".to_string()),
+            cuda_available: tch::Cuda::is_available(),
+            cuda_device_count: tch::Cuda::device_count(),
+            revision: env!("GIT_REVISION").into(),
+            profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+            .into(),
+            audio_sha256: format!("{:x}", Sha256::digest(std::fs::read(audio_path)?)),
+            audio_seconds: f64::from(u32::try_from(samples.len())?) / 16_000.0,
+            model_hashes,
+            inspect_ms,
+            load_ms,
+            measured_elapsed_ms: elapsed_ms,
+            runs,
+        })?
     );
     Ok(())
+}
+
+fn hash_model(artifacts: &model::WhisperModelArtifacts) -> Result<Vec<ModelHash>> {
+    artifacts
+        .safetensors_paths
+        .iter()
+        .map(|path| {
+            Ok(ModelHash {
+                name: path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+                sha256: format!("{:x}", Sha256::digest(std::fs::read(path)?)),
+            })
+        })
+        .collect()
 }
