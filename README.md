@@ -185,7 +185,10 @@ record the native CUDA device/math/batch settings instead of LibTorch diagnostic
 Native CUDA is the only inference backend. Model topology is Rust
 code, numerical kernels are CUDA, and weights remain separate safetensors files.
 Run `./tools/build-cuda-native.ps1` to build and stage runtime DLLs, or
-`./update.ps1 -Root <install-directory>` to install. The installer does not download weights.
+`./update.ps1` to install in the usual Cargo bin directory. Use
+`./update.ps1 -Root <install-directory>` for an isolated installation. The installer
+stages CUDA DLLs beside the executable and verifies it starts with only Windows
+system directories on PATH. It preserves model settings and does not download weights.
 See [native inference](native/README.md) for prerequisites, model preparation,
 comparison tools and validation limits. Current measured hardware is Windows x64
 with an RTX 4090; the native build requires a compatible CUDA toolkit and GPU.

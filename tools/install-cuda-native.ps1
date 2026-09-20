@@ -48,8 +48,27 @@ try {
     } finally {
         $env:CUDA_PATH = $savedCuda
     }
-    Write-Output "Installed native CUDA transcription: $(Join-Path $destination 'teamy-transcriber.exe')"
-    Write-Output "To select it in a terminal, put $destination before other installations on PATH."
+    $executable = Join-Path $destination 'teamy-transcriber.exe'
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        throw "Missing installed executable: $executable"
+    }
+    # Match the TTS installer's loader check: runtime DLLs must be usable
+    # beside the executable, without compiler directories on PATH.
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+        & $executable --version
+        if ($LASTEXITCODE -ne 0) { throw 'Installed executable failed its runtime DLL check.' }
+    } finally {
+        $env:PATH = $savedPath
+    }
+    Write-Output "Installed native CUDA transcription: $executable"
+    $resolved = Get-Command teamy-transcriber -CommandType Application -ErrorAction SilentlyContinue
+    if ($resolved -and [string]::Equals($resolved.Source, $executable, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Output 'teamy-transcriber on PATH now resolves to this installation.'
+    } else {
+        Write-Output "To select it in a terminal, put $destination before other installations on PATH."
+    }
 } finally {
     Pop-Location
 }

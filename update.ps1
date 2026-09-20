@@ -1,3 +1,17 @@
+<#
+.SYNOPSIS
+Build and install the CUDA version of Teamy Transcriber.
+.DESCRIPTION
+Installs into CARGO_INSTALL_ROOT, then CARGO_HOME, then the user's .cargo
+directory unless -Root is supplied. Stages CUDA runtime DLLs beside the
+executable and verifies it can start without CUDA directories on PATH.
+Requires Rust, the Windows C++ build tools and a CUDA toolkit. Model weights
+and existing application settings are preserved; no weights are downloaded.
+.EXAMPLE
+./update.ps1
+.EXAMPLE
+./update.ps1 -Root C:\path\to\isolated-install -CudaRoot C:\path\to\cuda
+#>
 [CmdletBinding()]
 param(
     [string]$Root,
