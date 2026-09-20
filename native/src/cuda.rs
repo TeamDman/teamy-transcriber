@@ -17,6 +17,7 @@ unsafe extern "C" {
     fn tw_download(s: *mut c_void, dst: *mut f32, src: *const f32, n: usize) -> i32;
     fn tw_copy(s: *mut c_void, dst: *mut f32, src: *const f32, n: usize) -> i32;
     fn tw_sync(s: *mut c_void) -> i32;
+    fn tw_free_bytes(s: *mut c_void, free_bytes: *mut usize) -> i32;
     fn tw_linear(
         s: *mut c_void,
         x: *const f32,
@@ -139,6 +140,12 @@ fn checked(code: i32) -> Result<()> {
 #[derive(Debug)]
 pub(crate) struct Device(NonNull<c_void>);
 impl Device {
+    pub fn free_bytes(&self) -> Result<usize> {
+        let mut bytes = 0;
+        // SAFETY: output pointer is valid and the owned CUDA context is live.
+        checked(unsafe { tw_free_bytes(self.0.as_ptr(), &mut bytes) })?;
+        Ok(bytes)
+    }
     pub fn new(index: i32, tf32: bool) -> Result<Rc<Self>> {
         ensure!(index >= 0, "CUDA device must be nonnegative");
         let mut raw = std::ptr::null_mut();

@@ -88,6 +88,67 @@ mod tests {
             engine.transcribe_mel(&mels[0], 448)?.tokens,
             references[0].tokens
         );
+        // Cancel before encoding, during the first decoder step, and after a
+        // persisted prefix. None may poison a later use of the shared caches.
+        use std::cell::Cell;
+        let stop = Cell::new(false);
+        let inputs = [&mels[0][..], &mels[1][..], &mels[2][..]];
+        let mut calls = 0;
+        let before =
+            engine.transcribe_mel_batch_with(&inputs, 448, &mut || true, &mut |_, _| {
+                calls += 1;
+                Ok(())
+            })?;
+        assert!(before.cancelled && before.transcripts.is_empty());
+        assert_eq!(calls, 0);
+        let mut checks = 0;
+        let during = engine.transcribe_mel_batch_with(
+            &inputs,
+            448,
+            &mut || {
+                checks += 1;
+                checks == 6
+            },
+            &mut |_, _| {
+                calls += 1;
+                Ok(())
+            },
+        )?;
+        assert!(during.cancelled && during.transcripts.is_empty());
+        assert_eq!(calls, 0);
+        let prefix = engine.transcribe_mel_batch_with(
+            &inputs,
+            448,
+            &mut || stop.get(),
+            &mut |index, transcript| {
+                assert_eq!(index, 0);
+                assert_eq!(transcript.tokens, references[0].tokens);
+                stop.set(true);
+                Ok(())
+            },
+        )?;
+        assert!(prefix.cancelled && prefix.transcripts.len() == 1);
+        let mut checks = 0;
+        assert!(
+            engine
+                .transcribe_mel_interruptible(&mels[0], 448, &mut || {
+                    checks += 1;
+                    checks == 3
+                })?
+                .is_none()
+        );
+        let again = engine.transcribe_mel_batch(&inputs, 448)?;
+        assert!(!again.cancelled);
+        assert_eq!(again.transcripts.len(), references.len());
+        for (actual, expected) in again.transcripts.iter().zip(&references) {
+            assert_eq!(actual.tokens, expected.tokens);
+        }
+        assert_eq!(
+            engine.transcribe_mel(&mels[0], 448)?.tokens,
+            references[0].tokens
+        );
+        assert!((1..=MAX_BATCH_SIZE).contains(&engine.fitting_batch_size(MAX_BATCH_SIZE)?));
+        assert!(engine.fitting_batch_size(0).is_err());
         Ok(())
     }
 }
@@ -95,6 +156,8 @@ mod tests {
 #[derive(Debug, Serialize)]
 pub struct BatchDecodeResult {
     pub transcripts: Vec<BatchTranscript>,
+    /// Only the completed, delivered prefix is returned after cancellation.
+    pub cancelled: bool,
     /// Serial encoders and prompt prefills for every input, with GPU completion.
     pub prepare_ms: f64,
     /// Concurrent greedy decoding, including host token selection and GPU completion.
@@ -120,6 +183,15 @@ pub(super) struct BatchWorkspace {
     result: Buffer,
 }
 impl BatchWorkspace {
+    fn bytes(dims: &Dims, batch: usize) -> usize {
+        4 * batch
+            * (2 * dims.text.n_text_layer
+                * dims.text.n_text_state
+                * (dims.text.n_text_ctx + dims.audio.n_audio_ctx)
+                + 11 * dims.text.n_text_state
+                + dims.text.n_vocab
+                + 1)
+    }
     fn new(device: &Rc<Device>, dims: &Dims, batch: usize) -> Result<Self> {
         ensure!(
             (1..=MAX_BATCH_SIZE).contains(&batch),
@@ -155,12 +227,7 @@ impl BatchWorkspace {
             .collect::<Result<_>>()?;
         Ok(Self {
             capacity: batch,
-            allocated_bytes: 4
-                * batch
-                * (2 * dims.text.n_text_layer * (self_size + cross_size)
-                    + 11 * width
-                    + dims.text.n_vocab
-                    + 1),
+            allocated_bytes: Self::bytes(dims, batch),
             cache,
             slots,
             x: device.alloc(batch * width)?,
@@ -178,6 +245,26 @@ impl BatchWorkspace {
 }
 
 impl Engine {
+    /// Leave 256 MiB free when sizing additional batch caches. A result of one
+    /// selects the original serial path, which needs no batch allocation.
+    pub fn fitting_batch_size(&self, requested: usize) -> Result<usize> {
+        ensure!(
+            (1..=MAX_BATCH_SIZE).contains(&requested),
+            "invalid requested batch size"
+        );
+        let existing = self.batch.as_ref().map_or(0, |w| w.capacity);
+        if existing >= requested {
+            return Ok(requested);
+        }
+        let budget = self
+            .device
+            .free_bytes()?
+            .saturating_add(self.batch_workspace_bytes())
+            .saturating_sub(256 * 1024 * 1024);
+        Ok(requested
+            .min(budget / BatchWorkspace::bytes(&self.dims, 1))
+            .max(1))
+    }
     /// Extra allocated GPU memory for batch caches/scratch, excluding the shared
     /// weights and the original single-input workspace. Allocated lazily.
     pub fn batch_workspace_bytes(&self) -> usize {
@@ -194,6 +281,19 @@ impl Engine {
         mels: &[&[f32]],
         max_tokens: usize,
     ) -> Result<BatchDecodeResult> {
+        self.transcribe_mel_batch_with(mels, max_tokens, &mut || false, &mut |_, _| Ok(()))
+    }
+
+    /// Deliver complete transcripts in input order. A completion callback may
+    /// stop the request via `should_stop`; unfinished and undelivered slots are
+    /// discarded on cancellation. Callbacks can persist results before returning.
+    pub fn transcribe_mel_batch_with(
+        &mut self,
+        mels: &[&[f32]],
+        max_tokens: usize,
+        should_stop: &mut dyn FnMut() -> bool,
+        on_complete: &mut dyn FnMut(usize, &BatchTranscript) -> Result<()>,
+    ) -> Result<BatchDecodeResult> {
         let count = mels.len();
         ensure!(
             (1..=MAX_BATCH_SIZE).contains(&count),
@@ -207,6 +307,14 @@ impl Engine {
             "expected finite Whisper mel matrices"
         );
         let started = Instant::now();
+        if should_stop() {
+            return Ok(BatchDecodeResult {
+                transcripts: Vec::new(),
+                cancelled: true,
+                prepare_ms: 0.,
+                decode_ms: 0.,
+            });
+        }
         if self.batch.as_ref().is_none_or(|w| w.capacity < count) {
             // Do not retain two large allocations while growing. A failed grow
             // releases partial allocations and leaves the serial engine usable.
@@ -216,6 +324,15 @@ impl Engine {
         let w = self.batch.as_ref().unwrap();
         let width = self.dims.text.n_text_state;
         for (slot, mel) in mels.iter().enumerate() {
+            if should_stop() {
+                self.device.sync()?;
+                return Ok(BatchDecodeResult {
+                    transcripts: Vec::new(),
+                    cancelled: true,
+                    prepare_ms: started.elapsed().as_secs_f64() * 1000.,
+                    decode_ms: 0.,
+                });
+            }
             self.encode_cached(mel, &w.slots[slot])?;
             self.decoder_tokens_cached(&self.prompt, 0, &w.slots[slot])?;
             w.norm.copy_from(
@@ -232,8 +349,14 @@ impl Engine {
         let started = Instant::now();
         let mut tokens = vec![Vec::new(); count];
         let mut ended = vec![false; count];
+        let mut transcripts = Vec::with_capacity(count);
+        let mut cancelled = false;
         let limit = max_tokens.min(self.dims.text.n_text_ctx - self.prompt.len());
         for step in 0..limit {
+            if should_stop() {
+                cancelled = true;
+                break;
+            }
             w.norm.linear(
                 self.output.as_ref().unwrap_or(&self.embed),
                 None,
@@ -263,6 +386,29 @@ impl Engine {
                     }
                 }
             }
+            while transcripts.len() < count && (ended[transcripts.len()] || step + 1 == limit) {
+                if should_stop() {
+                    cancelled = true;
+                    break;
+                }
+                let slot = transcripts.len();
+                let tokens = std::mem::take(&mut tokens[slot]);
+                let ids: Vec<_> = tokens.iter().map(|&id| id as u32).collect();
+                let text = self
+                    .tokenizer
+                    .decode(&ids, true)
+                    .map_err(|e| anyhow!(e.to_string()))?;
+                let transcript = BatchTranscript {
+                    text,
+                    tokens,
+                    ended: ended[slot],
+                };
+                on_complete(slot, &transcript)?;
+                transcripts.push(transcript);
+            }
+            if cancelled {
+                break;
+            }
             if ended.iter().all(|&done| done) || step + 1 == limit {
                 break;
             }
@@ -270,24 +416,9 @@ impl Engine {
         }
         self.device.sync()?;
         let decode_ms = started.elapsed().as_secs_f64() * 1000.;
-        let transcripts = tokens
-            .into_iter()
-            .zip(ended)
-            .map(|(tokens, ended)| {
-                let ids: Vec<_> = tokens.iter().map(|&t| t as u32).collect();
-                let text = self
-                    .tokenizer
-                    .decode(&ids, true)
-                    .map_err(|e| anyhow!(e.to_string()))?;
-                Ok(BatchTranscript {
-                    text,
-                    tokens,
-                    ended,
-                })
-            })
-            .collect::<Result<_>>()?;
         Ok(BatchDecodeResult {
             transcripts,
+            cancelled,
             prepare_ms,
             decode_ms,
         })

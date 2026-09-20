@@ -1,15 +1,18 @@
 #![cfg(feature = "cuda-native")]
 
-use eyre::{Result, ensure};
+use eyre::Result;
+use eyre::ensure;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::media::AudioProfile;
 use teamy_transcriber::storage::RecordingStore;
-use teamy_transcriber::workflow::{
-    TranscriptionOptions, TranscriptionSession, create_recording, export_recording_with_timestamps,
-    prepare_recording,
-};
+use teamy_transcriber::workflow::TranscriptionOptions;
+use teamy_transcriber::workflow::TranscriptionSession;
+use teamy_transcriber::workflow::create_recording;
+use teamy_transcriber::workflow::export_recording_with_timestamps;
+use teamy_transcriber::workflow::prepare_recording;
 
 /// Real model lifecycle regression, opt-in because it needs local CUDA/assets.
 /// Supply a small prepared single-file model and a short speech WAV. Files are
@@ -83,6 +86,14 @@ fn exercise_session(
         export_recording_with_timestamps(&store, id, None)?.transcript_count == 1,
         "cancelled work was not persisted"
     );
+    ensure!(
+        store
+            .load_recording(id)?
+            .clips
+            .iter()
+            .all(|clip| clip.status != teamy_transcriber::domain::ClipStatus::Processing),
+        "cancelled batch left a processing clip"
+    );
     let resumed = session.transcribe(&store, id, options.clone(), None, None)?;
     ensure!(
         !resumed.cancelled && resumed.chunks.len() >= 2,
@@ -116,6 +127,73 @@ fn exercise_session(
             .map(|chunk| &chunk.text)
             .eq(resumed.chunks.iter().map(|chunk| &chunk.text)),
         "a later recording inherited stale decoder state"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA and TEAMY_TRANSCRIBER_TEST_MODEL / TEAMY_TRANSCRIBER_TEST_WAV"]
+fn cuda_worker_drains_callback_failure_and_panic_before_reuse() -> Result<()> {
+    use std::cell::Cell;
+    use teamy_transcriber::native_whisper::cuda::CudaWhisperRuntime;
+    let model = PathBuf::from(std::env::var("TEAMY_TRANSCRIBER_TEST_MODEL")?);
+    let mut wav = hound::WavReader::open(std::env::var("TEAMY_TRANSCRIBER_TEST_WAV")?)?;
+    ensure!(
+        wav.spec().sample_rate == 16000 && wav.spec().channels == 1,
+        "use a normalized 16 kHz mono fixture"
+    );
+    let samples: Vec<f32> = match wav.spec().sample_format {
+        hound::SampleFormat::Float => wav.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            ensure!(wav.spec().bits_per_sample == 16, "expected PCM16");
+            wav.samples::<i16>()
+                .map(|sample| sample.map(|s| f32::from(s) / 32768.))
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let runtime = CudaWhisperRuntime::load(model).map_err(|e| eyre::eyre!(e))?;
+    let expected = runtime
+        .transcribe(samples.clone(), 448)
+        .map_err(|e| eyre::eyre!(e))?;
+    ensure!(!expected.trim().is_empty(), "supply speech audio");
+    let stopped = Cell::new(false);
+    let mut count = 0;
+    ensure!(
+        runtime
+            .transcribe_batch(
+                vec![samples.clone(); 3],
+                448,
+                &mut || stopped.get(),
+                &mut |index, text| {
+                    assert_eq!(index, 0);
+                    assert_eq!(text, expected);
+                    count += 1;
+                    stopped.set(true);
+                    Ok(())
+                }
+            )
+            .map_err(|e| eyre::eyre!(e))?,
+        "completion cancellation was lost"
+    );
+    ensure!(count == 1, "a later completion escaped cancellation");
+    let error = runtime
+        .transcribe_batch(vec![samples.clone(); 3], 448, &mut || false, &mut |_, _| {
+            Err("persistence refused".into())
+        })
+        .unwrap_err();
+    ensure!(error == "persistence refused", "callback error was lost");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.transcribe_batch(vec![samples.clone(); 3], 448, &mut || false, &mut |_, _| {
+            panic!("injected callback panic")
+        })
+    }));
+    ensure!(panic.is_err(), "fixture did not panic");
+    let actual = runtime
+        .transcribe(samples, 448)
+        .map_err(|e| eyre::eyre!(e))?;
+    ensure!(
+        actual == expected,
+        "worker was not reusable after cancelled callbacks"
     );
     Ok(())
 }

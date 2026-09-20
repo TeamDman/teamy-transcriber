@@ -1,7 +1,8 @@
 //! Explicit, hidden native-window verification. Drives real GUI input/reducers,
 //! rendering, worker messages, persistence and close-during-transcription.
 use super::*;
-use crate::media::{MediaAdapter, WavMediaAdapter};
+use crate::media::MediaAdapter;
+use crate::media::WavMediaAdapter;
 use eyre::ensure;
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
@@ -294,6 +295,10 @@ impl ApplicationHandler for Harness {
 
 #[test]
 #[ignore = "requires Windows desktop/Vulkan/CUDA, TEST_MODEL, TEST_WAV and GUI_TEST_HOME"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one explicit GUI lifecycle retains ownership through final shutdown assertions"
+)]
 fn hidden_gui_reuses_model_and_closes_during_transcription() -> Result<()> {
     let model = PathBuf::from(std::env::var("TEAMY_TRANSCRIBER_TEST_MODEL")?);
     let wav = PathBuf::from(std::env::var("TEAMY_TRANSCRIBER_TEST_WAV")?);
@@ -366,6 +371,13 @@ fn hidden_gui_reuses_model_and_closes_during_transcription() -> Result<()> {
     ensure!(
         !cancelled.transcripts.is_empty() && cancelled.transcripts.len() < cancelled.clips.len(),
         "closing did not preserve a partial transcript"
+    );
+    ensure!(
+        cancelled
+            .clips
+            .iter()
+            .all(|clip| clip.status != crate::domain::ClipStatus::Processing),
+        "closing left a clip marked processing"
     );
     let close_start = harness
         .close_start

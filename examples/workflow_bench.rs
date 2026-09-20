@@ -1,16 +1,19 @@
 //! Exercise the same import/prepare/transcribe/persist/export workflow as the
 //! application, with a resident session or the previous per-recording lifetime.
-use eyre::{Result, ensure};
+use eyre::Result;
+use eyre::ensure;
 use facet::Facet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::media::AudioProfile;
 use teamy_transcriber::storage::RecordingStore;
-use teamy_transcriber::workflow::{
-    TranscriptionOptions, TranscriptionSession, create_recording, export_recording_with_timestamps,
-    prepare_recording,
-};
+use teamy_transcriber::workflow::TranscriptionOptions;
+use teamy_transcriber::workflow::TranscriptionSession;
+use teamy_transcriber::workflow::create_recording;
+use teamy_transcriber::workflow::export_recording_with_timestamps;
+use teamy_transcriber::workflow::prepare_recording;
 
 #[derive(Facet)]
 struct Chunk {

@@ -31,6 +31,7 @@ use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
 use crate::transcription::TranscriptionBackend;
+use crate::transcription::TranscriptionError;
 use crate::transcription::TranscriptionRequest;
 use eyre::Context;
 use eyre::Result;
@@ -45,6 +46,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use thiserror::Error;
+
+#[cfg(test)]
+#[path = "workflow_batch_tests.rs"]
+mod batch_tests;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrepareReport {
@@ -728,11 +733,11 @@ pub fn transcribe_recording(
     )
 }
 
-/// Transcribe a recording while allowing the caller to stop between clips.
+/// Transcribe a recording with cooperative cancellation.
 ///
-/// The current native backend is a synchronous per-clip operation, so a stop
-/// request is observed at the next safe clip boundary. Any clips completed
-/// before that boundary remain committed and are included in the report.
+/// CUDA observes cancellation between decoder steps and encoder invocations;
+/// other backends stop between clips. Committed clips remain saved. Incomplete
+/// clips return to pending or their latest committed transcript state.
 ///
 /// # Errors
 ///
@@ -825,7 +830,7 @@ fn transcribe_recording_inner(
     profile: AudioProfile,
     stop_requested: Option<&AtomicBool>,
     mut progress: Option<&mut dyn FnMut(usize, usize)>,
-    backend: &NativeWhisperBackend,
+    backend: &dyn TranscriptionBackend,
 ) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
@@ -863,31 +868,28 @@ fn transcribe_recording_inner(
     }
     let mut chunks = Vec::with_capacity(clips.len());
     let mut cancelled = false;
-    for (clip_index, clip) in clips.into_iter().enumerate() {
-        if stop_requested
-            .as_ref()
-            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
-        {
+    let mut should_stop = || {
+        stop_requested.is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    let batch = BatchWorkflow {
+        store,
+        recording_id,
+        full_range,
+        normalized_path: &normalized_path,
+        backend,
+    };
+    for group in clips.chunks(backend.batch_capacity().clamp(1, 8)) {
+        if should_stop() {
             cancelled = true;
             break;
         }
-        chunks.push(transcribe_clip(
-            store,
-            &mut state,
-            recording_id,
-            &clip,
-            full_range,
-            &normalized_path,
-            backend,
-        )?);
-        if let Some(progress) = progress.as_deref_mut() {
-            progress(clip_index + 1, total_clips);
-        }
-        if stop_requested
-            .as_ref()
-            .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            cancelled = true;
+        cancelled = batch.run(&mut state, group, &mut should_stop, &mut |chunk| {
+            chunks.push(chunk);
+            if let Some(progress) = progress.as_deref_mut() {
+                progress(chunks.len(), total_clips);
+            }
+        })?;
+        if cancelled {
             break;
         }
     }
@@ -1032,80 +1034,166 @@ fn format_timestamp(microseconds: u64) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}")
 }
 
-fn transcribe_clip(
-    store: &RecordingStore,
-    state: &mut AppState,
+struct BatchWorkflow<'a> {
+    store: &'a RecordingStore,
     recording_id: RecordingId,
-    clip: &Clip,
     full_range: TimeRange,
-    normalized_path: &Path,
-    backend: &NativeWhisperBackend,
-) -> Result<TranscribedChunk> {
-    store
-        .apply_command(
-            state,
-            Command::BeginTranscription {
-                recording_id,
-                clip_id: clip.id,
-            },
-        )
-        .wrap_err("failed to persist transcription start state")?;
-    let clip_audio_path = if clip.source_range == full_range {
-        normalized_path.to_path_buf()
-    } else {
-        WavMediaAdapter
-            .prepare_clip(
-                normalized_path,
-                &store
-                    .recording_dir(recording_id)
-                    .join("audio")
-                    .join("clips"),
-                clip.source_range,
-                clip.id,
-            )?
-            .path
-    };
-    let result = match backend.transcribe(&TranscriptionRequest {
-        recording_id,
-        clip_id: clip.id,
-        audio_path: clip_audio_path.clone(),
-    }) {
-        Ok(result) => result,
-        Err(error) => {
-            let reason = error.to_string();
-            store
+    normalized_path: &'a Path,
+    backend: &'a dyn TranscriptionBackend,
+}
+
+impl BatchWorkflow<'_> {
+    fn run(
+        &self,
+        state: &mut AppState,
+        clips: &[Clip],
+        should_stop: &mut dyn FnMut() -> bool,
+        on_complete: &mut dyn FnMut(TranscribedChunk),
+    ) -> Result<bool> {
+        let outcome = self.transcribe(state, clips, should_stop, on_complete);
+        if outcome.is_err() {
+            // An append can succeed before a manifest write fails. Replay the
+            // durable log before deciding which clips still need cleanup.
+            *state = self
+                .store
+                .load_state(self.recording_id)
+                .wrap_err("failed to reload transcription state after an error")?;
+        }
+        let mut cleanup_errors = Vec::new();
+        for clip in clips {
+            let processing = state.recording(self.recording_id).is_some_and(|r| {
+                r.clips
+                    .iter()
+                    .any(|c| c.id == clip.id && c.status == ClipStatus::Processing)
+            });
+            if !processing {
+                continue;
+            }
+            let command = match &outcome {
+                Ok(_) => Command::CancelTranscription {
+                    recording_id: self.recording_id,
+                    clip_id: clip.id,
+                },
+                Err(error) => Command::FailTranscription {
+                    recording_id: self.recording_id,
+                    clip_id: clip.id,
+                    reason: error.to_string(),
+                },
+            };
+            if let Err(error) = self.store.apply_command(state, command) {
+                cleanup_errors.push(error.to_string());
+                // Cleanup itself may append successfully before a manifest
+                // failure. Never append the next clip with a stale sequence.
+                match self.store.load_state(self.recording_id) {
+                    Ok(replayed) => *state = replayed,
+                    Err(error) => {
+                        cleanup_errors.push(format!("could not replay cleanup: {error}"));
+                        break;
+                    }
+                }
+            }
+        }
+        if !cleanup_errors.is_empty() {
+            bail!(
+                "transcription outcome: {outcome:?}; failed to save clip lifecycle: {}",
+                cleanup_errors.join("; ")
+            );
+        }
+        outcome
+    }
+
+    fn transcribe(
+        &self,
+        state: &mut AppState,
+        clips: &[Clip],
+        should_stop: &mut dyn FnMut() -> bool,
+        on_complete: &mut dyn FnMut(TranscribedChunk),
+    ) -> Result<bool> {
+        let mut requests = Vec::with_capacity(clips.len());
+        for clip in clips {
+            if should_stop() {
+                return Ok(true);
+            }
+            self.store
                 .apply_command(
                     state,
-                    Command::FailTranscription {
-                        recording_id,
+                    Command::BeginTranscription {
+                        recording_id: self.recording_id,
                         clip_id: clip.id,
-                        reason,
                     },
                 )
-                .wrap_err("failed to persist transcription failure state")?;
-            return Err(eyre::eyre!("{error}")).wrap_err("native Whisper transcription failed");
-        }
-    };
-    let transcript_id = TranscriptId::new();
-    store
-        .apply_command(
-            state,
-            Command::CommitTranscript {
-                recording_id,
+                .wrap_err("failed to persist transcription start state")?;
+            let audio_path = if clip.source_range == self.full_range {
+                self.normalized_path.to_path_buf()
+            } else {
+                WavMediaAdapter
+                    .prepare_clip(
+                        self.normalized_path,
+                        &self
+                            .store
+                            .recording_dir(self.recording_id)
+                            .join("audio")
+                            .join("clips"),
+                        clip.source_range,
+                        clip.id,
+                    )?
+                    .path
+            };
+            requests.push(TranscriptionRequest {
+                recording_id: self.recording_id,
                 clip_id: clip.id,
-                transcript_id,
-                provenance: result.provenance,
-                text: result.text.clone(),
-            },
-        )
-        .wrap_err("failed to persist the transcript")?;
-    Ok(TranscribedChunk {
-        clip_id: clip.id,
-        transcript_id,
-        source_range: clip.source_range,
-        audio_path: clip_audio_path,
-        text: result.text,
-    })
+                audio_path,
+            });
+        }
+        let mut completed = 0;
+        let mut persist_error = None;
+        let outcome =
+            self.backend
+                .transcribe_batch(&requests, should_stop, &mut |index, result| {
+                    if index != completed || index >= clips.len() {
+                        return Err(TranscriptionError::Inference(
+                            "backend returned an out-of-order completion".into(),
+                        ));
+                    }
+                    let clip = &clips[index];
+                    let transcript_id = TranscriptId::new();
+                    self.store
+                        .apply_command(
+                            state,
+                            Command::CommitTranscript {
+                                recording_id: self.recording_id,
+                                clip_id: clip.id,
+                                transcript_id,
+                                provenance: result.provenance,
+                                text: result.text.clone(),
+                            },
+                        )
+                        .map_err(|error| {
+                            let message = error.to_string();
+                            persist_error = Some(
+                                eyre::eyre!(error).wrap_err("failed to persist the transcript"),
+                            );
+                            TranscriptionError::Inference(message)
+                        })?;
+                    completed += 1;
+                    on_complete(TranscribedChunk {
+                        clip_id: clip.id,
+                        transcript_id,
+                        source_range: clip.source_range,
+                        audio_path: requests[index].audio_path.clone(),
+                        text: result.text,
+                    });
+                    Ok(())
+                });
+        if let Some(error) = persist_error {
+            return Err(error);
+        }
+        let cancelled = outcome.wrap_err("native Whisper transcription failed")?;
+        if !cancelled && completed != clips.len() {
+            bail!("backend omitted a transcript without cancelling");
+        }
+        Ok(cancelled)
+    }
 }
 
 fn ensure_recording_clip(

@@ -74,11 +74,23 @@ until the batch finishes but cannot append further output tokens.
 Batch storage is allocated lazily and reused, including for smaller subsequent
 batches. It does not duplicate weights. Eight large-v3 slots add approximately
 5.11 GB of GPU cache/scratch storage beyond the ordinary engine; four add half
-that. `batch_workspace_bytes` reports the exact additional allocation. Select
-a smaller batch on devices with less free memory; allocation failures are
-returned as errors. Batch size one in the pipeline benchmark retains the
-original serial path for direct comparison. The application recording worker
-does not yet dispatch batches.
+that. `batch_workspace_bytes` reports the exact additional allocation. The native
+application worker prepares up to eight clips at a time and chooses a batch that
+fits currently free GPU memory, reserving 256 MiB. Set
+`TEAMY_TRANSCRIBER_CUDA_BATCH_SIZE=1` through `8` to cap the batch (default eight).
+One uses the original serial path without additional batch caches. Allocation
+failures remain explicit errors; another process can consume VRAM after sizing.
+
+The recording workflow saves completed transcripts in clip order, acknowledging
+each save before another result is delivered. CUDA checks cancellation between
+decoder steps and encoder invocations; a running kernel and initial model loading
+are not interrupted. The bounded audio/frontend preparation also checks for stop
+requests. Cancelled clips restore their latest transcript state, including edits,
+or return to pending when no transcript exists. Failure preserves completed
+transcripts and records failure for the remaining started clips. The resident
+worker drains cancelled requests before reuse and joins when its owner closes.
+Legacy backends retain sequential decoding. Clip boundaries and export ordering
+are unchanged by batching.
 
 The desktop event loop sleeps when idle. Worker and tray messages wake it
 directly, and text/progress/input changes request a new frame. Microphone
@@ -151,13 +163,13 @@ clip coverage from transcription accuracy; cold totals include model release,
 reported separately as `release_ms`. Run with release/native features.
 
 `tests/transcription_session.rs` is an opt-in real CUDA regression covering
-cancellation, persisted partial results, model repair at the same path, changed
-model selection, and subsequent recordings. Set `TEAMY_TRANSCRIBER_TEST_MODEL`
+cancellation, persisted partial results, callback errors/panics, model repair at
+the same path, changed model selection, and subsequent recordings. Set `TEAMY_TRANSCRIBER_TEST_MODEL`
 to a small prepared single-file model and `TEAMY_TRANSCRIBER_TEST_WAV` to a short
 speech WAV, then run:
 
 ```powershell
-cargo test --release --no-default-features --features cuda-native --test transcription_session -- --ignored
+cargo test --release --no-default-features --features cuda-native --test transcription_session -- --ignored --test-threads=1
 ```
 
 On Windows, `gui::runtime_test::hidden_gui_reuses_model_and_closes_during_transcription`

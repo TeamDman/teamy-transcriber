@@ -83,6 +83,40 @@ pub trait TranscriptionBackend {
         &self,
         request: &TranscriptionRequest,
     ) -> Result<TranscriptionResult, TranscriptionError>;
+
+    /// Maximum number of windows the caller should prepare at once.
+    fn batch_capacity(&self) -> usize {
+        1
+    }
+
+    /// Deliver completed windows in input order. A callback failure stops work;
+    /// `true` reports cancellation. Completed callbacks are never replayed.
+    ///
+    /// # Errors
+    /// Returns configuration, inference or callback errors.
+    fn transcribe_batch(
+        &self,
+        requests: &[TranscriptionRequest],
+        should_stop: &mut dyn FnMut() -> bool,
+        on_complete: &mut dyn FnMut(usize, TranscriptionResult) -> Result<(), TranscriptionError>,
+    ) -> Result<bool, TranscriptionError> {
+        transcribe_serial(self, requests, should_stop, on_complete)
+    }
+}
+
+fn transcribe_serial<B: TranscriptionBackend + ?Sized>(
+    backend: &B,
+    requests: &[TranscriptionRequest],
+    should_stop: &mut dyn FnMut() -> bool,
+    on_complete: &mut dyn FnMut(usize, TranscriptionResult) -> Result<(), TranscriptionError>,
+) -> Result<bool, TranscriptionError> {
+    for (index, request) in requests.iter().enumerate() {
+        if should_stop() {
+            return Ok(true);
+        }
+        on_complete(index, backend.transcribe(request)?)?;
+    }
+    Ok(should_stop())
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +286,77 @@ impl NativeWhisperBackend {
 }
 
 impl TranscriptionBackend for NativeWhisperBackend {
+    fn batch_capacity(&self) -> usize {
+        #[cfg(feature = "cuda-native")]
+        if self.capabilities().backend_id == "whisper-source-cuda" {
+            return teamy_whisper_native::MAX_BATCH_SIZE;
+        }
+        1
+    }
+
+    fn transcribe_batch(
+        &self,
+        requests: &[TranscriptionRequest],
+        should_stop: &mut dyn FnMut() -> bool,
+        on_complete: &mut dyn FnMut(usize, TranscriptionResult) -> Result<(), TranscriptionError>,
+    ) -> Result<bool, TranscriptionError> {
+        if should_stop() {
+            return Ok(true);
+        }
+        #[cfg(feature = "cuda-native")]
+        if crate::native_whisper::cuda::selected() && !requests.is_empty() {
+            for request in requests {
+                self.validate_configuration(request)?;
+            }
+            let artifacts = self.model_artifacts()?;
+            if artifacts.layout == crate::native_whisper::model::WhisperModelLayout::TchSafetensors
+            {
+                let windows = requests
+                    .iter()
+                    .map(|request| read_normalized_wav(&request.audio_path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let runtime = self
+                    .cuda_runtime
+                    .get_or_init(|| {
+                        crate::native_whisper::cuda::CudaWhisperRuntime::load(
+                            artifacts.root.clone(),
+                        )
+                    })
+                    .as_ref()
+                    .map_err(|error| TranscriptionError::Inference(error.clone()))?;
+                let mut callback_error = None;
+                let outcome = runtime.transcribe_batch(
+                    windows,
+                    self.config.max_decode_tokens,
+                    should_stop,
+                    &mut |index, text| {
+                        let result = if text.trim().is_empty() {
+                            Err(TranscriptionError::EmptyResult)
+                        } else {
+                            on_complete(
+                                index,
+                                TranscriptionResult {
+                                    provenance: TranscriptProvenance::RawAsr,
+                                    text,
+                                },
+                            )
+                        };
+                        result.map_err(|error| {
+                            let message = error.to_string();
+                            callback_error = Some(error);
+                            message
+                        })
+                    },
+                );
+                if let Some(error) = callback_error {
+                    return Err(error);
+                }
+                return outcome.map_err(TranscriptionError::Inference);
+            }
+        }
+        transcribe_serial(self, requests, should_stop, on_complete)
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         #[cfg(feature = "cuda-native")]
         if crate::native_whisper::cuda::selected()

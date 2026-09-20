@@ -1,6 +1,8 @@
 //! Token selection data for fixed English greedy decoding.
-use anyhow::{Result, ensure};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use anyhow::ensure;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// The suppression fields of a canonical Whisper generation configuration.
 /// Other generation fields (beam search, language, prompts, sampling, etc.)

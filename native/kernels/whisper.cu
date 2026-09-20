@@ -45,6 +45,9 @@ extern "C" int tw_copy(Session* s, float* dst, const float* src, size_t n) {
     CUDA(cudaMemcpyAsync(dst, src, n*sizeof(float), cudaMemcpyDeviceToDevice, s->stream)); return 0;
 }
 extern "C" int tw_sync(Session* s) { CUDA(cudaStreamSynchronize(s->stream)); return 0; }
+extern "C" int tw_free_bytes(Session*, size_t* free_bytes) {
+    size_t total; CUDA(cudaMemGetInfo(free_bytes,&total)); return 0;
+}
 
 __global__ void affine(float* x, const float* bias, const float* residual, int width, size_t n, int gelu) {
     size_t i = size_t(blockIdx.x)*blockDim.x + threadIdx.x;

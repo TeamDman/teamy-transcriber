@@ -4,17 +4,17 @@
     clippy::disallowed_macros,
     reason = "Development receipts use serde for reference interoperability."
 )]
-use anyhow::{Result, ensure};
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
-use teamy_whisper_native::{
-    Engine,
-    decoding::GreedySuppression,
-    frontend::Frontend,
-    vad::{Silero, merge_segments, speech_segments},
-};
+use anyhow::Result;
+use anyhow::ensure;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
+use teamy_whisper_native::Engine;
+use teamy_whisper_native::decoding::GreedySuppression;
+use teamy_whisper_native::frontend::Frontend;
+use teamy_whisper_native::vad::Silero;
+use teamy_whisper_native::vad::merge_segments;
+use teamy_whisper_native::vad::speech_segments;
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();

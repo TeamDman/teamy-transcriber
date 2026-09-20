@@ -230,6 +230,10 @@ impl AppState {
     /// # Errors
     ///
     /// Returns a domain error when the requested transition is invalid.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the command-to-event mapping together for lifecycle review"
+    )]
     pub fn execute(&mut self, command: Command) -> Result<EventRecord, DomainError> {
         let event = match command {
             Command::CreateRecording {
@@ -257,6 +261,13 @@ impl AppState {
                 recording_id,
                 clip_id,
             } => Event::TranscriptionStarted {
+                recording_id,
+                clip_id,
+            },
+            Command::CancelTranscription {
+                recording_id,
+                clip_id,
+            } => Event::TranscriptionCancelled {
                 recording_id,
                 clip_id,
             },
@@ -467,6 +478,38 @@ impl AppState {
                 clip.status = ClipStatus::Processing;
                 clip.failure = None;
             }
+            Event::TranscriptionCancelled {
+                recording_id,
+                clip_id,
+            } => {
+                let recording = self.recording_mut(*recording_id)?;
+                let latest = recording
+                    .transcripts
+                    .iter()
+                    .rev()
+                    .find(|t| t.clip_id == *clip_id);
+                let status = latest.map_or(ClipStatus::Pending, |transcript| {
+                    if transcript.provenance == TranscriptProvenance::UserEdit {
+                        ClipStatus::Edited
+                    } else {
+                        ClipStatus::Transcribed
+                    }
+                });
+                let clip = recording
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == *clip_id)
+                    .ok_or(DomainError::ClipNotFound(*clip_id))?;
+                if clip.status != ClipStatus::Processing {
+                    return Err(DomainError::InvalidClipTranscriptionTransition {
+                        clip_id: *clip_id,
+                        actual: clip.status,
+                        action: "cancel",
+                    });
+                }
+                clip.status = status;
+                clip.failure = None;
+            }
             Event::TranscriptionFailed {
                 recording_id,
                 clip_id,
@@ -635,6 +678,10 @@ pub enum Command {
         recording_id: RecordingId,
         clip_id: ClipId,
     },
+    CancelTranscription {
+        recording_id: RecordingId,
+        clip_id: ClipId,
+    },
     FailTranscription {
         recording_id: RecordingId,
         clip_id: ClipId,
@@ -685,6 +732,10 @@ pub enum Event {
         recording_id: RecordingId,
         clip_id: ClipId,
     },
+    TranscriptionCancelled {
+        recording_id: RecordingId,
+        clip_id: ClipId,
+    },
     TranscriptionFailed {
         recording_id: RecordingId,
         clip_id: ClipId,
@@ -722,6 +773,7 @@ impl Event {
             | Self::RecordingSaved { recording_id }
             | Self::RecordingFailed { recording_id, .. }
             | Self::TranscriptionStarted { recording_id, .. }
+            | Self::TranscriptionCancelled { recording_id, .. }
             | Self::TranscriptionFailed { recording_id, .. }
             | Self::ClipAdded { recording_id, .. }
             | Self::ClipMoved { recording_id, .. }

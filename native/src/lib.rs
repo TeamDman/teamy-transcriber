@@ -7,7 +7,9 @@
 )]
 mod batch;
 mod cuda;
-pub use batch::{BatchDecodeResult, BatchTranscript, MAX_BATCH_SIZE};
+pub use batch::BatchDecodeResult;
+pub use batch::BatchTranscript;
+pub use batch::MAX_BATCH_SIZE;
 pub mod decoding;
 pub mod frontend;
 #[cfg(test)]
@@ -747,7 +749,22 @@ impl Engine {
         Ok(())
     }
     pub fn transcribe_mel(&mut self, mel: &[f32], max_tokens: usize) -> Result<DecodeResult> {
+        self.transcribe_mel_interruptible(mel, max_tokens, &mut || false)?
+            .ok_or_else(|| anyhow!("unexpected cancellation"))
+    }
+    /// Cancellation discards an unfinished window and keeps the engine reusable.
+    /// Checked before encoding and between decoder steps; model loading and a
+    /// single encoder invocation are not interrupted in the middle of a kernel.
+    pub fn transcribe_mel_interruptible(
+        &mut self,
+        mel: &[f32],
+        max_tokens: usize,
+        should_stop: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<DecodeResult>> {
         ensure!(max_tokens > 0, "max tokens must be positive");
+        if should_stop() {
+            return Ok(None);
+        }
         let started = Instant::now();
         self.encode(mel)?;
         self.device.sync()?;
@@ -758,6 +775,10 @@ impl Engine {
         let mut ended = false;
         let limit = max_tokens.min(self.dims.text.n_text_ctx - self.prompt.len());
         for step in 0..limit {
+            if should_stop() {
+                self.device.sync()?;
+                return Ok(None);
+            }
             let weight = self.output.as_ref().unwrap_or(&self.embed);
             let width = self.dims.text.n_text_state;
             let row = if step == 0 { self.prompt.len() - 1 } else { 0 };
@@ -797,12 +818,12 @@ impl Engine {
             .decode(&ids, true)
             .map_err(|e| anyhow!(e.to_string()))
             .context("token decoding")?;
-        Ok(DecodeResult {
+        Ok(Some(DecodeResult {
             text,
             tokens,
             ended,
             encoder_ms,
             decoder_ms,
-        })
+        }))
     }
 }

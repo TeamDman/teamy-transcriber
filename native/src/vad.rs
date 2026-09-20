@@ -1,8 +1,11 @@
 //! Source-defined Silero 16 kHz inference. Weights are ordinary FP32 safetensors.
 //! The 512-sample step, context, convolutions and LSTM are defined here; no graph
 //! interpreter, Torch, ONNX runtime or GPU is used. See licenses/silero.txt.
-use anyhow::{Context, Result, ensure};
-use safetensors::{Dtype, SafeTensors};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::ensure;
+use safetensors::Dtype;
+use safetensors::SafeTensors;
 use std::path::Path;
 
 pub const WINDOW: usize = 512;
@@ -521,7 +524,8 @@ mod tests {
 
     #[test]
     fn loader_rejects_shape_dtype_missing_and_nonfinite() -> Result<()> {
-        use safetensors::tensor::{TensorView, serialize};
+        use safetensors::tensor::TensorView;
+        use safetensors::tensor::serialize;
         assert!(Silero::from_bytes(&[]).is_err());
         let bytes = [0u8; 8];
         let data = serialize([("x", TensorView::new(Dtype::F32, vec![2], &bytes)?)], None)?;
