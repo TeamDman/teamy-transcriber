@@ -45,6 +45,7 @@ a = p.parse_args()
 manifest = json.loads(a.manifest.read_text())
 native = json.loads(a.native.read_text())
 reference = json.loads(a.reference.read_text())
+assert native.get("suppression") == reference.get("suppression"), "token-suppression policy mismatch"
 ng, rg = group(native, True), group(reference, False)
 assert set(ng) == set(rg) == {i["id"] for i in manifest["items"]}, "input set mismatch"
 rows = []
@@ -63,10 +64,10 @@ for item in manifest["items"]:
     total_words += len(expected)
     rows.append(dict(id=name, seconds=item["seconds"], reference=item["reference"],
         native_text=nt, comparison_text=rt, normalized_text_match=nwords == rwords,
-        token_match=nr[-1]["result"]["tokens"] == rr[-1]["tokens"],
+        token_match=(nr[-1]["result"]["tokens"] == rr[-1]["tokens"]) if rr[-1].get("tokens") is not None else None,
         native_all_ended=all(x["result"]["ended"] for x in nr),
         native_stable=all(x["result"]["tokens"] == nr[-1]["result"]["tokens"] for x in nr),
-        reference_stable=all(x["tokens"] == rr[-1]["tokens"] for x in rr),
+        reference_stable=all(x["text"] == rt and x.get("tokens") == rr[-1].get("tokens") for x in rr),
         native_word_edits=ne, reference_word_edits=re_,
         native_warm_median_ms=statistics.median(nw),
         reference_warm_median_ms=statistics.median(rw),
@@ -84,7 +85,9 @@ print(json.dumps(dict(
     native_load_ms=native["load_ms"], reference_load_ms=reference["load_ms"],
     native_warm_corpus_ms=n_total, reference_warm_corpus_ms=r_total, warm_speedup=r_total/n_total,
     normalized_text_matches=sum(x["normalized_text_match"] for x in rows),
-    exact_token_matches=sum(x["token_match"] for x in rows),
+    exact_token_matches=sum(x["token_match"] for x in rows) if all(x["token_match"] is not None for x in rows) else None,
+    reference_tokens_available=all(x["token_match"] is not None for x in rows),
+    suppression=native.get("suppression"),
     native_word_edit_rate=native_edits / total_words, reference_word_edit_rate=reference_edits / total_words,
     all_native_requests_ended=all(x["native_all_ended"] for x in rows),
     all_native_outputs_stable=all(x["native_stable"] for x in rows),

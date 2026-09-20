@@ -21,6 +21,7 @@ parser.add_argument("--dll-dir", action="append", default=[])
 parser.add_argument("--mel-prefix", help="For a corpus manifest: prefix of <prefix>-<id>.mel.f32 dumps")
 parser.add_argument("--wav-input", action="store_true", help="Include WAV reads and WhisperX's real CPU frontend")
 parser.add_argument("--cpu-threads", type=int, default=8)
+parser.add_argument("--generation-config", type=Path, help="Use canonical token suppression, including first-step blank/EOT suppression")
 args = parser.parse_args()
 dll_handles = [os.add_dll_directory(p) for p in args.dll_dir] if os.name == "nt" else []
 import ctranslate2
@@ -41,6 +42,18 @@ load_ms = (time.perf_counter() - started) * 1000
 prompt = [tokenizer.token_to_id(t) for t in ["<|startoftranscript|>", "<|en|>", "<|transcribe|>", "<|notimestamps|>"]]
 suppressed = [tokenizer.token_to_id(t) for t in ["<|startoftranscript|>", "<|translate|>", "<|transcribe|>", "<|startoflm|>", "<|startofprev|>", "<|nospeech|>", "<|notimestamps|>", "<|en|>"]]
 suppressed = [t for t in suppressed if t is not None]
+suppression = None
+suppress_blank = False
+if args.generation_config:
+    generation = json.loads(args.generation_config.read_text())
+    suppressed = generation["suppress_tokens"]
+    beginning = generation["begin_suppress_tokens"]
+    # CT2's suppress_blank implements these two tokens. Reject other policies
+    # rather than silently running different settings from the native engines.
+    expected = [tokenizer.encode(" ", add_special_tokens=False).ids[0], tokenizer.token_to_id("<|endoftext|>")]
+    assert sorted(beginning) in ([], sorted(expected)), "CT2 cannot express this first-token suppression policy"
+    suppress_blank = bool(beginning)
+    suppression = dict(suppress_tokens=suppressed, begin_suppress_tokens=beginning)
 if args.mel.suffix == ".json":
     assert args.wav_input or args.mel_prefix, "mel corpus manifests require --mel-prefix"
     inputs = [(item["id"], Path(item["wav"]) if args.wav_input else Path(f"{args.mel_prefix}-{item['id']}.mel.f32")) for item in json.loads(args.mel.read_text())["items"]]
@@ -64,7 +77,7 @@ for name, path in inputs:
         frontend_ms = (time.perf_counter() - request_start) * 1000
         started = time.perf_counter()
         encoded = model.encode(ctranslate2.StorageView.from_array(mel))
-        result = model.generate(encoded, [prompt], beam_size=1, patience=1, length_penalty=1, max_length=448, suppress_blank=False, suppress_tokens=suppressed)[0]
+        result = model.generate(encoded, [prompt], beam_size=1, patience=1, length_penalty=1, max_length=448, suppress_blank=suppress_blank, suppress_tokens=suppressed)[0]
         inference_ms = (time.perf_counter() - started) * 1000
         tokens = result.sequences_ids[0]
         text = tokenizer.decode(tokens, skip_special_tokens=True)
@@ -77,4 +90,4 @@ with (args.model / "model.bin").open("rb") as f:
     for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
         digest.update(chunk)
     model_hash = digest.hexdigest()
-print(json.dumps(dict(schema=2, backend="python-whisperx-asr" if args.wav_input else "python-ctranslate2", version=ctranslate2.__version__, device=model.device, compute_type=model.compute_type, cpu_threads=args.cpu_threads if args.wav_input else None, scope=("WAV-to-text, WhisperX CPU frontend and CT2 ASR" if args.wav_input else "mel-to-text CT2 ASR") + "; greedy English, batch one; excludes VAD/alignment/diarization", model_sha256=model_hash, input_sha256=hashlib.sha256(args.mel.read_bytes()).hexdigest(), import_ms=import_ms, load_ms=load_ms, first_result_ms=first_result_ms, runs=runs), indent=2))
+print(json.dumps(dict(schema=2, backend="python-whisperx-asr" if args.wav_input else "python-ctranslate2", version=ctranslate2.__version__, device=model.device, compute_type=model.compute_type, suppression=suppression, cpu_threads=args.cpu_threads if args.wav_input else None, scope=("WAV-to-text, WhisperX CPU frontend and CT2 ASR" if args.wav_input else "mel-to-text CT2 ASR") + "; greedy English, batch one; excludes VAD/alignment/diarization", model_sha256=model_hash, input_sha256=hashlib.sha256(args.mel.read_bytes()).hexdigest(), import_ms=import_ms, load_ms=load_ms, first_result_ms=first_result_ms, runs=runs), indent=2))

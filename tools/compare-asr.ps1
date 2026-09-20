@@ -9,7 +9,12 @@ param(
     [Parameter(Mandatory)][string]$Ct2DllDirectory,
     [ValidateRange(1, 10)][int]$Rounds = 3,
     [ValidateRange(2, 20)][int]$Repeats = 4,
-    [ValidateSet('fp32', 'tf32')][string]$Math = 'tf32'
+    [ValidateSet('fp32', 'tf32')][string]$Math = 'tf32',
+    [string]$GenerationConfig,
+    [string]$RustReferenceExe,
+    [string]$CanonicalModel,
+    [string]$ModelId,
+    [ValidateSet('fp32', 'fp16')][string]$RustPrecision = 'fp32'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +25,17 @@ $ct2 = (Resolve-Path -LiteralPath $Ct2Model).Path
 $corpusPath = (Resolve-Path -LiteralPath $Corpus).Path
 $manifest = Join-Path $corpusPath 'manifest.json'
 $wavList = Join-Path $corpusPath 'wav-list.json'
+$generationPath = if ($GenerationConfig) { (Resolve-Path -LiteralPath $GenerationConfig).Path } else { $null }
+$rustExe = if ($RustReferenceExe) { (Resolve-Path -LiteralPath $RustReferenceExe).Path } else { $null }
+if ($rustExe) {
+    if (-not $generationPath -or -not $CanonicalModel -or -not $ModelId) {
+        throw 'Rust reference requires GenerationConfig, CanonicalModel and ModelId.'
+    }
+    $canonical = (Resolve-Path -LiteralPath $CanonicalModel).Path
+    if ((Get-FileHash -LiteralPath $generationPath).Hash -ne (Get-FileHash -LiteralPath (Join-Path $canonical 'generation_config.json')).Hash) {
+        throw 'Canonical and selected generation configuration must match.'
+    }
+}
 if ((Test-Path -LiteralPath $Output) -and @(Get-ChildItem -LiteralPath $Output).Count) {
     throw 'Choose an empty output directory to preserve previous measurements.'
 }
@@ -38,6 +54,10 @@ $metadata = [ordered]@{
     native_math = $Math
     reference_compute_type = 'float16'
     file_cache_policy = 'OS file cache retained; fresh processes in alternating order; no simultaneous inference'
+    generation_config_sha256 = if ($generationPath) { (Get-FileHash -LiteralPath $generationPath).Hash } else { $null }
+    rust_exe_sha256 = if ($rustExe) { (Get-FileHash -LiteralPath $rustExe).Hash } else { $null }
+    rust_model_sha256 = if ($rustExe) { (Get-FileHash -LiteralPath (Join-Path $canonical 'model.safetensors')).Hash } else { $null }
+    rust_precision = if ($rustExe) { $RustPrecision } else { $null }
 }
 $summaries = @()
 try {
@@ -45,17 +65,27 @@ try {
     for ($round = 0; $round -lt $Rounds; $round++) {
         $nativeReceipt = Join-Path $out "native-$round.json"
         $referenceReceipt = Join-Path $out "reference-$round.json"
+        $rustReceipt = Join-Path $out "rust-$round.json"
         $order = if ($round % 2 -eq 0) { @('native', 'reference') } else { @('reference', 'native') }
+        if ($rustExe) {
+            $engines = @('native', 'reference', 'rust')
+            $order = @(0..2 | ForEach-Object { $engines[($_ + $round) % 3] })
+        }
         foreach ($backend in $order) {
             Write-Host "Round $($round + 1)/${Rounds}: $backend"
             & nvidia-smi --query-gpu=name,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader > (Join-Path $out "gpu-$round-$backend.csv")
             if ($LASTEXITCODE -ne 0) { throw 'Could not capture GPU state.' }
             if ($backend -eq 'native') {
                 $nativeArguments = @($model, $wavList, "$Repeats", '-')
-                if ($Math -eq 'tf32') { $nativeArguments += 'tf32' }
+                $nativeArguments += $Math
+                if ($generationPath) { $nativeArguments += $generationPath }
                 & $native @nativeArguments > $nativeReceipt 2> (Join-Path $out "native-$round.log")
+            } elseif ($backend -eq 'rust') {
+                & $rustExe $canonical $wavList $Repeats $RustPrecision $ModelId > $rustReceipt 2> (Join-Path $out "rust-$round.log")
             } else {
-                & $pythonExe (Join-Path $PSScriptRoot 'benchmark_ct2.py') $ct2 $manifest --wav-input --compute-type float16 --repeats $Repeats --dll-dir $Ct2DllDirectory > $referenceReceipt 2> (Join-Path $out "reference-$round.log")
+                $pythonArguments = @((Join-Path $PSScriptRoot 'benchmark_ct2.py'), $ct2, $manifest, '--wav-input', '--compute-type', 'float16', '--repeats', "$Repeats", '--dll-dir', $Ct2DllDirectory)
+                if ($generationPath) { $pythonArguments += @('--generation-config', $generationPath) }
+                & $pythonExe @pythonArguments > $referenceReceipt 2> (Join-Path $out "reference-$round.log")
             }
             if ($LASTEXITCODE -ne 0) { throw "$backend failed; see the round log." }
         }
@@ -63,6 +93,12 @@ try {
         & $pythonExe (Join-Path $PSScriptRoot 'summarize_asr.py') $manifest $nativeReceipt $referenceReceipt > $summary
         if ($LASTEXITCODE -ne 0) { throw 'Comparison failed.' }
         $summaries += (Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json | Select-Object -ExcludeProperty rows)
+        if ($rustExe) {
+            $summary = Join-Path $out "comparison-rust-$round.json"
+            & $pythonExe (Join-Path $PSScriptRoot 'summarize_asr.py') $manifest $nativeReceipt $rustReceipt > $summary
+            if ($LASTEXITCODE -ne 0) { throw 'Rust comparison failed.' }
+            $summaries += (Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json | Select-Object -ExcludeProperty rows)
+        }
     }
     [ordered]@{ metadata = $metadata; comparisons = $summaries } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'summary.json')
 } finally {

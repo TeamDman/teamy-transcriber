@@ -301,14 +301,13 @@ mod tests {
             .expect("second shard should be writable");
         std::fs::write(
             root.join(MODEL_SAFETENSORS_INDEX_FILE_NAME),
-            serde_json::to_vec(&serde_json::json!({
+            r#"{
                 "weight_map": {
                     "encoder.weight": "model-00001-of-00002.safetensors",
                     "decoder.weight": "model-00002-of-00002.safetensors",
                     "decoder.bias": "model-00002-of-00002.safetensors"
                 }
-            }))
-            .expect("index should serialize"),
+            }"#,
         )
         .expect("index should be writable");
         let paths = resolve_safetensor_paths(&root).expect("shards should resolve");

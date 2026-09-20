@@ -221,6 +221,10 @@ impl Buffer {
         // SAFETY: source and destination bounds checked; owned stream orders reads/writes.
         checked(unsafe { tw_copy(self.session(), self.ptr().add(offset), source.ptr(), n) })
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit dimensions and operands mirror the checked CUDA matrix operation."
+    )]
     pub fn linear(
         &self,
         w: &Self,
@@ -279,6 +283,10 @@ impl Buffer {
             )
         })
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit convolution dimensions and layout mirror the checked CUDA operation."
+    )]
     pub fn conv(
         &self,
         w: &Self,
@@ -348,6 +356,10 @@ impl Buffer {
             )
         })
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Query/key extents, heads and causal offset are checked at the CUDA boundary."
+    )]
     pub fn attention(
         &self,
         k: &Self,
@@ -362,7 +374,7 @@ impl Buffer {
         offset: usize,
     ) -> Result<()> {
         ensure!(
-            heads > 0 && width % heads == 0 && nq > 0 && nk > 0,
+            heads > 0 && width.is_multiple_of(heads) && nq > 0 && nk > 0,
             "invalid attention shape"
         );
         self.same(&[k, v, scores, out])?;

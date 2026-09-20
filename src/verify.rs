@@ -1011,7 +1011,7 @@ mod tests {
         let reference = "if you can get it".split_whitespace().collect::<Vec<_>>();
         let candidate = "if you can get".split_whitespace().collect::<Vec<_>>();
         assert_eq!(levenshtein(&reference, &candidate), 1);
-        assert_eq!(ratio(1, reference.len()), 0.2);
+        assert!((ratio(1, reference.len()) - 0.2).abs() < f64::EPSILON);
     }
 
     #[test]

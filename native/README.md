@@ -68,7 +68,20 @@ termination, token matches, word errors, cold process startup and warm latency.
 `examples/whisper_bench.rs` preserves the existing Rust/tch comparison.
 `tools/compare-asr.ps1` alternates fresh native/Python processes over several
 rounds, captures GPU state and binary/script hashes, and produces local summaries.
+It can also rotate the pinned [Rust WhisperX ASR adapter](../tools/rust-whisperx-bench/README.md).
+The adapter calls the public upstream inference library without modifying it;
+it does not time the complete Rust WhisperX CLI.
 Python is used only by these development/reference tools.
+
+For standard Whisper suppression, pass the canonical `generation_config.json`
+as the last `wav_bench` argument after `fp32` or `tf32`, and pass the same file
+to Python's `--generation-config` (or the runner's `-GenerationConfig`).
+`Engine::configure_greedy` applies those suppression fields, including blank/EOT
+suppression only on the first token and timestamp suppression for plain text.
+It does not interpret beam-search, sampling or language settings from that file.
+The application keeps its existing fixed-English greedy policy. Benchmark
+summaries reject mismatched suppression; unavailable reference token IDs remain
+unavailable instead of being counted as a token match.
 
 These tools do not establish a full WhisperX speed claim: VAD, beam-search
 defaults, word alignment, diarization, long-form quality and comparison to a

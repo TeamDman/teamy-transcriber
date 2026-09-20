@@ -12,7 +12,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 documentation = "https://github.com/TeamDman/teamy-transcriber"
 
 [workspace]
-exclude = ["native"]
+exclude = ["native", "tools/rust-whisperx-bench"]
 
 [dependencies]
 teamy-whisper-native = { path = "native", optional = true }

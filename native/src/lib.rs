@@ -1,8 +1,18 @@
 //! Whisper model topology in Rust, numerical primitives in CUDA, weights in safetensors.
 //! No serialized computation graph, LibTorch, or Python is used by this runtime.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "This standalone engine uses serde for Hugging Face/safetensors interchange, independently of the application's Facet data model."
+)]
 mod cuda;
+pub mod decoding;
 pub mod frontend;
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_macros,
+    reason = "Malformed external JSON fixtures exercise the safetensors loader boundary."
+)]
 mod loader_tests;
 
 use anyhow::Context;
@@ -70,8 +80,8 @@ impl Dims {
                 && t.n_text_head > 0
                 && a.n_audio_state / a.n_audio_head == 64
                 && t.n_text_state / t.n_text_head == 64
-                && a.n_audio_state % a.n_audio_head == 0
-                && t.n_text_state % t.n_text_head == 0,
+                && a.n_audio_state.is_multiple_of(a.n_audio_head)
+                && t.n_text_state.is_multiple_of(t.n_text_head),
             "expected 64-wide Whisper heads"
         );
         ensure!(
@@ -392,6 +402,7 @@ pub struct Engine {
     prompt: Vec<usize>,
     eot: usize,
     allowed: Buffer,
+    begin_allowed: Option<Buffer>,
     conv1: (Buffer, Buffer),
     conv2: (Buffer, Buffer),
     audio_pos: Buffer,
@@ -510,6 +521,7 @@ impl Engine {
             prompt,
             eot,
             allowed,
+            begin_allowed: None,
             conv1,
             conv2,
             audio_pos,
@@ -526,6 +538,40 @@ impl Engine {
     }
     pub fn dims(&self) -> &Dims {
         &self.dims
+    }
+    /// Use explicit greedy token suppression without changing the model or
+    /// prompt. The default remains the original Teamy plain-text policy.
+    /// Canonical generation settings additionally suppress timestamp tokens.
+    /// No computation graph is read from the configuration.
+    pub fn configure_greedy(&mut self, options: &decoding::GreedySuppression) -> Result<()> {
+        let first_timestamp = self
+            .tokenizer
+            .token_to_id("<|0.00|>")
+            .ok_or_else(|| anyhow!("tokenizer missing timestamp boundary"))?
+            as usize;
+        let last_timestamp = self
+            .tokenizer
+            .token_to_id("<|30.00|>")
+            .ok_or_else(|| anyhow!("tokenizer missing timestamp boundary"))?
+            as usize;
+        let no_timestamps = self
+            .tokenizer
+            .token_to_id("<|notimestamps|>")
+            .ok_or_else(|| anyhow!("tokenizer missing no-timestamps token"))?
+            as usize;
+        let (allowed, begin) = options.masks(
+            self.dims.text.n_vocab,
+            no_timestamps,
+            first_timestamp,
+            last_timestamp,
+        )?;
+        // Construct both before replacing either, preserving the previous
+        // working policy if validation/allocation fails.
+        let allowed = self.device.upload(&allowed)?;
+        let begin = self.device.upload(&begin)?;
+        self.allowed = allowed;
+        self.begin_allowed = Some(begin);
+        Ok(())
     }
     /// Diagnostic boundary for numerical comparison with an independent model.
     pub fn prompt_logits(&mut self, mel: &[f32]) -> Result<Vec<f32>> {
@@ -710,7 +756,11 @@ impl Engine {
                 false,
             )?;
             let next = self.work.logits.argmax(
-                &self.allowed,
+                if step == 0 {
+                    self.begin_allowed.as_ref().unwrap_or(&self.allowed)
+                } else {
+                    &self.allowed
+                },
                 &self.work.result,
                 self.dims.text.n_vocab,
             )?;

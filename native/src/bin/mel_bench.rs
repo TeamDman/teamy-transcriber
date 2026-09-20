@@ -1,4 +1,9 @@
 //! Low-level parity/timing harness. Input is an explicit little-endian f32 mel matrix.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "Development receipts serialize the standalone engine's serde types for external benchmark interoperability."
+)]
 use anyhow::Result;
 use anyhow::ensure;
 use std::path::Path;

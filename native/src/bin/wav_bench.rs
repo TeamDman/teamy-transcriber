@@ -1,4 +1,9 @@
 //! Complete WAV-to-text timing. A JSON array of WAV paths exercises resident reuse.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "Development receipts serialize the standalone engine's serde types for external benchmark interoperability."
+)]
 use anyhow::Result;
 use anyhow::ensure;
 use std::path::Path;
@@ -8,7 +13,7 @@ fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
         args.len() >= 2,
-        "usage: wav_bench MODEL WAV_OR_JSON_LIST [REPEATS] [DUMP_PREFIX_OR_DASH] [tf32]"
+        "usage: wav_bench MODEL WAV_OR_JSON_LIST [REPEATS] [DUMP_PREFIX_OR_DASH] [fp32|tf32] [GENERATION_CONFIG]"
     );
     let paths: Vec<PathBuf> = if args[1].ends_with(".json") {
         serde_json::from_slice(&std::fs::read(&args[1])?)?
@@ -18,6 +23,17 @@ fn main() -> Result<()> {
     let started = Instant::now();
     let tf32 = args.get(4).is_some_and(|s| s == "tf32");
     let mut engine = teamy_whisper_native::Engine::load(Path::new(&args[0]), 0, tf32)?;
+    let suppression = args
+        .get(5)
+        .map(
+            |path| -> Result<teamy_whisper_native::decoding::GreedySuppression> {
+                Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+            },
+        )
+        .transpose()?;
+    if let Some(policy) = &suppression {
+        engine.configure_greedy(policy)?;
+    }
     let mut frontend = teamy_whisper_native::frontend::Frontend::new(engine.dims().audio.n_mels)?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let repeats: usize = args.get(2).map_or(Ok(3), |s| s.parse())?;
@@ -75,7 +91,7 @@ fn main() -> Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"backend":"native-cuda","precision":if tf32 {"tf32"} else {"fp32"},"scope":"WAV-to-text ASR; greedy English, batch one; excludes VAD/alignment/diarization","load_ms":load_ms,"first_result_ms":first_result_ms,"runs":runs})
+            &serde_json::json!({"backend":"native-cuda","precision":if tf32 {"tf32"} else {"fp32"},"suppression":suppression,"scope":"WAV-to-text ASR; greedy English, batch one; excludes VAD/alignment/diarization","load_ms":load_ms,"first_result_ms":first_result_ms,"runs":runs})
         )?
     );
     Ok(())
