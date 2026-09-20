@@ -19,12 +19,17 @@ use teamy_whisper_native::{
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
-        args.len() == 5,
-        "usage: pipeline_bench WHISPER_MODEL SILERO_WEIGHTS WAV_LIST REPEATS GENERATION_CONFIG"
+        args.len() == 5 || args.len() == 6,
+        "usage: pipeline_bench WHISPER_MODEL SILERO_WEIGHTS WAV_LIST REPEATS GENERATION_CONFIG [BATCH_SIZE]"
     );
     let paths: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(&args[2])?)?;
     let repeats: usize = args[3].parse()?;
     ensure!(!paths.is_empty() && repeats > 0, "empty benchmark");
+    let batch_size: usize = args.get(5).map_or(Ok(1), |s| s.parse())?;
+    ensure!(
+        (1..=teamy_whisper_native::MAX_BATCH_SIZE).contains(&batch_size),
+        "unsupported batch size"
+    );
     let suppression: GreedySuppression = serde_json::from_slice(&std::fs::read(&args[4])?)?;
     let begin = Instant::now();
     let mut vad = Silero::load(Path::new(&args[1]))?;
@@ -57,20 +62,48 @@ fn main() -> Result<()> {
             let merged = merge_segments(&speech, 480000)?;
             let vad_ms = vad_start.elapsed().as_secs_f64() * 1000.;
             let mut segments = Vec::new();
-            for span in &merged {
-                let start = span.start as f64 / 16000.;
-                let end = span.end as f64 / 16000.;
-                // Match WhisperX's seconds-to-samples truncation exactly, including
-                // potential one-sample round-trip loss at some decimal boundaries.
-                let start_sample = (start * 16000.) as usize;
-                let end_sample = (end * 16000.) as usize;
-                let chunk_start = Instant::now();
-                let mel = frontend.compute(&audio[start_sample..end_sample])?;
-                let result = engine.transcribe_mel(&mel, 448)?;
-                segments.push(serde_json::json!({"start":start,"end":end,
+            let mut batches = Vec::new();
+            for spans in merged.chunks(batch_size) {
+                let batch_start = Instant::now();
+                let mut features = Vec::new();
+                let mut bounds = Vec::new();
+                for span in spans {
+                    let start = span.start as f64 / 16000.;
+                    let end = span.end as f64 / 16000.;
+                    // Match WhisperX's seconds-to-samples truncation exactly, including
+                    // potential one-sample round-trip loss at some decimal boundaries.
+                    let start_sample = (start * 16000.) as usize;
+                    let end_sample = (end * 16000.) as usize;
+                    let mel = frontend.compute(&audio[start_sample..end_sample])?;
+                    features.push(mel);
+                    bounds.push((start, end, start_sample, end_sample));
+                }
+                let frontend_ms = batch_start.elapsed().as_secs_f64() * 1000.;
+                let (texts, prepare_ms, decode_ms) = if batch_size == 1 {
+                    let r = engine.transcribe_mel(&features[0], 448)?;
+                    (
+                        vec![teamy_whisper_native::BatchTranscript {
+                            text: r.text,
+                            tokens: r.tokens,
+                            ended: r.ended,
+                        }],
+                        r.encoder_ms,
+                        r.decoder_ms,
+                    )
+                } else {
+                    let mels: Vec<_> = features.iter().map(Vec::as_slice).collect();
+                    let r = engine.transcribe_mel_batch(&mels, 448)?;
+                    (r.transcripts, r.prepare_ms, r.decode_ms)
+                };
+                for ((start, end, start_sample, end_sample), result) in
+                    bounds.into_iter().zip(texts)
+                {
+                    segments.push(serde_json::json!({"start":start,"end":end,
                     "start_sample":start_sample,"end_sample":end_sample,
-                    "total_ms":chunk_start.elapsed().as_secs_f64()*1000.,
-                    "text":result.text,"result":result}));
+                    "batch_index":batches.len(),"text":result.text,"result":result}));
+                }
+                batches.push(serde_json::json!({"size":spans.len(),"frontend_ms":frontend_ms,
+                    "prepare_ms":prepare_ms,"decode_ms":decode_ms,"total_ms":batch_start.elapsed().as_secs_f64()*1000.}));
             }
             let total_ms = started.elapsed().as_secs_f64() * 1000.;
             first_result_ms.get_or_insert_with(|| begin.elapsed().as_secs_f64() * 1000.);
@@ -82,7 +115,7 @@ fn main() -> Result<()> {
                 segments.len()
             );
             runs.push(
-                serde_json::json!({"source":path,"index":index,"batch_size":1,
+                serde_json::json!({"source":path,"index":index,"batch_size":batch_size,"batches":batches,
                 "audio_seconds":audio.len() as f64/16000.,"audio_ms":audio_ms,"vad_ms":vad_ms,
                 "total_ms":total_ms,"result":{"segments":segments,"language":"en"}}),
             );
@@ -92,7 +125,8 @@ fn main() -> Result<()> {
         "{}",
         serde_json::to_string(
             &serde_json::json!({"backend":"source-defined-native-pipeline",
-        "scope":"PCM16 WAV loading, CPU Silero VAD, merging, CUDA greedy English ASR and assembly; batch one. Excludes alignment, diarization and file export. Development harness, not application integration.",
+        "scope":"PCM16 WAV loading, CPU Silero VAD, merging, CUDA greedy English ASR and assembly. Excludes alignment, diarization and file export. Development harness, not application integration.",
+        "batch_size":batch_size,"batch_workspace_bytes":engine.batch_workspace_bytes(),
         "precision":"tf32","suppression":suppression,"load_ms":load_ms,
         "first_result_ms":first_result_ms,"runs":runs,"full_goal_acceptance":false})
         )?

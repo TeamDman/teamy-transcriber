@@ -5,7 +5,9 @@
     clippy::disallowed_types,
     reason = "This standalone engine uses serde for Hugging Face/safetensors interchange, independently of the application's Facet data model."
 )]
+mod batch;
 mod cuda;
+pub use batch::{BatchDecodeResult, BatchTranscript, MAX_BATCH_SIZE};
 pub mod decoding;
 pub mod frontend;
 #[cfg(test)]
@@ -416,6 +418,7 @@ pub struct Engine {
     decoder_norm: Norm,
     cache: Vec<Cache>,
     work: Workspace,
+    batch: Option<batch::BatchWorkspace>,
 }
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -535,6 +538,7 @@ impl Engine {
             decoder_norm,
             cache,
             work,
+            batch: None,
         })
     }
     pub fn dims(&self) -> &Dims {
@@ -595,6 +599,9 @@ impl Engine {
         self.work.logits.read(self.dims.text.n_vocab)
     }
     fn encode(&self, mel: &[f32]) -> Result<()> {
+        self.encode_cached(mel, &self.cache)
+    }
+    fn encode_cached(&self, mel: &[f32], caches: &[Cache]) -> Result<()> {
         let a = &self.dims.audio;
         let d = a.n_audio_state;
         let n = a.n_audio_ctx;
@@ -655,7 +662,7 @@ impl Engine {
             layer.fc2.run(&w.ff, &w.x, n, Some(&w.temp), false)?;
         }
         self.encoder_norm.run(&w.x, &w.encoded, n, d)?;
-        for (layer, cache) in self.decoder.iter().zip(&self.cache) {
+        for (layer, cache) in self.decoder.iter().zip(caches) {
             let (_, attn) = layer.cross.as_ref().unwrap();
             attn.k.run(&w.encoded, &cache.cross_key, n, None, false)?;
             attn.v.run(&w.encoded, &cache.cross_value, n, None, false)?;
@@ -663,6 +670,14 @@ impl Engine {
         Ok(())
     }
     fn decoder_tokens(&self, tokens: &[usize], position: usize) -> Result<()> {
+        self.decoder_tokens_cached(tokens, position, &self.cache)
+    }
+    fn decoder_tokens_cached(
+        &self,
+        tokens: &[usize],
+        position: usize,
+        caches: &[Cache],
+    ) -> Result<()> {
         let t = &self.dims.text;
         let d = t.n_text_state;
         let n = self.dims.audio.n_audio_ctx;
@@ -684,7 +699,7 @@ impl Engine {
                 d,
             )?;
         }
-        for (layer, cache) in self.decoder.iter().zip(&self.cache) {
+        for (layer, cache) in self.decoder.iter().zip(caches) {
             layer.norm.run(&w.x, &w.norm, rows, d)?;
             layer.attn.q.run(&w.norm, &w.q, rows, None, false)?;
             layer.attn.k.run(&w.norm, &w.k, rows, None, false)?;

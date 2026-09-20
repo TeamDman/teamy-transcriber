@@ -63,6 +63,23 @@ the cache so repaired model files can be retried. Cancellation retains completed
 clip transcripts and leaves the session available for the next request. The
 one-shot recording CLI loads a model for each process.
 
+`Engine::transcribe_mel_batch` decodes up to eight independent windows using the
+same resident weights. Each window keeps separate self/cross-attention caches
+and end-of-text state; results retain input order. Encoders and prompt prefills
+run serially, then decoder projections run as matrices and a custom FP32 kernel
+fuses each head's attention scores, softmax and weighted values. One small token
+array crosses to the CPU per step. Finished slots remain in GPU computation
+until the batch finishes but cannot append further output tokens.
+
+Batch storage is allocated lazily and reused, including for smaller subsequent
+batches. It does not duplicate weights. Eight large-v3 slots add approximately
+5.11 GB of GPU cache/scratch storage beyond the ordinary engine; four add half
+that. `batch_workspace_bytes` reports the exact additional allocation. Select
+a smaller batch on devices with less free memory; allocation failures are
+returned as errors. Batch size one in the pipeline benchmark retains the
+original serial path for direct comparison. The application recording worker
+does not yet dispatch batches.
+
 The desktop event loop sleeps when idle. Worker and tray messages wake it
 directly, and text/progress/input changes request a new frame. Microphone
 animation retains a bounded timer while recording. Inference no longer shares
@@ -169,6 +186,29 @@ The application keeps its existing fixed-English greedy policy. Benchmark
 summaries reject mismatched suppression; unavailable reference token IDs remain
 unavailable instead of being counted as a token match.
 
+`batch_bench` validates batched decoding on the same WAV corpus and canonical
+generation configuration. It repeats the complete corpus, includes WAV reading
+and frontend work, and exercises a partial final batch. Per-batch timing is
+reported separately from per-input token/text results. Use explicit release
+builds and serialize performance runs:
+
+```powershell
+cargo build --release --manifest-path native/Cargo.toml --bin batch_bench
+./native/target/release/batch_bench.exe <prepared-model> <wav-list.json> 2 8 tf32 <generation_config.json>
+```
+
+The CUDA tests include batched attention against an independent FP64 oracle,
+cache strides/tails, vocabulary suppression and device-token embedding. A real
+model regression checks changing batch sizes/order, unequal output lengths,
+early termination, invalid-input retry and subsequent serial calls. Use a small
+prepared model and a short speech file for this test:
+
+```powershell
+$env:WHISPER_BATCH_TEST_MODEL = '<prepared-model>'
+$env:WHISPER_BATCH_TEST_WAV = '<mono-16k.wav>'
+cargo test --release --manifest-path native/Cargo.toml --lib batch::tests -- --ignored --test-threads=1
+```
+
 These tools do not establish a full WhisperX speed claim: VAD, beam-search
 defaults, word alignment, diarization, long-form quality and comparison to a
 confirmed Rust WhisperX target remain acceptance work. Numerical parity has
@@ -205,7 +245,7 @@ python tools/export_silero_weights.py <local-silero.jit> <new-silero.safetensors
 python tools/benchmark_silero.py <local-silero-source> <silero.safetensors> <wav-list.json> <new-reference.json>
 cargo build --release --manifest-path native/Cargo.toml --bin vad_bench --bin pipeline_bench
 ./native/target/release/vad_bench.exe <silero.safetensors> <wav-list.json> 2
-./native/target/release/pipeline_bench.exe <prepared-whisper-model> <silero.safetensors> <wav-list.json> 2 <generation_config.json>
+./native/target/release/pipeline_bench.exe <prepared-whisper-model> <silero.safetensors> <wav-list.json> 2 <generation_config.json> 8
 ```
 
 The exporter needs Python/Torch only during artifact preparation, records
@@ -214,7 +254,8 @@ named weights-only file may belong to another Silero revision even if its
 shapes match; the reference harness checks every tensor against its loaded model.
 `vad_bench` excludes audio I/O from VAD timing and emits all frame probabilities
 and boundaries. `pipeline_bench` includes PCM16 WAV loading, VAD, merging, native
-CUDA ASR and result assembly, currently at batch one. It follows WhisperX's
+CUDA ASR and result assembly, with an optional batch size from one to eight
+(default one). It follows WhisperX's
 seconds-to-samples truncation for comparable input slices. It excludes alignment,
 diarization, application persistence and export, so it is not full-goal acceptance.
 

@@ -82,6 +82,45 @@ unsafe extern "C" {
         result: *mut f32,
         n: i32,
     ) -> i32;
+    fn tw_decode_attention(
+        s: *mut c_void,
+        q: *const f32,
+        k: *const f32,
+        v: *const f32,
+        out: *mut f32,
+        batch: i32,
+        keys: i32,
+        capacity: i32,
+        width: i32,
+        heads: i32,
+    ) -> i32;
+    fn tw_cache_token(
+        s: *mut c_void,
+        x: *const f32,
+        cache: *mut f32,
+        batch: i32,
+        position: i32,
+        capacity: i32,
+        width: i32,
+    ) -> i32;
+    fn tw_embed_batch(
+        s: *mut c_void,
+        w: *const f32,
+        pos: *const f32,
+        tokens: *const f32,
+        y: *mut f32,
+        batch: i32,
+        position: i32,
+        width: i32,
+    ) -> i32;
+    fn tw_argmax_batch(
+        s: *mut c_void,
+        x: *const f32,
+        allowed: *const f32,
+        result: *mut f32,
+        batch: i32,
+        n: i32,
+    ) -> i32;
 }
 
 fn checked(code: i32) -> Result<()> {
@@ -420,6 +459,156 @@ impl Buffer {
         ensure!(id >= 0. && id < (n as f32), "no finite unsuppressed logits");
         Ok(id as usize)
     }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit batch/cache dimensions are checked before CUDA launch."
+    )]
+    pub fn decode_attention(
+        &self,
+        k: &Self,
+        v: &Self,
+        out: &Self,
+        batch: usize,
+        keys: usize,
+        capacity: usize,
+        width: usize,
+        heads: usize,
+    ) -> Result<()> {
+        ensure!(
+            (1..=8).contains(&batch)
+                && (1..=1500).contains(&keys)
+                && (keys..=1500).contains(&capacity)
+                && (1..=20).contains(&heads)
+                && width == heads * 64,
+            "invalid batched decoder attention shape"
+        );
+        self.same(&[k, v, out])?;
+        self.fits(batch * width)?;
+        k.fits(batch * capacity * width)?;
+        v.fits(batch * capacity * width)?;
+        out.fits(batch * width)?;
+        // SAFETY: fixed 64-wide heads, bounded shared scores, all batch/cache extents checked.
+        checked(unsafe {
+            tw_decode_attention(
+                self.session(),
+                self.ptr(),
+                k.ptr(),
+                v.ptr(),
+                out.ptr(),
+                batch as i32,
+                keys as i32,
+                capacity as i32,
+                width as i32,
+                heads as i32,
+            )
+        })
+    }
+
+    pub fn cache_token(
+        &self,
+        cache: &Self,
+        batch: usize,
+        position: usize,
+        capacity: usize,
+        width: usize,
+    ) -> Result<()> {
+        ensure!(
+            (1..=8).contains(&batch)
+                && (1..=448).contains(&capacity)
+                && position < capacity
+                && (1..=1280).contains(&width),
+            "invalid token cache shape"
+        );
+        self.same(&[cache])?;
+        self.fits(batch * width)?;
+        cache.fits(batch * capacity * width)?;
+        // SAFETY: one destination row per independent sequence is in bounds.
+        checked(unsafe {
+            tw_cache_token(
+                self.session(),
+                self.ptr(),
+                cache.ptr(),
+                batch as i32,
+                position as i32,
+                capacity as i32,
+                width as i32,
+            )
+        })
+    }
+
+    pub fn argmax_batch(
+        &self,
+        allowed: &Self,
+        result: &Self,
+        batch: usize,
+        n: usize,
+    ) -> Result<Vec<usize>> {
+        ensure!(
+            (1..=8).contains(&batch) && (1..=60000).contains(&n),
+            "invalid batched vocabulary"
+        );
+        self.same(&[allowed, result])?;
+        self.fits(batch * n)?;
+        allowed.fits(n)?;
+        result.fits(batch)?;
+        // SAFETY: every reduction reads one checked vocabulary row and writes one result.
+        checked(unsafe {
+            tw_argmax_batch(
+                self.session(),
+                self.ptr(),
+                allowed.ptr(),
+                result.ptr(),
+                batch as i32,
+                n as i32,
+            )
+        })?;
+        let values = result.read(batch)?;
+        ensure!(
+            values.iter().all(|&id| id >= 0. && id < n as f32),
+            "no finite unsuppressed batch logits"
+        );
+        Ok(values.into_iter().map(|id| id as usize).collect())
+    }
+
+    /// Device-resident token gather avoids a second host transfer each step.
+    ///
+    /// # Safety
+    /// Each token must be an exact nonnegative integer indexing this embedding
+    /// table (`token < self.n / width`). Writes establishing these values must
+    /// precede this call on the same stream; no other writer may replace them.
+    pub unsafe fn embedding_batch(
+        &self,
+        pos: &Self,
+        tokens: &Self,
+        y: &Self,
+        batch: usize,
+        position: usize,
+        width: usize,
+    ) -> Result<()> {
+        ensure!(
+            (1..=8).contains(&batch) && position < 448 && (1..=1280).contains(&width),
+            "invalid batched embedding shape"
+        );
+        self.same(&[pos, tokens, y])?;
+        pos.fits((position + 1) * width)?;
+        tokens.fits(batch)?;
+        y.fits(batch * width)?;
+        // SAFETY: caller guarantees valid token indices into this embedding table;
+        // position/output/token storage extents and session checked above.
+        checked(unsafe {
+            tw_embed_batch(
+                self.session(),
+                self.ptr(),
+                pos.ptr(),
+                tokens.ptr(),
+                y.ptr(),
+                batch as i32,
+                position as i32,
+                width as i32,
+            )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +619,117 @@ mod tests {
         for (i, (&a, &b)) in actual.iter().zip(expected).enumerate() {
             assert!((a - b).abs() < tolerance, "index {i}: {a} != {b}");
         }
+    }
+    #[test]
+    #[ignore = "requires a CUDA device; run explicitly in release mode"]
+    fn batched_decoder_primitives_keep_sequences_independent() -> Result<()> {
+        let device = Device::new(0, false)?;
+        for (batch, heads, keys, capacity) in [
+            (1, 1, 1, 8),
+            (3, 2, 7, 11),
+            (8, 20, 448, 448),
+            (3, 20, 1500, 1500),
+        ] {
+            let width = heads * 64;
+            let qs: Vec<f32> = (0..batch * width)
+                .map(|i| (i as f32 * 0.017).sin())
+                .collect();
+            let mut ks = vec![1000.; batch * capacity * width];
+            let mut vs = ks.clone();
+            for b in 0..batch {
+                for k in 0..keys {
+                    for c in 0..width {
+                        let index = (b * capacity + k) * width + c;
+                        ks[index] = ((index + 13) as f32 * 0.029).cos();
+                        vs[index] = ((index + 31) as f32 * 0.007).sin();
+                    }
+                }
+            }
+            let q = device.upload(&qs)?;
+            let k = device.upload(&ks)?;
+            let v = device.upload(&vs)?;
+            let output = device.alloc(batch * width)?;
+            q.decode_attention(&k, &v, &output, batch, keys, capacity, width, heads)?;
+            let mut expected = vec![0.; batch * width];
+            for b in 0..batch {
+                for h in 0..heads {
+                    let qb = b * width + h * 64;
+                    let kb = b * capacity * width + h * 64;
+                    let scores: Vec<f64> = (0..keys)
+                        .map(|j| {
+                            (0..64)
+                                .map(|c| f64::from(qs[qb + c]) * f64::from(ks[kb + j * width + c]))
+                                .sum::<f64>()
+                                * 0.125
+                        })
+                        .collect();
+                    let maximum = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    let probabilities: Vec<_> =
+                        scores.iter().map(|s| (s - maximum).exp()).collect();
+                    let denominator: f64 = probabilities.iter().sum();
+                    for c in 0..64 {
+                        expected[qb + c] = (probabilities
+                            .iter()
+                            .enumerate()
+                            .map(|(j, p)| p / denominator * f64::from(vs[kb + j * width + c]))
+                            .sum::<f64>()) as f32;
+                    }
+                }
+            }
+            close(&output.read(batch * width)?, &expected, 2e-5);
+            assert!(
+                q.decode_attention(&k, &v, &output, batch, capacity + 1, capacity, width, heads)
+                    .is_err()
+            );
+        }
+        let batch = 3;
+        let width = 64;
+        let capacity = 9;
+        let input: Vec<_> = (0..batch * width).map(|i| i as f32 * 0.01).collect();
+        let x = device.upload(&input)?;
+        let cache = device.upload(&vec![-123.; batch * capacity * width])?;
+        x.cache_token(&cache, batch, 4, capacity, width)?;
+        let actual = cache.read(batch * capacity * width)?;
+        for b in 0..batch {
+            for p in 0..capacity {
+                for c in 0..width {
+                    assert_eq!(
+                        actual[(b * capacity + p) * width + c],
+                        if p == 4 { input[b * width + c] } else { -123. }
+                    );
+                }
+            }
+        }
+        assert!(
+            x.cache_token(&cache, batch, capacity, capacity, width)
+                .is_err()
+        );
+        let logits = device.upload(&[0., 2., 1., 3., 2., 1., 0., 4., 3.])?;
+        let mask = device.upload(&[1., 1., 0.])?;
+        let result = device.alloc(batch)?;
+        assert_eq!(logits.argmax_batch(&mask, &result, batch, 3)?, [1, 0, 1]);
+        let embedding: Vec<_> = (0..3 * width).map(|i| i as f32 * 0.01).collect();
+        let position = device.upload(&vec![0.5; width * 2])?;
+        let table = device.upload(&embedding)?;
+        // SAFETY: the checked argmax above only produces indices in this table.
+        unsafe {
+            table.embedding_batch(&position, &result, &x, batch, 1, width)?;
+        }
+        let expected: Vec<_> = [1, 0, 1]
+            .into_iter()
+            .flat_map(|id| {
+                embedding[id * width..(id + 1) * width]
+                    .iter()
+                    .map(|v| v + 0.5)
+            })
+            .collect();
+        close(&x.read(batch * width)?, &expected, 1e-6);
+        assert!(
+            logits
+                .argmax_batch(&device.upload(&[0.; 3])?, &result, batch, 3)
+                .is_err()
+        );
+        Ok(())
     }
     #[test]
     #[ignore = "requires a CUDA device; run explicitly in release mode"]
