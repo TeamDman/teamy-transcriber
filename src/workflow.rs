@@ -120,6 +120,61 @@ pub struct TranscriptionReport {
     pub cancelled: bool,
 }
 
+/// One application's resident model. Recordings share weights and workspaces,
+/// while each request retains its own audio, cancellation and persisted state.
+/// A different model/configuration replaces the sole cached backend. Dropping
+/// the session releases it, including joining the native CUDA inference thread.
+#[derive(Debug, Default)]
+pub struct TranscriptionSession {
+    backend: Option<NativeWhisperBackend>,
+}
+
+impl TranscriptionSession {
+    /// Transcribe a recording with a model retained across successful requests.
+    ///
+    /// # Errors
+    /// Returns an error for invalid recording/model assets, inference failures
+    /// or persistence failures. Failed requests evict cached initialization
+    /// errors so repairing local assets permits a fresh attempt.
+    pub fn transcribe(
+        &mut self,
+        store: &RecordingStore,
+        recording_id: RecordingId,
+        options: TranscriptionOptions,
+        stop_requested: Option<&AtomicBool>,
+        progress: Option<&mut dyn FnMut(usize, usize)>,
+    ) -> Result<TranscriptionReport> {
+        let config = NativeWhisperConfig {
+            model_dir: options.model_dir,
+            max_decode_tokens: options.max_decode_tokens,
+        };
+        if self
+            .backend
+            .as_ref()
+            .is_none_or(|backend| backend.config() != &config)
+        {
+            self.backend = Some(NativeWhisperBackend::new(config));
+        }
+        let backend = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("transcription session has no backend"))?;
+        let result = transcribe_recording_inner(
+            store,
+            recording_id,
+            options.chunk_duration_us,
+            options.profile,
+            stop_requested,
+            progress,
+            backend,
+        );
+        if result.is_err() {
+            self.backend = None;
+        }
+        result
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExportReport {
     pub output_path: PathBuf,
@@ -659,7 +714,7 @@ pub fn transcribe_recording(
     max_decode_tokens: usize,
     chunk_duration_us: Option<u64>,
 ) -> Result<TranscriptionReport> {
-    transcribe_recording_inner(
+    TranscriptionSession::default().transcribe(
         store,
         recording_id,
         TranscriptionOptions {
@@ -691,7 +746,7 @@ pub fn transcribe_recording_with_cancellation(
     chunk_duration_us: Option<u64>,
     stop_requested: &Arc<AtomicBool>,
 ) -> Result<TranscriptionReport> {
-    transcribe_recording_inner(
+    TranscriptionSession::default().transcribe(
         store,
         recording_id,
         TranscriptionOptions {
@@ -754,7 +809,7 @@ pub fn transcribe_recording_with_profile_and_cancellation_and_progress(
     stop_requested: &Arc<AtomicBool>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<TranscriptionReport> {
-    transcribe_recording_inner(
+    TranscriptionSession::default().transcribe(
         store,
         recording_id,
         options,
@@ -766,14 +821,16 @@ pub fn transcribe_recording_with_profile_and_cancellation_and_progress(
 fn transcribe_recording_inner(
     store: &RecordingStore,
     recording_id: RecordingId,
-    options: TranscriptionOptions,
+    chunk_duration_us: Option<u64>,
+    profile: AudioProfile,
     stop_requested: Option<&AtomicBool>,
     mut progress: Option<&mut dyn FnMut(usize, usize)>,
+    backend: &NativeWhisperBackend,
 ) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
         .wrap_err("failed to load recording event state")?;
-    let normalized_path = audio_path_for_profile(store, recording_id, options.profile);
+    let normalized_path = audio_path_for_profile(store, recording_id, profile);
     let metadata = WavMediaAdapter
         .inspect(&normalized_path)
         .wrap_err("recording is not prepared; prepare it from the GUI first")?;
@@ -782,7 +839,7 @@ fn transcribe_recording_inner(
     // The native Whisper frontend has a fixed 30-second context window. Keep
     // the CLI/GUI safe for long recordings even when the caller omits the
     // option; callers can still choose a shorter explicit duration.
-    let chunk_duration_us = options.chunk_duration_us.or_else(|| {
+    let chunk_duration_us = chunk_duration_us.or_else(|| {
         Some(
             crate::native_whisper::frontend::N_SAMPLES as u64 * 1_000_000
                 / u64::from(crate::media::WHISPER_SAMPLE_RATE_HZ),
@@ -799,10 +856,6 @@ fn transcribe_recording_inner(
             full_range,
         )?]
     };
-    let backend = NativeWhisperBackend::new(NativeWhisperConfig {
-        model_dir: options.model_dir,
-        max_decode_tokens: options.max_decode_tokens,
-    });
     let backend_id = backend.capabilities().backend_id;
     let total_clips = clips.len();
     if let Some(progress) = progress.as_deref_mut() {
@@ -825,7 +878,7 @@ fn transcribe_recording_inner(
             &clip,
             full_range,
             &normalized_path,
-            &backend,
+            backend,
         )?);
         if let Some(progress) = progress.as_deref_mut() {
             progress(clip_index + 1, total_clips);

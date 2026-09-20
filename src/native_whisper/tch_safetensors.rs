@@ -676,13 +676,11 @@ mod tests {
         add("model.decoder.layer_norm.weight", &[4]);
         add("model.decoder.layer_norm.bias", &[4]);
         for prefix in ["model.encoder.layers.0", "model.decoder.layers.0"] {
-            for attention in ["self_attn"] {
-                add(&format!("{prefix}.{attention}.q_proj.weight"), &[4, 4]);
-                add(&format!("{prefix}.{attention}.k_proj.weight"), &[4, 4]);
-                add(&format!("{prefix}.{attention}.v_proj.weight"), &[4, 4]);
-                add(&format!("{prefix}.{attention}.out_proj.weight"), &[4, 4]);
-                add(&format!("{prefix}.{attention}.out_proj.bias"), &[4]);
-            }
+            add(&format!("{prefix}.self_attn.q_proj.weight"), &[4, 4]);
+            add(&format!("{prefix}.self_attn.k_proj.weight"), &[4, 4]);
+            add(&format!("{prefix}.self_attn.v_proj.weight"), &[4, 4]);
+            add(&format!("{prefix}.self_attn.out_proj.weight"), &[4, 4]);
+            add(&format!("{prefix}.self_attn.out_proj.bias"), &[4]);
             add(&format!("{prefix}.self_attn_layer_norm.weight"), &[4]);
             add(&format!("{prefix}.self_attn_layer_norm.bias"), &[4]);
             add(&format!("{prefix}.fc1.weight"), &[16, 4]);

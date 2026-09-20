@@ -19,6 +19,19 @@ defaults to compute capability 8.9 with forward-compatible PTX; override
 empirical validation is Windows x64 on RTX 4090. Other GPU/platform combinations
 have not been validated.
 
+Install the native release into an explicit directory with its CUDA runtime and
+cuBLAS DLLs:
+
+```powershell
+./update.ps1 -Backend cuda -Root <install-directory>
+```
+
+The executable is `<install-directory>/bin/teamy-transcriber.exe`. Put that
+directory before other installations on your terminal's `PATH` to select it.
+The script does not change `PATH` or install weights. It refuses to replace a
+different CUDA DLL in a shared directory; use a separate install directory in
+that case. `./update.ps1` retains the existing default tch installation.
+
 Use the existing recording workflow with `--model-dir <prepared-model>`. The
 `cuda-native` feature selects the CUDA implementation for safetensors packages.
 `TEAMY_TRANSCRIBER_CUDA_DEVICE` selects a device index (default zero). A combined
@@ -38,6 +51,12 @@ buffers and workspaces are allocated once; the prompt is evaluated as one causal
 batch, and requests reset their logical cache position. Only the selected token crosses back to
 the CPU during generation. The application owns a bounded inference worker:
 model creation, inference, and destruction happen on the same thread.
+The GUI retains one `TranscriptionSession` across recordings, so subsequent
+transcriptions reuse the loaded model. Choosing a model again, preparing a new
+model, or closing the application releases the session. A failed request clears
+the cache so repaired model files can be retried. Cancellation retains completed
+clip transcripts and leaves the session available for the next request. The
+one-shot recording CLI loads a model for each process.
 
 The resident frontend reuses its FFT plan and skips zero filter coefficients
 and wholly padded frames. It accepts complete windows up to 30 seconds; the
@@ -72,6 +91,24 @@ It can also rotate the pinned [Rust WhisperX ASR adapter](../tools/rust-whisperx
 The adapter calls the public upstream inference library without modifying it;
 it does not time the complete Rust WhisperX CLI.
 Python is used only by these development/reference tools.
+
+`examples/workflow_bench.rs` exercises actual import, normalization, chunking,
+transcription, persistence and timestamped export. It accepts a model, one WAV
+or a JSON array of paths, a new output directory, repetition count, and
+`resident` or `cold` session mode. Each request creates a fresh recording;
+resident mode reuses only the inference session. Output distinguishes source
+clip coverage from transcription accuracy; cold totals include model release,
+reported separately as `release_ms`. Run with release/native features.
+
+`tests/transcription_session.rs` is an opt-in real CUDA regression covering
+cancellation, persisted partial results, model repair at the same path, changed
+model selection, and subsequent recordings. Set `TEAMY_TRANSCRIBER_TEST_MODEL`
+to a small prepared single-file model and `TEAMY_TRANSCRIBER_TEST_WAV` to a short
+speech WAV, then run:
+
+```powershell
+cargo test --release --no-default-features --features cuda-native --test transcription_session -- --ignored
+```
 
 For standard Whisper suppression, pass the canonical `generation_config.json`
 as the last `wav_bench` argument after `fp32` or `tf32`, and pass the same file

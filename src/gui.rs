@@ -34,6 +34,7 @@ use crate::workflow::MicrophoneReport;
 use crate::workflow::PrepareReport;
 use crate::workflow::TranscriptionOptions;
 use crate::workflow::TranscriptionReport;
+use crate::workflow::TranscriptionSession;
 use crate::workflow::append_adjacent_clips;
 use crate::workflow::audio_path_for_profile;
 use crate::workflow::commit_transcript_edit;
@@ -44,7 +45,6 @@ use crate::workflow::move_clip;
 use crate::workflow::prepare_recording_with_tools_and_profile;
 use crate::workflow::record_microphone;
 use crate::workflow::split_clip_at;
-use crate::workflow::transcribe_recording_with_profile_and_cancellation_and_progress;
 use arboard::Clipboard;
 use ash::Entry;
 use ash::vk;
@@ -63,6 +63,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -128,6 +129,7 @@ struct GuiApplication {
     message_rx: Receiver<GuiMessage>,
     stop_recording: Option<Arc<AtomicBool>>,
     operation_cancel: Option<Arc<AtomicBool>>,
+    transcription_session: Arc<Mutex<TranscriptionSession>>,
     close_requested: bool,
     #[cfg(windows)]
     tray: Option<tray::TrayController>,
@@ -200,6 +202,7 @@ impl GuiApplication {
             message_rx,
             stop_recording: None,
             operation_cancel: None,
+            transcription_session: Arc::default(),
             close_requested: false,
             #[cfg(windows)]
             tray: None,
@@ -427,6 +430,7 @@ impl GuiApplication {
             return;
         };
         self.state.model_dir = path;
+        self.transcription_session = Arc::default();
         self.inspect_model();
         self.persist_preferences();
         if self.state.model_ready {
@@ -1020,6 +1024,7 @@ impl GuiApplication {
         let sender = self.message_tx.clone();
         let store = self.store.clone();
         let model_dir = self.state.model_dir.clone();
+        let session = Arc::clone(&self.transcription_session);
         let chunk_duration_us = self
             .state
             .chunk_duration_ms
@@ -1040,29 +1045,35 @@ impl GuiApplication {
                     total,
                 });
             };
-            let message = transcribe_recording_with_profile_and_cancellation_and_progress(
-                &store,
-                recording_id,
-                TranscriptionOptions {
-                    model_dir,
-                    max_decode_tokens: crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
-                    chunk_duration_us,
-                    profile: audio_profile,
-                },
-                &worker_stop,
-                &mut progress,
-            )
-            .map_or_else(
-                |error| GuiMessage::Failure {
-                    recording_id: Some(recording_id),
-                    operation: "local transcription".to_string(),
-                    message: error.to_string(),
-                },
-                |report| GuiMessage::Transcribed {
-                    recording_id,
-                    report,
-                },
-            );
+            let message = session
+                .lock()
+                .map_err(|error| eyre::eyre!("transcription session worker failed: {error}"))
+                .and_then(|mut session| {
+                    session.transcribe(
+                        &store,
+                        recording_id,
+                        TranscriptionOptions {
+                            model_dir,
+                            max_decode_tokens:
+                                crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
+                            chunk_duration_us,
+                            profile: audio_profile,
+                        },
+                        Some(worker_stop.as_ref()),
+                        Some(&mut progress),
+                    )
+                })
+                .map_or_else(
+                    |error| GuiMessage::Failure {
+                        recording_id: Some(recording_id),
+                        operation: "local transcription".to_string(),
+                        message: error.to_string(),
+                    },
+                    |report| GuiMessage::Transcribed {
+                        recording_id,
+                        report,
+                    },
+                );
             let _ = sender.send(message);
         });
     }
@@ -1217,6 +1228,7 @@ impl GuiApplication {
             GuiMessage::ModelPrepared { model_dir } => {
                 self.state.operation = GuiOperation::Idle;
                 self.state.model_dir = model_dir;
+                self.transcription_session = Arc::default();
                 self.inspect_model();
                 self.persist_preferences();
                 if self.state.model_ready {

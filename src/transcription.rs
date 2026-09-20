@@ -129,7 +129,7 @@ impl TranscriptionBackend for FakeTranscriptionBackend {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeWhisperConfig {
     pub model_dir: PathBuf,
     pub max_decode_tokens: usize,
