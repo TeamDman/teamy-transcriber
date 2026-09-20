@@ -78,6 +78,11 @@ pub fn prepare(source: &Path, model_dir: &Path) -> Result<SpeechModelManifest> {
     Ok(manifest)
 }
 
+/// Validate a prepared speech detector without initializing CUDA.
+pub fn validate(directory: &Path) -> Result<()> {
+    load(directory).map(|_| ())
+}
+
 fn load(directory: &Path) -> Result<(Silero, String)> {
     let manifest: SpeechModelManifest =
         facet_json::from_slice(&read_bounded(&directory.join(MANIFEST), 8192)?)?;
@@ -167,7 +172,14 @@ fn analyze(
         }
         let mut window = [0.; WINDOW];
         for (slot, sample) in window.iter_mut().zip(samples.by_ref()) {
-            *slot = sample?;
+            let sample = sample?;
+            ensure!(
+                sample.is_finite(),
+                "speech detection received non-finite PCM"
+            );
+            // Float decoders/resamplers can overshoot full scale. Saturate only
+            // the detector input; preserve the saved waveform and ASR input.
+            *slot = sample.clamp(-1., 1.);
             count += 1;
         }
         probabilities.push(

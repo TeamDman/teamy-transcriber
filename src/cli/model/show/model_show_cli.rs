@@ -32,7 +32,11 @@ impl ModelShowArgs {
             path: inventory.root.display().to_string(),
             exists: inventory.exists,
             file_count: inventory.file_count,
-            download_policy: "assume local files; CDN acquisition is deferred".to_string(),
+            download_policy: format!(
+                "download explicitly with hf download {} --revision {} --quiet; then run teamy-transcriber model prepare",
+                crate::native_whisper::selection::DEFAULT_REPOSITORY,
+                crate::native_whisper::selection::DEFAULT_REVISION
+            ),
         }))
     }
 }

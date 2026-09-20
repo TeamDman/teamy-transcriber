@@ -175,6 +175,15 @@ pub fn prepare_safetensors_model(
     .wrap_err_with(|| format!("failed to write {}", dims_path.display()))?;
 
     let artifacts = inspect_model_dir(output_dir)?;
+    if source_dir.join(super::speech::DIRECTORY).exists() {
+        super::speech::validate(&source_dir.join(super::speech::DIRECTORY))?;
+        super::speech::prepare(
+            &source_dir
+                .join(super::speech::DIRECTORY)
+                .join("silero.safetensors"),
+            output_dir,
+        )?;
+    }
     partial_output.commit();
     Ok(artifacts)
 }

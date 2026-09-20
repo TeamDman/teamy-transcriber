@@ -22,7 +22,7 @@ pub enum RecordingKind {
 }
 
 impl RecordingKind {
-    const fn asset_kind(self) -> AssetKind {
+    pub(crate) const fn asset_kind(self) -> AssetKind {
         match self {
             Self::Audio => AssetKind::AudioFile,
             Self::Video => AssetKind::VideoFile,
@@ -44,7 +44,7 @@ pub struct RecordingCreateArgs {
     /// Source audio/video path or the intended microphone output path.
     #[facet(args::positional)]
     pub source: String,
-    /// Source kind; defaults to audio.
+    /// Source kind; omitted infers common video extensions, otherwise audio.
     #[facet(args::named, default)]
     #[arbitrary(default)]
     pub kind: Option<RecordingKind>,
@@ -64,7 +64,10 @@ impl RecordingCreateArgs {
         let store = RecordingStore::new(app_home.0.clone());
         let recording_id = RecordingId::new();
         let source = SourceAsset::new(
-            self.kind.unwrap_or(RecordingKind::Audio).asset_kind(),
+            self.kind.map_or_else(
+                || crate::workflow::asset_kind_for_path(std::path::Path::new(&self.source)),
+                RecordingKind::asset_kind,
+            ),
             PathBuf::from(&self.source),
         )?;
         let mut state = AppState::new();

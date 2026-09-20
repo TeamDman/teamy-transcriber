@@ -9,5 +9,6 @@ pub mod cuda;
 pub mod model;
 pub mod prepare;
 pub mod safetensors_manifest;
+pub mod selection;
 pub mod speech;
 pub mod whisper;

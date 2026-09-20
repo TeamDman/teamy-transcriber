@@ -99,6 +99,70 @@ fn exercise(root: &Path, model: &Path, weights: &Path) -> Result<()> {
     );
     std::fs::write(&destination, saved)?;
     exercise_silent_workflow(root, &staged, &wav)?;
+    exercise_float_overshoot(root, &staged)?;
+    let copied = root.join("prepared-with-vad");
+    teamy_transcriber::native_whisper::prepare::prepare_safetensors_model(&staged, &copied)?;
+    speech::validate(&copied.join("vad"))?;
+    Ok(())
+}
+
+fn exercise_float_overshoot(root: &Path, model: &Path) -> Result<()> {
+    let mut detected = Vec::new();
+    for clipped in [false, true] {
+        let path = root.join(format!("overshoot-{clipped}.wav"));
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )?;
+        for index in 0..16017 {
+            let sample: f32 = if index % 13 < 6 { 1.25 } else { -1.125 };
+            writer.write_sample(if clipped {
+                sample.clamp(-1., 1.)
+            } else {
+                sample
+            })?;
+        }
+        writer.finalize()?;
+        let before = std::fs::read(&path)?;
+        let SpeechPlan::Detected { ranges, .. } = speech::detect(model, &path, &mut || false)?
+        else {
+            eyre::bail!("expected complete detection for finite float audio");
+        };
+        ensure!(
+            std::fs::read(&path)? == before,
+            "detection changed input samples"
+        );
+        detected.push(ranges);
+    }
+    ensure!(
+        detected[0] == detected[1],
+        "float saturation differs from clipped reference"
+    );
+    for sample in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let path = root.join("nonfinite.wav");
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )?;
+        writer.write_sample(sample)?;
+        writer.finalize()?;
+        ensure!(
+            speech::detect(model, &path, &mut || false)
+                .unwrap_err()
+                .to_string()
+                .contains("non-finite PCM")
+        );
+    }
     Ok(())
 }
 

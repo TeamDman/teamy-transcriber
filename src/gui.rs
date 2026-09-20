@@ -2304,15 +2304,7 @@ fn next_gui_step(state: &GuiState) -> &'static str {
 }
 
 fn asset_kind_for_path(path: &Path) -> AssetKind {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("mp4" | "mov" | "mkv" | "webm" | "avi") => AssetKind::VideoFile,
-        _ => AssetKind::AudioFile,
-    }
+    crate::workflow::asset_kind_for_path(path)
 }
 
 fn is_supported_media_path(path: &Path) -> bool {

@@ -39,7 +39,30 @@ preserves them. Existing recordings and transcript history remain readable.
 Supply canonical safetensors weights for this runtime. The build has no inference
 backend feature switch, and the installer has no `-Backend` option.
 
-Use the recording workflow with `--model-dir <prepared-model>`.
+For a ready package containing large-v3 and Silero speech detection, run:
+
+```powershell
+hf download TeamDman/teamy-transcriber-whisper-large-v3 --revision v1 --quiet
+teamy-transcriber model prepare
+teamy-transcriber transcribe "example.webm"
+```
+
+The public [model card](https://huggingface.co/TeamDman/teamy-transcriber-whisper-large-v3)
+includes source revisions, licenses, checksums and validation limits. Automatic
+discovery matches immutable commit `ca74fe211e39bcb869ae19204c39b7b4a2967107`
+through local `hf cache list --revisions --format json`; it never contacts the
+Hub. `model prepare --source-dir <prepared-model>` selects another prepared
+folder explicitly. Selection validates and saves its absolute path without
+copying or re-encoding weights. The environment model override takes precedence.
+Keep the selected HF snapshot on disk while using it.
+
+The shortcut prints plain text and cleans its recording intermediates only after
+successful output. Errors retain them and print a `transcribe --resume <UUID>`
+command; resume reuses saved audio and completed transcripts, including edits.
+Use `--keep-recording` to retain successful work, or the manual recording
+workflow with `--model-dir <prepared-model>` for individual steps.
+`--no-vad` uses contiguous 30-second windows for singing or music that the speech
+detector may miss. The default reports no speech explicitly when detection is empty.
 `TEAMY_TRANSCRIBER_CUDA_DEVICE` selects a device index (default zero). Model
 preparation and inference remain offline.
 
@@ -264,7 +287,8 @@ duration. It returns sample ranges; merging retains silence inside each span.
 Only 16 kHz is currently supported.
 
 Native CLI/GUI builds can use this detector in the normal recording workflow.
-VAD weights are not downloaded or installed automatically. To prepare an exact
+The ready HF package includes VAD weights; they are not downloaded automatically.
+To prepare another exact
 reference pair, use the local Silero version that the Python benchmark loads:
 
 ```powershell
@@ -282,6 +306,9 @@ then publishes the `vad/` directory with one rename. It refuses to overwrite an
 existing detector. Runtime loading verifies the manifest and weights before
 scanning audio, with cancellation checked every 512 samples. Silence is a
 successful `no_speech` result and does not initialize Whisper or CUDA.
+Float audio can exceed full scale after decoding or resampling. The application
+saturates finite detector input to [-1, 1], preserving the saved waveform and
+Whisper input; non-finite samples remain an explicit error.
 
 For a fresh recording, omitting `--chunk-duration-ms` (GUI `AUTO`) detects and
 merges speech into windows of at most 30 seconds. Without a prepared detector,

@@ -8,6 +8,7 @@ pub mod microphone;
 pub mod model;
 pub mod output;
 pub mod recording;
+pub mod transcribe;
 pub mod verify;
 
 use crate::cli::cache::CacheArgs;
@@ -87,6 +88,8 @@ pub enum Command {
     Microphone(MicrophoneArgs),
     /// Recording and clip commands.
     Recording(RecordingArgs),
+    /// Transcribe a media file, printing text and cleaning up successful work.
+    Transcribe(transcribe::TranscribeArgs),
     /// Reproducible local speech verification commands.
     Verify(VerifyArgs),
 }
@@ -105,6 +108,7 @@ impl Command {
             Command::Model(args) => args.invoke().await,
             Command::Microphone(args) => args.invoke().await,
             Command::Recording(args) => args.invoke().await,
+            Command::Transcribe(args) => args.invoke(cancellation_token),
             Command::Verify(args) => args.invoke().await,
         }
     }

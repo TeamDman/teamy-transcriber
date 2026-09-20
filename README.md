@@ -17,7 +17,50 @@ The project is informed by Teamy-Studio, teamy-llm-service, teamy-terminal, whis
 
 ## Current command surface
 
-The initial repository baseline is a template-backed diagnostic CLI:
+For one-file transcription, install the executable with `./update.ps1`, download
+the [ready model package](https://huggingface.co/TeamDman/teamy-transcriber-whisper-large-v3)
+once, then select it:
+
+~~~powershell
+hf download TeamDman/teamy-transcriber-whisper-large-v3 --revision v1 --quiet
+teamy-transcriber model prepare
+teamy-transcriber transcribe "example.webm"
+~~~
+
+`hf download --quiet` prints the downloaded folder. `model prepare` with no
+arguments revalidates the configured model or discovers the released package in
+the local HF cache. It remembers that folder in application configuration; it
+does not copy or re-encode ready weights, and never downloads anything. To select
+a folder explicitly, use `model prepare --source-dir <downloaded-folder>`.
+Keep the selected folder available: removing it from the HF cache makes the
+model unavailable until it is downloaded again. `model show` reports the selection.
+
+`transcribe FILE` creates a recording, prepares audio, transcribes it, prints
+plain text, and removes that recording's intermediate files after successful
+output. It leaves the source file and model untouched. Use `--output result.txt`
+to also save a new text file, `--keep-recording` to retain intermediates on
+success, or `--output-format json` before the command for a structured report.
+Existing output files are never overwritten.
+Speech detection can miss singing or speech mixed with music. If it reports
+no speech, use `transcribe "example.webm" --no-vad` to transcribe the entire
+file in windows of up to 30 seconds.
+
+If a step fails or is cancelled, the error identifies the retained recording
+and prints `teamy-transcriber transcribe --resume <recording-id>`. Fix the cause
+and run that command, repeating any needed model/output options. Resume reuses
+prepared audio, completed transcripts and edits, and transcribes only unfinished
+clips. Failed output also retains the recording. Cleanup failures report that
+some files may remain.
+
+For manual control, `recording create FILE` only saves a source reference and
+returns its UUID. `recording prepare UUID` extracts or normalizes its audio to
+16 kHz mono; neither command transcribes. Both `recording create` and the shortcut
+infer video from common extensions, including `.webm`, `.mp4`, `.mkv` and `.mov`,
+case-insensitively. `--kind audio` or `--kind video` overrides that inference.
+The manual recording commands retain their files until explicitly removed.
+
+The remaining command surface includes diagnostics, capture, GUI and manual
+recording operations:
 
 ~~~powershell
 # With no arguments, the executable opens the GUI directly:
@@ -61,8 +104,7 @@ contiguous, non-overlapping clip records and resumes from their stable IDs
 after a failure; omitted chunking reuses existing clips or creates windows of
 at most 30 seconds. The native runtime can use prepared local Silero
 weights for automatic speech windows and skip silence without loading Whisper;
-see [native inference and model preparation](native/README.md). Video fixture verification, runtime
-installation, and model/CDN acquisition remain later slices. During
+see [native inference and model preparation](native/README.md). During
 chunked transcription, `CANCEL`/`Escape` cooperatively stop after the active
 clip and retain completed clip transcripts.
 The default decoder budget is the Whisper text-context limit; use
@@ -127,15 +169,16 @@ dialog, select a canonical safetensors folder containing `config.json` and
 after validation. The headless equivalent is:
 
 ~~~powershell
-.\target\debug\teamy-transcriber.exe model prepare `
+teamy-transcriber model prepare `
   --source-dir C:\path\to\canonical-whisper `
   --output-dir C:\path\to\teamy-transcriber-model
 ~~~
 
-This command accepts one `model.safetensors` file or an indexed
+With an explicit output directory, this command accepts one `model.safetensors` file or an indexed
 `model.safetensors.index.json` package plus matching `config.json` and
 `tokenizer.json`; it performs no download and refuses to overwrite an
-existing directory.
+existing directory. It copies tensor files unchanged, writes dimensions and
+selects the new package. Users of the ready HF package do not need this step.
 
 The native model package or source checkpoint must be available
 locally; the application does not download

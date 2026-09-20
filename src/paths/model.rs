@@ -24,6 +24,11 @@ impl ModelHome {
             return Ok(Self(PathBuf::from(override_dir)));
         }
 
+        if let Some(selected) =
+            crate::native_whisper::selection::read_selection(&super::AppHome::resolve()?.0)?
+        {
+            return Ok(Self(selected));
+        }
         Ok(Self(CacheHome::resolve()?.0.join("models")))
     }
 }

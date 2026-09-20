@@ -145,6 +145,7 @@ impl Fixture {
             stop,
             progress,
             backend,
+            false,
         )
     }
     fn statuses(&self) -> Result<Vec<ClipStatus>> {
@@ -250,6 +251,42 @@ fn batch_failure_keeps_completed_work_and_clears_processing() -> Result<()> {
 }
 
 #[test]
+fn resume_reuses_completed_and_edited_clips_and_only_infers_unfinished_clips() -> Result<()> {
+    let f = Fixture::new()?;
+    let _ = f
+        .run(&Backend::new(Mode::FailAfterFirst), None, None)
+        .unwrap_err();
+    let saved = f.store.load_recording(f.id)?;
+    let first = saved.transcripts[0].clone();
+    let edited_id = commit_transcript_edit(&f.store, f.id, first.clip_id, "saved edit".into())?;
+    let backend = Backend::new(Mode::Normal);
+    let resume = || {
+        transcribe_recording_inner(
+            &f.store,
+            f.id,
+            Some(1_000_000),
+            AudioProfile::Original,
+            None,
+            None,
+            &backend,
+            true,
+        )
+    };
+    let result = resume()?;
+    assert_eq!(result.chunks.len(), 4);
+    assert_eq!(result.chunks[0].transcript_id, edited_id);
+    assert_eq!(result.chunks[0].text, "saved edit");
+    assert_eq!(*backend.calls.borrow(), [2, 1]);
+    assert_eq!(f.store.load_recording(f.id)?.transcripts.len(), 5);
+    backend.calls.borrow_mut().clear();
+    let repeated = resume()?;
+    assert!(backend.calls.borrow().is_empty());
+    assert_eq!(repeated.chunks[0].transcript_id, edited_id);
+    assert_eq!(f.store.load_recording(f.id)?.transcripts.len(), 5);
+    Ok(())
+}
+
+#[test]
 fn invalid_completion_sequences_never_commit_another_clips_text() -> Result<()> {
     for mode in [Mode::OutOfOrder, Mode::Omit] {
         let f = Fixture::new()?;
@@ -331,6 +368,7 @@ fn speech_plans_keep_source_offsets_and_existing_edits_across_detector_changes()
             None,
             None,
             backend,
+            false,
         )
     };
     let speech = run(&backend)?;
@@ -403,6 +441,7 @@ fn silence_and_cancelled_planning_do_not_invoke_asr_or_leave_partial_plans() -> 
             None,
             None,
             &backend,
+            false,
         )?;
         assert_eq!(report.no_speech, no_speech);
         assert_eq!(report.cancelled, cancelled);

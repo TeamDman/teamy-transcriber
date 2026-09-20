@@ -177,6 +177,7 @@ impl TranscriptionSession {
             stop_requested,
             progress,
             backend,
+            false,
         );
         if result.is_err() {
             self.backend = None;
@@ -228,6 +229,23 @@ pub fn create_recording(
         )
         .wrap_err("failed to persist recording manifest")?;
     Ok(recording_id)
+}
+
+/// Infer a source category without opening or decoding the media.
+#[must_use]
+pub fn asset_kind_for_path(path: &Path) -> AssetKind {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some(
+            "mp4" | "mov" | "mkv" | "webm" | "avi" | "m4v" | "mpeg" | "mpg" | "wmv" | "flv" | "ts"
+            | "mts",
+        ) => AssetKind::VideoFile,
+        _ => AssetKind::AudioFile,
+    }
 }
 
 /// Move an existing clip in the persisted recording order.
@@ -828,6 +846,35 @@ pub fn transcribe_recording_with_profile_and_cancellation_and_progress(
     )
 }
 
+/// Continue a saved recording, reusing completed clips without another inference.
+/// # Errors
+/// Returns recording, model, inference or persistence errors for unfinished clips.
+pub fn resume_recording(
+    store: &RecordingStore,
+    recording_id: RecordingId,
+    options: TranscriptionOptions,
+    stop_requested: Option<&AtomicBool>,
+) -> Result<TranscriptionReport> {
+    let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+        model_dir: options.model_dir,
+        max_decode_tokens: options.max_decode_tokens,
+    });
+    transcribe_recording_inner(
+        store,
+        recording_id,
+        options.chunk_duration_us,
+        options.profile,
+        stop_requested,
+        None,
+        &backend,
+        true,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Shared recording runner preserves the existing session controls and explicit resume policy"
+)]
 fn transcribe_recording_inner(
     store: &RecordingStore,
     recording_id: RecordingId,
@@ -836,6 +883,7 @@ fn transcribe_recording_inner(
     stop_requested: Option<&AtomicBool>,
     mut progress: Option<&mut dyn FnMut(usize, usize)>,
     backend: &dyn TranscriptionBackend,
+    reuse_completed: bool,
 ) -> Result<TranscriptionReport> {
     let mut state = store
         .load_state(recording_id)
@@ -884,7 +932,40 @@ fn transcribe_recording_inner(
             cancelled = true;
             break;
         }
-        cancelled = batch.run(&mut state, group, &mut should_stop, &mut |chunk| {
+        let mut pending = Vec::new();
+        for clip in group {
+            let saved = if reuse_completed
+                && matches!(clip.status, ClipStatus::Transcribed | ClipStatus::Edited)
+            {
+                state.recording(recording_id).and_then(|recording| {
+                    recording
+                        .transcripts
+                        .iter()
+                        .rev()
+                        .find(|transcript| transcript.clip_id == clip.id)
+                })
+            } else {
+                None
+            };
+            if let Some(saved) = saved {
+                chunks.push(TranscribedChunk {
+                    clip_id: clip.id,
+                    transcript_id: saved.id,
+                    source_range: clip.source_range,
+                    audio_path: normalized_path.clone(),
+                    text: saved.text.clone(),
+                });
+                if let Some(progress) = progress.as_deref_mut() {
+                    progress(chunks.len(), total_clips);
+                }
+            } else {
+                pending.push(clip.clone());
+            }
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        cancelled = batch.run(&mut state, &pending, &mut should_stop, &mut |chunk| {
             chunks.push(chunk);
             if let Some(progress) = progress.as_deref_mut() {
                 progress(chunks.len(), total_clips);
@@ -894,6 +975,7 @@ fn transcribe_recording_inner(
             break;
         }
     }
+    chunks.sort_by_key(|chunk| chunk.source_range.start_us);
     Ok(TranscriptionReport {
         backend_id,
         chunks,
