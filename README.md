@@ -58,6 +58,11 @@ returns its UUID. `recording prepare UUID` extracts or normalizes its audio to
 infer video from common extensions, including `.webm`, `.mp4`, `.mkv` and `.mov`,
 case-insensitively. `--kind audio` or `--kind video` overrides that inference.
 The manual recording commands retain their files until explicitly removed.
+Use `teamy-transcriber recording list` to find saved recording UUIDs, source
+paths, status and clip/transcript counts. It reads existing state without loading
+a model. `teamy-transcriber --output-format json recording list` returns an array
+for scripts (empty when there are no saved recordings). Pass a listed UUID to
+`recording show` for details or `transcribe --resume` to continue retained work.
 
 The remaining command surface includes diagnostics, capture, GUI and manual
 recording operations:

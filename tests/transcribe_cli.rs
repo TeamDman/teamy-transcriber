@@ -27,6 +27,22 @@ fn missing_model_retains_one_recording_and_resume_reuses_it() {
     assert_eq!(recordings.len(), 1);
     assert_eq!(recordings[0].source.kind, AssetKind::VideoFile);
     let id = recordings[0].id.to_string();
+    let receipt_path = store.events_path(recordings[0].id);
+    let saved_receipt = std::fs::read(&receipt_path).unwrap();
+    for format in ["text", "json", "csv"] {
+        let listed = run(&root, &["--output-format", format, "recording", "list"]);
+        assert!(
+            listed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        let listing = String::from_utf8_lossy(&listed.stdout);
+        assert!(listing.contains(&id), "{listing}");
+        assert!(listing.contains("speaker's [example].WEBM"), "{listing}");
+        assert!(listing.contains("clip_count"), "{listing}");
+        assert!(listing.contains("transcript_count"), "{listing}");
+    }
+    assert_eq!(std::fs::read(receipt_path).unwrap(), saved_receipt);
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("NOT cleaned up"), "{error}");
     assert!(
@@ -38,6 +54,19 @@ fn missing_model_retains_one_recording_and_resume_reuses_it() {
     assert_eq!(store.list_recordings().unwrap().len(), 1);
     assert!(source.is_file());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recording_list_on_a_fresh_home_is_empty_and_does_not_create_storage() {
+    let root = std::env::temp_dir().join(format!("recording-list-{}", uuid::Uuid::new_v4()));
+    let listed = run(&root, &["--output-format", "json", "recording", "list"]);
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
+    assert!(!root.exists());
 }
 
 #[test]
