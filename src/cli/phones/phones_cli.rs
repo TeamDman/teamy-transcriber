@@ -72,6 +72,9 @@ impl PhonesArgs {
     }
 }
 impl CliOutputValue for Report {
+    fn default_format(&self) -> Option<OutputFormat> {
+        Some(OutputFormat::Text)
+    }
     fn render(&self, format: OutputFormat, _stdout_is_terminal: bool) -> Result<Option<String>> {
         Ok(Some(match format {
             OutputFormat::Text => self
