@@ -19,7 +19,7 @@ pub struct MicrophoneTranscribeArgs {
     /// Stop capture after this many milliseconds; omitted records until Ctrl+C.
     #[facet(args::named)]
     pub duration_ms: Option<u64>,
-    /// Audio window length in milliseconds (500..30000; default 5000).
+    /// Maximum audio window in milliseconds; VAD submits pauses sooner (500..30000; default 5000).
     #[facet(args::named)]
     pub chunk_duration_ms: Option<u64>,
     /// Override the selected native model package.
@@ -47,7 +47,7 @@ impl MicrophoneTranscribeArgs {
         crate::native_whisper::selection::validate_prepared(&model)?;
         let store = crate::storage::RecordingStore::new(AppHome::resolve()?.0);
         eprintln!(
-            "Transcribing in {chunk_ms} ms windows. Captured recordings are retained; use recording list to find them."
+            "Transcribing at speech pauses (320 ms quiet), with a {chunk_ms} ms maximum window. Captured recordings are retained; use recording list to find them."
         );
         crate::live_microphone::transcribe(
             &store,

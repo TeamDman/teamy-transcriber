@@ -88,7 +88,7 @@ cargo run -- recording clip add <recording-id> 0 30000000
 # With a local native model package already installed:
 cargo run -- recording transcribe <recording-id> --model-dir C:\path\to\models
 # Optional deterministic fixed-duration chunks:
-cargo run -- recording transcribe <recording-id> --chunk-duration-ms 30000
+cargo run -- recording transcribe <recording-id> --chunk-duration-ms 5000
 # Export committed transcript text after transcription:
 cargo run -- recording export <recording-id>
 ~~~
@@ -270,12 +270,14 @@ This repository is distributed under the Mozilla Public License 2.0. See
 ```powershell
 teamy-transcriber microphone transcribe
 teamy-transcriber microphone transcribe --duration-ms 10000
-teamy-transcriber microphone transcribe --chunk-duration-ms 3000
+teamy-transcriber microphone transcribe --chunk-duration-ms 500
 ```
 
-The default is five-second audio windows. Transcripts are flushed to stdout
-while capture continues; status goes to stderr. The selected model's VAD skips
-silence, and one inference session stays resident between windows. Initial model
+Streaming Silero VAD submits audio after roughly 320 ms of silence following
+speech. The default five-second window is a maximum for continuous speech;
+`--chunk-duration-ms` changes that cap. Models without VAD use fixed windows.
+Transcripts are flushed to stdout while capture continues; status goes to stderr.
+One inference session stays resident between submissions. Initial model
 loading adds latency to the first result. Fixed window boundaries can split words;
 this command does not emit partial word hypotheses.
 

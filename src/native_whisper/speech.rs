@@ -83,7 +83,7 @@ pub fn validate(directory: &Path) -> Result<()> {
     load(directory).map(|_| ())
 }
 
-fn load(directory: &Path) -> Result<(Silero, String)> {
+pub(crate) fn load(directory: &Path) -> Result<(Silero, String)> {
     let manifest: SpeechModelManifest =
         facet_json::from_slice(&read_bounded(&directory.join(MANIFEST), 8192)?)?;
     ensure!(

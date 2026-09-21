@@ -20,6 +20,8 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::sync_channel;
 
+mod endpoint;
+
 type SampleSink<'a> = dyn FnMut(&[f32], u32) -> Result<()> + 'a;
 
 pub(crate) fn transcribe<C>(
@@ -33,7 +35,8 @@ where
     C: FnOnce(&AtomicBool, &mut SampleSink<'_>) -> Result<()> + Send,
 {
     let mut session = TranscriptionSession::default();
-    pipeline(store, chunk_ms, capture, |id| {
+    let detector = endpoint::Detector::load(model_dir)?;
+    pipeline(store, chunk_ms, detector, capture, |id| {
         let result: Result<()> = (|| {
             prepare_recording(store, id)?;
             let report = session.transcribe(store, id, TranscriptionOptions {
@@ -56,7 +59,13 @@ fn recovery(id: RecordingId) -> String {
     )
 }
 
-fn pipeline<C, F>(store: &RecordingStore, chunk_ms: u64, capture: C, mut consume: F) -> Result<()>
+fn pipeline<C, F>(
+    store: &RecordingStore,
+    chunk_ms: u64,
+    detector: Option<endpoint::Detector>,
+    capture: C,
+    mut consume: F,
+) -> Result<()>
 where
     C: FnOnce(&AtomicBool, &mut SampleSink<'_>) -> Result<()> + Send,
     F: FnMut(RecordingId) -> Result<()>,
@@ -73,6 +82,7 @@ where
                 store,
                 chunk_ms,
                 sender,
+                detector,
                 rate: None,
                 samples: Vec::new(),
             };
@@ -104,10 +114,11 @@ struct WindowRecorder<'a> {
     sender: SyncSender<RecordingId>,
     rate: Option<u32>,
     samples: Vec<f32>,
+    detector: Option<endpoint::Detector>,
 }
 
 impl WindowRecorder<'_> {
-    fn push(&mut self, mut samples: &[f32], rate: u32) -> Result<()> {
+    fn push(&mut self, samples: &[f32], rate: u32) -> Result<()> {
         ensure!(
             rate > 0 && samples.iter().all(|sample| sample.is_finite()),
             "invalid microphone PCM"
@@ -118,11 +129,13 @@ impl WindowRecorder<'_> {
         );
         let size = usize::try_from(u64::from(rate) * self.chunk_ms / 1000)?;
         ensure!(size > 0, "audio window is empty");
-        while !samples.is_empty() {
-            let count = (size - self.samples.len()).min(samples.len());
-            self.samples.extend_from_slice(&samples[..count]);
-            samples = &samples[count..];
-            if self.samples.len() == size {
+        for &sample in samples {
+            self.samples.push(sample);
+            let endpoint = match self.detector.as_mut() {
+                Some(detector) => detector.push(sample, rate)?,
+                None => false,
+            };
+            if endpoint || self.samples.len() == size {
                 self.finish()?;
             }
         }
@@ -132,6 +145,9 @@ impl WindowRecorder<'_> {
     fn finish(&mut self) -> Result<()> {
         if self.samples.is_empty() {
             return Ok(());
+        }
+        if let Some(detector) = &mut self.detector {
+            detector.boundary();
         }
         let samples = std::mem::take(&mut self.samples);
         let id = RecordingId::new();
@@ -211,6 +227,7 @@ mod tests {
         pipeline(
             &store,
             500,
+            None,
             move |_, sink| {
                 sink(&vec![0.; 1200], 1000)?;
                 visible.recv_timeout(Duration::from_secs(5))?;
@@ -245,6 +262,7 @@ mod tests {
         let error = pipeline(
             &store,
             500,
+            None,
             |abort, sink| {
                 sink(&vec![0.; 700], 1000)?;
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -272,6 +290,7 @@ mod tests {
         let error = pipeline(
             &store,
             500,
+            None,
             |_, sink| {
                 let result = sink(&vec![0.; 10000], 1000);
                 done.send(())?;
@@ -316,8 +335,8 @@ mod tests {
         let mut reader = hound::WavReader::open(std::env::var("TEST_WAV")?)?;
         let spec = reader.spec();
         ensure!(spec.channels == 1);
-        let count = spec.sample_rate as usize * 6;
-        let samples: Vec<f32> = if spec.sample_format == hound::SampleFormat::Float {
+        let count = spec.sample_rate as usize * 3;
+        let mut samples: Vec<f32> = if spec.sample_format == hound::SampleFormat::Float {
             reader
                 .samples::<f32>()
                 .take(count)
@@ -330,7 +349,8 @@ mod tests {
                 .map(|sample| sample.map(|value| f32::from(value) / 32768.0))
                 .collect::<std::result::Result<_, _>>()?
         };
-        ensure!(samples.len() == spec.sample_rate as usize * 6);
+        ensure!(samples.len() == count);
+        samples.extend(std::iter::repeat_n(0., spec.sample_rate as usize));
         let (visible, wait) = mpsc::channel();
         let mut output = Output {
             bytes: Vec::new(),
@@ -346,6 +366,7 @@ mod tests {
                 sink(&samples, spec.sample_rate)?;
                 // Capture cannot finish until actual inference has printed text.
                 wait.recv_timeout(Duration::from_mins(2))?;
+                sink(&samples[..spec.sample_rate as usize / 2], spec.sample_rate)?;
                 token.request_cancel("simulated Ctrl+C after live output");
                 ensure!(token.is_cancelled());
                 Ok(())
@@ -353,7 +374,7 @@ mod tests {
             &mut output,
         )?;
         ensure!(!std::str::from_utf8(&output.bytes)?.trim().is_empty());
-        assert_eq!(store.list_recordings()?.len(), 2);
+        assert!(store.list_recordings()?.len() >= 2);
         Ok(())
     }
 }
