@@ -98,6 +98,9 @@ fn cached_snapshot(json: &str, repository: &str, revision: &str) -> Result<PathB
 
 /// Discover only local HF cache contents; never download or refresh Hub metadata.
 pub fn find_cached_model() -> Result<PathBuf> {
+    find_cached_repository(DEFAULT_REPOSITORY, DEFAULT_REVISION)
+}
+pub(crate) fn find_cached_repository(repository: &str, revision: &str) -> Result<PathBuf> {
     let output = std::process::Command::new("hf")
         .args(["cache", "list", "--revisions", "--format", "json"])
         .env("HF_HUB_OFFLINE", "1")
@@ -110,11 +113,7 @@ pub fn find_cached_model() -> Result<PathBuf> {
         "hf cache list failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    cached_snapshot(
-        std::str::from_utf8(&output.stdout)?,
-        DEFAULT_REPOSITORY,
-        DEFAULT_REVISION,
-    )
+    cached_snapshot(std::str::from_utf8(&output.stdout)?, repository, revision)
 }
 
 #[cfg(test)]

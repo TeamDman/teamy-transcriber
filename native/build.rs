@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rerun-if-changed=kernels/phones.cuh");
     println!("cargo:rerun-if-changed=kernels/whisper.cu");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=TEAMY_WHISPER_CUDA_ARCH");

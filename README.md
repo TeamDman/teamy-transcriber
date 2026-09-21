@@ -288,3 +288,47 @@ Capture and inference queues are bounded; overload reports an error rather than
 silently dropping audio. Each window remains a saved recording, including after
 success. Use `recording list` to find it, or the retry command printed on failure.
 Use `microphone list` and `--device-id` to select a microphone.
+
+## Direct IPA phone recognition
+
+Phone recognition uses PhoneticXeus, a separate model from Whisper. Its CNN,
+E-Branchformer, self-conditioned CTC and greedy phone decoder are implemented in
+Rust/CUDA. Only canonical safetensors weights and JSON configuration/vocabulary
+are loaded. Python and Hugging Face remote code are not application dependencies.
+
+Download once, then validate and select the folder:
+
+```powershell
+hf download changelinglab/PhoneticXeus model.safetensors config.json ipa_vocab.json --revision 3a8d860fa68f8936ceb4196651221215bab9dae4 --local-dir ./phone-model
+teamy-transcriber model prepare-phones --source-dir ./phone-model
+teamy-transcriber phones ./speech.wav
+teamy-transcriber --output-format json phones ./speech.wav
+teamy-transcriber microphone transcribe --phones
+```
+
+The weights are about 2.3 GB. Selection does not convert them or download anything;
+it checks the model by loading it on CUDA. `phones --model-dir` and microphone
+`--phone-model-dir` override selection. `TEAMY_TRANSCRIBER_PHONE_MODEL_DIR` is also
+supported. Without selection, the CLI can discover the pinned revision in the
+local `hf` cache.
+
+Text output is joined IPA. JSON keeps the phone tokens separate (one token may
+contain several Unicode characters). Results and prepared audio stay in the
+recording directory as `phones.json`; use `recording list` to find that directory's
+recording ID. These results are kept separately from Whisper text transcripts.
+For live mode the phone model stays loaded, existing VAD pause submission is reused,
+and Ctrl+C stops capture and drains pending phone recognition. VAD comes from the
+selected Whisper package, or the package passed to microphone `--model-dir`;
+without VAD it falls back to fixed windows with a warning.
+
+This is utterance/chunk recognition, not a causal streaming acoustic model. Files
+are split at 30 seconds to bound attention memory. Live mode uses the usual
+five-second maximum and VAD pauses. Chunk boundaries can affect predictions.
+JSON chunk times describe audio windows, not individually aligned phone times.
+
+Reference: [PhoneticXeus](https://github.com/changelinglab/PhoneticXeus),
+[model and Apache-2.0 license](https://huggingface.co/changelinglab/PhoneticXeus).
+The native port includes the corrected conditioning at layers 4, 8 and 12.
+To reproduce numerical validation, use `tools/phone-reference.py` with a local
+reference clone, then run the ignored `phone_parity` test with `PHONE_TEST_MODEL`
+and `PHONE_TEST_REFERENCE`. Python is used only for this independent comparison.

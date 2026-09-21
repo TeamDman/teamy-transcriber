@@ -132,3 +132,16 @@ fn live_microphone_rejects_invalid_options_before_capture() {
     }
     assert!(!root.exists());
 }
+
+#[test]
+fn phone_model_option_requires_phone_mode_without_opening_microphone() {
+    let root = std::env::temp_dir().join(format!("phone-options-{}", uuid::Uuid::new_v4()));
+    let output = run(
+        &root,
+        &["microphone", "transcribe", "--phone-model-dir", "missing"],
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires --phones"));
+    assert!(output.stdout.is_empty());
+    assert!(!root.exists());
+}

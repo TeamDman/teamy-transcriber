@@ -53,6 +53,39 @@ where
     }).wrap_err("live microphone transcription stopped; captured windows remain available through recording list")
 }
 
+pub(crate) fn transcribe_phones<C>(
+    store: &RecordingStore,
+    vad_model_dir: &std::path::Path,
+    phone_model_dir: &std::path::Path,
+    chunk_ms: u64,
+    capture: C,
+    output: &mut dyn Write,
+) -> Result<()>
+where
+    C: FnOnce(&AtomicBool, &mut SampleSink<'_>) -> Result<()> + Send,
+{
+    let model = teamy_whisper_native::phones::PhoneModel::load(phone_model_dir, 0)
+        .map_err(|error| eyre::eyre!("{error:#}"))?;
+    let detector = endpoint::Detector::load(vad_model_dir)?;
+    pipeline(store, chunk_ms, detector, capture, |id| {
+        let run = (|| -> Result<()> {
+            let audio = prepare_recording(store, id)?;
+            let chunks = crate::phone_runtime::recognize_wav(&model, &audio.normalized_path, None)?;
+            std::fs::write(
+                store.recording_dir(id).join("phones.json"),
+                facet_json::to_string_pretty(&chunks)?,
+            )?;
+            for chunk in chunks {
+                if !chunk.ipa.is_empty() {
+                    writeln!(output, "{}", chunk.ipa)?;
+                    output.flush()?;
+                }
+            }
+            Ok(())
+        })();
+        run.wrap_err_with(|| format!("Phone recording {id} retained. Retry with teamy-transcriber phones <saved-source-wav> --model-dir <phone-model-folder>."))
+    })
+}
 fn recovery(id: RecordingId) -> String {
     format!(
         "Recording {id} was retained. Retry: teamy-transcriber transcribe --resume {id} --keep-recording"
@@ -360,6 +393,77 @@ mod tests {
         let token = CancellationToken::new();
         transcribe(
             &store,
+            &model,
+            5000,
+            move |_, sink| {
+                sink(&samples, spec.sample_rate)?;
+                // Capture cannot finish until actual inference has printed text.
+                wait.recv_timeout(Duration::from_mins(2))?;
+                sink(&samples[..spec.sample_rate as usize / 2], spec.sample_rate)?;
+                token.request_cancel("simulated Ctrl+C after live output");
+                ensure!(token.is_cancelled());
+                Ok(())
+            },
+            &mut output,
+        )?;
+        ensure!(!std::str::from_utf8(&output.bytes)?.trim().is_empty());
+        assert!(store.list_recordings()?.len() >= 2);
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires CUDA, PHONE_TEST_MODEL, TEST_MODEL for VAD and TEST_WAV"]
+    fn phones_are_flushed_before_stop_and_tail_is_drained() -> Result<()> {
+        struct Output {
+            bytes: Vec<u8>,
+            visible: mpsc::Sender<()>,
+            sent: bool,
+        }
+        impl Write for Output {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if !self.sent {
+                    self.visible.send(()).map_err(std::io::Error::other)?;
+                    self.sent = true;
+                }
+                Ok(())
+            }
+        }
+        let fixture = Fixture::new();
+        let store = RecordingStore::new(&fixture.0);
+        let model = PathBuf::from(std::env::var("PHONE_TEST_MODEL")?);
+        let vad = PathBuf::from(std::env::var("TEST_MODEL")?);
+        let mut reader = hound::WavReader::open(std::env::var("TEST_WAV")?)?;
+        let spec = reader.spec();
+        ensure!(spec.channels == 1);
+        let count = spec.sample_rate as usize * 3;
+        let mut samples: Vec<f32> = if spec.sample_format == hound::SampleFormat::Float {
+            reader
+                .samples::<f32>()
+                .take(count)
+                .collect::<std::result::Result<_, _>>()?
+        } else {
+            ensure!(spec.bits_per_sample == 16);
+            reader
+                .samples::<i16>()
+                .take(count)
+                .map(|sample| sample.map(|value| f32::from(value) / 32768.0))
+                .collect::<std::result::Result<_, _>>()?
+        };
+        ensure!(samples.len() == count);
+        samples.extend(std::iter::repeat_n(0., spec.sample_rate as usize));
+        let (visible, wait) = mpsc::channel();
+        let mut output = Output {
+            bytes: Vec::new(),
+            visible,
+            sent: false,
+        };
+        let token = CancellationToken::new();
+        transcribe_phones(
+            &store,
+            &vad,
             &model,
             5000,
             move |_, sink| {

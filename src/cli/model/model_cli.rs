@@ -24,6 +24,8 @@ pub enum ModelCommand {
     Prepare(ModelPrepareArgs),
     /// Prepare local data-only speech detection weights without downloading.
     PrepareVad(ModelPrepareVadArgs),
+    /// Select data-only `PhoneticXeus` phone recognition weights.
+    PreparePhones(super::prepare_phones::ModelPreparePhonesArgs),
 }
 
 impl ModelArgs {
@@ -35,6 +37,7 @@ impl ModelArgs {
             ModelCommand::Show(args) => args.invoke().await,
             ModelCommand::Prepare(args) => args.invoke().await,
             ModelCommand::PrepareVad(args) => args.invoke().await,
+            ModelCommand::PreparePhones(args) => args.invoke(),
         }
     }
 }

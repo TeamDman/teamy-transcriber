@@ -104,7 +104,7 @@ extern "C" int tw_linear(Session* s, const float* x, const float* w, const float
     if (b || r || gelu) affine<<<unsigned((n+255)/256),256,0,s->stream>>>(y,b,r,output,n,gelu);
     CUDA(cudaGetLastError()); return 0;
 }
-__global__ void norm(const float* x,const float* w,const float* b,float* y,int width) {
+__global__ void norm(const float* x,const float* w,const float* b,float* y,int width,float eps) {
     __shared__ float sums[256];
     int tid=threadIdx.x; size_t base=size_t(blockIdx.x)*width;
     float sum=0; for(int i=tid;i<width;i+=256) sum += x[base+i];
@@ -114,11 +114,11 @@ __global__ void norm(const float* x,const float* w,const float* b,float* y,int w
     for(int i=tid;i<width;i+=256) { float v=x[base+i]-mean; sum+=v*v; }
     sums[tid]=sum; __syncthreads();
     for(int d=128;d;d>>=1) { if(tid<d) sums[tid]+=sums[tid+d]; __syncthreads(); }
-    float inv=rsqrtf(sums[0]/width+1.e-5f);
+    float inv=rsqrtf(sums[0]/width+eps);
     for(int i=tid;i<width;i+=256) y[base+i]=(x[base+i]-mean)*inv*w[i]+b[i];
 }
 extern "C" int tw_norm(Session* s,const float* x,const float* w,const float* b,float* y,int rows,int width) {
-    norm<<<rows,256,0,s->stream>>>(x,w,b,y,width); CUDA(cudaGetLastError()); return 0;
+    norm<<<rows,256,0,s->stream>>>(x,w,b,y,width,1.e-5f); CUDA(cudaGetLastError()); return 0;
 }
 __global__ void columns(const float* x,float* col,int time,int channels,int out_time,int stride,int planar) {
     size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x, n=size_t(out_time)*channels*3;
@@ -244,3 +244,5 @@ extern "C" int tw_argmax(Session* s,const float* x,const float* allowed,float* r
 extern "C" int tw_argmax_batch(Session* s,const float* x,const float* allowed,float* result,int batch,int n) {
     argmax<<<batch,256,0,s->stream>>>(x,allowed,result,n); CUDA(cudaGetLastError()); return 0;
 }
+
+#include "phones.cuh"

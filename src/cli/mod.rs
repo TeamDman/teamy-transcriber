@@ -7,6 +7,7 @@ pub mod home;
 pub mod microphone;
 pub mod model;
 pub mod output;
+pub mod phones;
 pub mod recording;
 pub mod transcribe;
 pub mod verify;
@@ -92,6 +93,8 @@ pub enum Command {
     Transcribe(transcribe::TranscribeArgs),
     /// Reproducible local speech verification commands.
     Verify(VerifyArgs),
+    /// Recognize IPA phones directly from a media file.
+    Phones(phones::PhonesArgs),
 }
 
 impl Command {
@@ -110,6 +113,7 @@ impl Command {
             Command::Recording(args) => args.invoke().await,
             Command::Transcribe(args) => args.invoke(cancellation_token),
             Command::Verify(args) => args.invoke().await,
+            Command::Phones(args) => args.invoke(&cancellation_token),
         }
     }
 }
