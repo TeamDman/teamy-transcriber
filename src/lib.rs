@@ -5,6 +5,7 @@ pub mod capture;
 pub mod cli;
 pub mod domain;
 pub mod gui;
+pub(crate) mod live_microphone;
 pub mod logging_init;
 pub mod media;
 pub mod native_whisper;
@@ -105,6 +106,19 @@ pub fn main() -> eyre::Result<()> {
     .run()
     .unwrap();
 
+    // For live microphone transcription cancellation stops the producer; the
+    // consumer must finish queued audio and return success after draining.
+    let drains_capture = matches!(&cli.command, crate::cli::Command::Microphone(args)
+        if matches!(&args.command, crate::cli::microphone::MicrophoneCommand::Transcribe(_)));
+    if drains_capture
+        && cli
+            .global_args
+            .output_format
+            .is_some_and(|format| format != crate::cli::output::OutputFormat::Text)
+    {
+        eyre::bail!("live microphone transcription emits plain text; use --output-format text");
+    }
+
     let _stop_after_duration_thread = cli
         .global_args
         .stop_after
@@ -116,9 +130,13 @@ pub fn main() -> eyre::Result<()> {
     // Invoke whatever command was requested and render its output once at the top level
     let requested_output_format = cli.global_args.output_format;
     let output = cli.invoke(cancellation_token.clone())?;
-    output.check_cancellation(&cancellation_token)?;
+    if !drains_capture {
+        output.check_cancellation(&cancellation_token)?;
+    }
     output.emit(requested_output_format)?;
-    cancellation_token.bail_if_cancelled()?;
+    if !drains_capture {
+        cancellation_token.bail_if_cancelled()?;
+    }
     Ok(())
 }
 

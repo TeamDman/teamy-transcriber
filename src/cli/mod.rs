@@ -106,7 +106,7 @@ impl Command {
             Command::Home(args) => args.invoke().await,
             Command::Gui(args) => args.invoke().await,
             Command::Model(args) => args.invoke().await,
-            Command::Microphone(args) => args.invoke().await,
+            Command::Microphone(args) => args.invoke(cancellation_token).await,
             Command::Recording(args) => args.invoke().await,
             Command::Transcribe(args) => args.invoke(cancellation_token),
             Command::Verify(args) => args.invoke().await,

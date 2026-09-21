@@ -106,3 +106,29 @@ fn recording_create_infers_video_and_accepts_an_override() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn live_microphone_rejects_invalid_options_before_capture() {
+    let root = std::env::temp_dir().join(format!("microphone-cli-{}", uuid::Uuid::new_v4()));
+    for (args, expected) in [
+        (
+            vec!["microphone", "transcribe", "--duration-ms", "0"],
+            "greater than zero",
+        ),
+        (
+            vec!["microphone", "transcribe", "--chunk-duration-ms", "499"],
+            "between 500 and 30000",
+        ),
+        (
+            vec!["--output-format", "json", "microphone", "transcribe"],
+            "emits plain text",
+        ),
+    ] {
+        let output = run(&root, &args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{error}");
+    }
+    assert!(!root.exists());
+}

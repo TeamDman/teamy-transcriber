@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+pub(crate) mod live;
+
 #[derive(Clone, Debug, Eq, Facet, PartialEq)]
 pub struct AudioInputDevice {
     pub id: String,

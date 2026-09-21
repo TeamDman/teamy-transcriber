@@ -264,3 +264,25 @@ The path environment overrides are:
 
 This repository is distributed under the Mozilla Public License 2.0. See
 [LICENSE](G:/Programming/Repos/teamy-transcriber/LICENSE).
+
+## Live microphone transcription
+
+```powershell
+teamy-transcriber microphone transcribe
+teamy-transcriber microphone transcribe --duration-ms 10000
+teamy-transcriber microphone transcribe --chunk-duration-ms 3000
+```
+
+The default is five-second audio windows. Transcripts are flushed to stdout
+while capture continues; status goes to stderr. The selected model's VAD skips
+silence, and one inference session stays resident between windows. Initial model
+loading adds latency to the first result. Fixed window boundaries can split words;
+this command does not emit partial word hypotheses.
+
+Press Ctrl+C once to stop capture, transcribe the final partial window, drain
+queued work and exit successfully. Reaching `--duration-ms` does the same.
+Two rapid Ctrl+C presses force exit through the normal cancellation handler.
+Capture and inference queues are bounded; overload reports an error rather than
+silently dropping audio. Each window remains a saved recording, including after
+success. Use `recording list` to find it, or the retry command printed on failure.
+Use `microphone list` and `--device-id` to select a microphone.

@@ -9,6 +9,7 @@ use facet::Facet;
 use figue as args;
 use std::path::PathBuf;
 use std::time::Duration;
+use teamy_cancellation::CancellationToken;
 
 /// Inspect local microphone input devices.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -25,6 +26,8 @@ pub enum MicrophoneCommand {
     List(MicrophoneListArgs),
     /// Capture a bounded microphone interval into a persisted recording.
     Record(MicrophoneRecordArgs),
+    /// Transcribe microphone audio live; Ctrl+C stops capture and drains queued work.
+    Transcribe(super::transcribe::MicrophoneTranscribeArgs),
 }
 
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -52,10 +55,11 @@ impl MicrophoneArgs {
     /// # Errors
     ///
     /// Returns an error when microphone inventory cannot be queried.
-    pub async fn invoke(self) -> Result<CliOutput> {
+    pub async fn invoke(self, token: CancellationToken) -> Result<CliOutput> {
         match self.command {
             MicrophoneCommand::List(args) => args.invoke().await,
             MicrophoneCommand::Record(args) => args.invoke().await,
+            MicrophoneCommand::Transcribe(args) => args.invoke(&token),
         }
     }
 }
