@@ -11,6 +11,7 @@ pub mod media;
 pub mod native_whisper;
 pub mod paths;
 pub mod presentation;
+mod recording_cleanup;
 pub mod storage;
 pub mod transcription;
 pub mod verify;

@@ -63,6 +63,9 @@ paths, status and clip/transcript counts. It reads existing state without loadin
 a model. `teamy-transcriber --output-format json recording list` returns an array
 for scripts (empty when there are no saved recordings). Pass a listed UUID to
 `recording show` for details or `transcribe --resume` to continue retained work.
+`recording clean --dry-run` previews completed microphone recordings eligible
+for removal; `recording clean` removes them. Unfinished microphone windows and
+imported audio/video recordings are preserved.
 
 The remaining command surface includes diagnostics, capture, GUI and manual
 recording operations:
@@ -271,6 +274,7 @@ This repository is distributed under the Mozilla Public License 2.0. See
 teamy-transcriber microphone transcribe
 teamy-transcriber microphone transcribe --duration-ms 10000
 teamy-transcriber microphone transcribe --chunk-duration-ms 500
+teamy-transcriber microphone transcribe --keep-recording
 ```
 
 Streaming Silero VAD submits audio after roughly 320 ms of silence following
@@ -285,8 +289,11 @@ Press Ctrl+C once to stop capture, transcribe the final partial window, drain
 queued work and exit successfully. Reaching `--duration-ms` does the same.
 Two rapid Ctrl+C presses force exit through the normal cancellation handler.
 Capture and inference queues are bounded; overload reports an error rather than
-silently dropping audio. Each window remains a saved recording, including after
-success. Use `recording list` to find it, or the retry command printed on failure.
+silently dropping audio. Each completed window is removed after its text or
+phones reach stdout. Use `--keep-recording` to retain successful windows.
+Failed or unfinished windows remain available through `recording list` for
+recovery. To remove older completed microphone windows, preview with
+`recording clean --dry-run`, then run `recording clean`.
 Use `microphone list` and `--device-id` to select a microphone.
 
 ## Direct IPA phone recognition
@@ -313,9 +320,11 @@ supported. Without selection, the CLI can discover the pinned revision in the
 local `hf` cache.
 
 Text output is joined IPA. JSON keeps the phone tokens separate (one token may
-contain several Unicode characters). Results and prepared audio stay in the
-recording directory as `phones.json`; use `recording list` to find that directory's
-recording ID. These results are kept separately from Whisper text transcripts.
+contain several Unicode characters). Direct `phones` results and prepared audio
+stay in the recording directory as `phones.json`; use `recording list` to find
+that directory's recording ID. Live phone transcription removes successful
+windows by default, or retains them with `--keep-recording`. Phone results are
+kept separately from Whisper text transcripts.
 For live mode the phone model stays loaded, existing VAD pause submission is reused,
 and Ctrl+C stops capture and drains pending phone recognition. VAD comes from the
 selected Whisper package, or the package passed to microphone `--model-dir`;

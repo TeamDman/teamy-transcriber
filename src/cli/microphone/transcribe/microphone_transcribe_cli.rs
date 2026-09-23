@@ -32,6 +32,10 @@ pub struct MicrophoneTranscribeArgs {
     /// Phone model folder; only applies with --phones.
     #[facet(args::named)]
     pub phone_model_dir: Option<String>,
+    /// Keep each microphone recording and intermediate result after successful output.
+    #[facet(args::named, default)]
+    #[arbitrary(default)]
+    pub keep_recording: bool,
 }
 
 impl MicrophoneTranscribeArgs {
@@ -60,8 +64,15 @@ impl MicrophoneTranscribeArgs {
         }
         let store = crate::storage::RecordingStore::new(AppHome::resolve()?.0);
         eprintln!(
-            "Transcribing at speech pauses (320 ms quiet), with a {chunk_ms} ms maximum window. Captured recordings are retained; use recording list to find them."
+            "Transcribing at speech pauses (320 ms quiet), with a {chunk_ms} ms maximum window."
         );
+        if self.keep_recording {
+            eprintln!("Keeping completed microphone recordings; use recording list to find them.");
+        } else {
+            eprintln!(
+                "Completed microphone recordings are removed after output; failed or unfinished recordings are retained for recovery."
+            );
+        }
         let mut output = std::io::stdout().lock();
         if self.phones {
             let phones = crate::phone_runtime::resolve(self.phone_model_dir.as_deref())?;
@@ -70,6 +81,7 @@ impl MicrophoneTranscribeArgs {
                 &model,
                 &phones,
                 chunk_ms,
+                self.keep_recording,
                 |abort, sink| {
                     crate::capture::live::capture(
                         self.device_id.as_deref(),
@@ -86,6 +98,7 @@ impl MicrophoneTranscribeArgs {
                 &store,
                 &model,
                 chunk_ms,
+                self.keep_recording,
                 |abort, sink| {
                     crate::capture::live::capture(
                         self.device_id.as_deref(),

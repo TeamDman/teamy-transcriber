@@ -1,7 +1,11 @@
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+use teamy_transcriber::domain::AppState;
 use teamy_transcriber::domain::AssetKind;
+use teamy_transcriber::domain::Command as DomainCommand;
+use teamy_transcriber::domain::RecordingId;
+use teamy_transcriber::domain::SourceAsset;
 use teamy_transcriber::storage::RecordingStore;
 
 fn run(root: &Path, args: &[&str]) -> Output {
@@ -67,6 +71,79 @@ fn recording_list_on_a_fresh_home_is_empty_and_does_not_create_storage() {
     );
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "[]");
     assert!(!root.exists());
+}
+
+#[test]
+fn recording_clean_previews_and_removes_only_completed_microphone_windows() {
+    let root = std::env::temp_dir().join(format!("recording-clean-{}", uuid::Uuid::new_v4()));
+    let store = RecordingStore::new(root.join("app"));
+    let mut ids = Vec::new();
+    for (kind, saved, completed) in [
+        (AssetKind::MicrophoneRecording, true, true),
+        (AssetKind::MicrophoneRecording, true, false),
+        (AssetKind::MicrophoneRecording, false, false),
+        (AssetKind::AudioFile, true, false),
+    ] {
+        let id = RecordingId::new();
+        let source = store.recording_dir(id).join("source/sample.wav");
+        let mut state = AppState::new();
+        store
+            .apply_command(
+                &mut state,
+                DomainCommand::CreateRecording {
+                    recording_id: id,
+                    source: SourceAsset::new(kind, &source).unwrap(),
+                },
+            )
+            .unwrap();
+        if saved {
+            store
+                .apply_command(
+                    &mut state,
+                    DomainCommand::StartRecording { recording_id: id },
+                )
+                .unwrap();
+            store
+                .apply_command(
+                    &mut state,
+                    DomainCommand::CompleteRecording { recording_id: id },
+                )
+                .unwrap();
+        }
+        if completed {
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(source, b"audio").unwrap();
+            std::fs::write(store.recording_dir(id).join("phones.json"), "[]").unwrap();
+        }
+        ids.push(id);
+    }
+
+    let preview = run(
+        &root,
+        &["--output-format", "json", "recording", "clean", "--dry-run"],
+    );
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_text = String::from_utf8_lossy(&preview.stdout);
+    assert!(preview_text.contains("\"eligible\": 1"), "{preview_text}");
+    assert_eq!(store.list_recordings().unwrap().len(), 4);
+
+    let cleaned = run(&root, &["--output-format", "json", "recording", "clean"]);
+    assert!(
+        cleaned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cleaned.stderr)
+    );
+    let cleaned_text = String::from_utf8_lossy(&cleaned.stdout);
+    assert!(cleaned_text.contains("\"removed\": 1"), "{cleaned_text}");
+    assert!(!store.recording_dir(ids[0]).exists());
+    for id in &ids[1..] {
+        assert!(store.recording_dir(*id).exists());
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -28,6 +28,7 @@ pub(crate) fn transcribe<C>(
     store: &RecordingStore,
     model_dir: &std::path::Path,
     chunk_ms: u64,
+    keep_recording: bool,
     capture: C,
     output: &mut dyn Write,
 ) -> Result<()>
@@ -36,7 +37,7 @@ where
 {
     let mut session = TranscriptionSession::default();
     let detector = endpoint::Detector::load(model_dir)?;
-    pipeline(store, chunk_ms, detector, capture, |id| {
+    pipeline(store, chunk_ms, keep_recording, detector, capture, |id| {
         let result: Result<()> = (|| {
             prepare_recording(store, id)?;
             let report = session.transcribe(store, id, TranscriptionOptions {
@@ -50,7 +51,7 @@ where
             Ok(())
         })();
         result.wrap_err_with(|| recovery(id))
-    }).wrap_err("live microphone transcription stopped; captured windows remain available through recording list")
+    }).wrap_err("live microphone transcription stopped; failed or unprocessed windows remain available through recording list")
 }
 
 pub(crate) fn transcribe_phones<C>(
@@ -58,6 +59,7 @@ pub(crate) fn transcribe_phones<C>(
     vad_model_dir: &std::path::Path,
     phone_model_dir: &std::path::Path,
     chunk_ms: u64,
+    keep_recording: bool,
     capture: C,
     output: &mut dyn Write,
 ) -> Result<()>
@@ -67,7 +69,7 @@ where
     let model = teamy_whisper_native::phones::PhoneModel::load(phone_model_dir, 0)
         .map_err(|error| eyre::eyre!("{error:#}"))?;
     let detector = endpoint::Detector::load(vad_model_dir)?;
-    pipeline(store, chunk_ms, detector, capture, |id| {
+    pipeline(store, chunk_ms, keep_recording, detector, capture, |id| {
         let run = (|| -> Result<()> {
             let audio = prepare_recording(store, id)?;
             let chunks = crate::phone_runtime::recognize_wav(&model, &audio.normalized_path, None)?;
@@ -95,6 +97,7 @@ fn recovery(id: RecordingId) -> String {
 fn pipeline<C, F>(
     store: &RecordingStore,
     chunk_ms: u64,
+    keep_recording: bool,
     detector: Option<endpoint::Detector>,
     capture: C,
     mut consume: F,
@@ -133,6 +136,15 @@ where
                 abort.store(true, Ordering::Relaxed);
                 consumed = Err(error);
                 break;
+            }
+            if !keep_recording {
+                if let Err(error) = crate::recording_cleanup::remove_completed_microphone(store, id)
+                    .wrap_err_with(|| format!("output was emitted but cleanup of recording {id} failed; the recording was retained"))
+                {
+                    abort.store(true, Ordering::Relaxed);
+                    consumed = Err(error);
+                    break;
+                }
             }
         }
         drop(receiver);
@@ -263,6 +275,7 @@ mod tests {
         pipeline(
             &store,
             500,
+            true,
             None,
             move |_, sink| {
                 sink(&vec![0.; 1200], 1000)?;
@@ -298,6 +311,7 @@ mod tests {
         let error = pipeline(
             &store,
             500,
+            false,
             None,
             |abort, sink| {
                 sink(&vec![0.; 700], 1000)?;
@@ -318,6 +332,30 @@ mod tests {
     }
 
     #[test]
+    fn successful_output_removes_completed_windows() -> Result<()> {
+        let fixture = Fixture::new();
+        let store = RecordingStore::new(&fixture.0);
+        let mut emitted = Vec::new();
+        pipeline(
+            &store,
+            500,
+            false,
+            None,
+            |_, sink| sink(&vec![0.; 700], 1000),
+            |id| {
+                ensure!(store.recording_dir(id).is_dir());
+                std::fs::write(store.recording_dir(id).join("phones.json"), "[]")?;
+                writeln!(&mut emitted, "recognized")?;
+                emitted.flush()?;
+                Ok(())
+            },
+        )?;
+        assert_eq!(std::str::from_utf8(&emitted)?, "recognized\nrecognized\n");
+        assert!(store.list_recordings()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn slow_consumer_drains_all_saved_windows() -> Result<()> {
         let fixture = Fixture::new();
         let store = RecordingStore::new(&fixture.0);
@@ -327,6 +365,7 @@ mod tests {
         pipeline(
             &store,
             500,
+            true,
             None,
             |_, sink| {
                 sink(&vec![0.; 10000], 1000)?;
@@ -400,6 +439,7 @@ mod tests {
             &store,
             &model,
             5000,
+            false,
             move |_, sink| {
                 sink(&samples, spec.sample_rate)?;
                 // Capture cannot finish until actual inference has printed text.
@@ -412,7 +452,7 @@ mod tests {
             &mut output,
         )?;
         ensure!(!std::str::from_utf8(&output.bytes)?.trim().is_empty());
-        assert!(store.list_recordings()?.len() >= 2);
+        assert!(store.list_recordings()?.is_empty());
         Ok(())
     }
     #[test]
@@ -471,6 +511,7 @@ mod tests {
             &vad,
             &model,
             5000,
+            false,
             move |_, sink| {
                 sink(&samples, spec.sample_rate)?;
                 // Capture cannot finish until actual inference has printed text.
@@ -483,7 +524,7 @@ mod tests {
             &mut output,
         )?;
         ensure!(!std::str::from_utf8(&output.bytes)?.trim().is_empty());
-        assert!(store.list_recordings()?.len() >= 2);
+        assert!(store.list_recordings()?.is_empty());
         Ok(())
     }
 }

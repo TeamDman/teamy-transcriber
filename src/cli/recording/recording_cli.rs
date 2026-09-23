@@ -1,4 +1,5 @@
 use crate::cli::output::CliOutput;
+use crate::cli::recording::clean::RecordingCleanArgs;
 use crate::cli::recording::clip::ClipArgs;
 use crate::cli::recording::create::RecordingCreateArgs;
 use crate::cli::recording::export::RecordingExportArgs;
@@ -24,6 +25,8 @@ pub struct RecordingArgs {
 pub enum RecordingCommand {
     /// Manage immutable recording clips.
     Clip(ClipArgs),
+    /// Remove completed microphone recording intermediates.
+    Clean(RecordingCleanArgs),
     /// Create a durable recording manifest for an audio, video, or microphone source.
     Create(RecordingCreateArgs),
     /// Export committed transcript text for a recording.
@@ -45,6 +48,7 @@ impl RecordingArgs {
     pub async fn invoke(self) -> Result<CliOutput> {
         match self.command {
             RecordingCommand::Clip(args) => args.invoke().await,
+            RecordingCommand::Clean(args) => args.invoke().await,
             RecordingCommand::Create(args) => args.invoke().await,
             RecordingCommand::Export(args) => args.invoke().await,
             RecordingCommand::List(args) => args.invoke().await,
