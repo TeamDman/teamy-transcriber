@@ -43,6 +43,7 @@ use eyre::bail;
 use facet::Facet;
 use std::fmt::Write as _;
 use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -521,7 +522,7 @@ pub fn prepare_recording_with_tools_and_profile(
         AssetKind::AudioFile | AssetKind::MicrophoneRecording
             if source.extension().is_some_and(|extension| {
                 extension.to_string_lossy().eq_ignore_ascii_case("wav")
-            }) =>
+            }) && has_riff_wave_header(source).wrap_err("failed to inspect WAV header")? =>
         {
             WavMediaAdapter
                 .prepare_audio(source, &output_dir)
@@ -545,6 +546,39 @@ pub fn prepare_recording_with_tools_and_profile(
         normalized_path: prepared.path,
         metadata: prepared.metadata,
     })
+}
+
+fn has_riff_wave_header(source: &Path) -> Result<bool> {
+    let mut file = File::open(source)?;
+    let mut header = [0_u8; 12];
+    match file.read_exact(&mut header) {
+        Ok(()) => Ok(&header[..4] == b"RIFF" && &header[8..12] == b"WAVE"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod source_format_tests {
+    use super::has_riff_wave_header;
+
+    #[test]
+    fn wav_extension_does_not_override_mpeg_audio_header() {
+        let root = std::env::temp_dir().join(format!("source-format-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("audio.wav");
+        std::fs::write(&source, b"RIFF\x00\x00\x00\x00WAVE").unwrap();
+        assert!(has_riff_wave_header(&source).unwrap());
+        std::fs::write(
+            &source,
+            [0xff, 0xfa, 0x60, 0xc0, 0x21, 0xf2, 0, 2, 0, 0, 0, 0],
+        )
+        .unwrap();
+        assert!(!has_riff_wave_header(&source).unwrap());
+        std::fs::write(&source, b"RIFF").unwrap();
+        assert!(!has_riff_wave_header(&source).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// Return the persisted derived audio path for a profile selection.
