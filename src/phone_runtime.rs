@@ -29,7 +29,7 @@ pub(crate) fn resolve(explicit: Option<&str>) -> Result<PathBuf> {
         return Ok(PathBuf::from(s.model_dir));
     }
     crate::native_whisper::selection::find_cached_repository(REPOSITORY,REVISION)
-        .wrap_err("Phone model missing. Use hf download changelinglab/PhoneticXeus model.safetensors config.json ipa_vocab.json --revision 3a8d860fa68f8936ceb4196651221215bab9dae4; or pass --model-dir to phones / --phone-model-dir to microphone transcribe")
+        .wrap_err("Phone model missing. Use hf download changelinglab/PhoneticXeus model.safetensors config.json ipa_vocab.json --revision 3a8d860fa68f8936ceb4196651221215bab9dae4; or pass --model-dir to phones / --phone-model-dir to transcribe or microphone transcribe")
 }
 pub(crate) fn select(path: &Path) -> Result<PathBuf> {
     let path = path.canonicalize()?;

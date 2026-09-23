@@ -11,6 +11,7 @@ use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;
 use crate::paths::AppHome;
 use crate::paths::ModelHome;
+use crate::phone_runtime::PhoneChunk;
 use crate::storage::RecordingStore;
 use crate::workflow::TranscriptionOptions;
 use crate::workflow::TranscriptionSession;
@@ -43,10 +44,17 @@ pub struct TranscribeArgs {
     /// Override the source kind inferred from its extension.
     #[facet(args::named)]
     pub kind: Option<RecordingKind>,
-    /// Override the model selected by model prepare.
+    /// Override the selected Whisper model; text mode only.
     #[facet(args::named)]
     pub model_dir: Option<String>,
-    /// Also write plain text to a new file; existing files are never overwritten.
+    /// Emit PhoneticXeus IPA phones instead of Whisper text.
+    #[facet(args::named, args::alias = "phones", default)]
+    #[arbitrary(default)]
+    pub phonemes: bool,
+    /// Phone model folder; only applies with --phonemes.
+    #[facet(args::named)]
+    pub phone_model_dir: Option<String>,
+    /// Also write the output to a new file; existing files are never overwritten.
     #[facet(args::named)]
     pub output: Option<String>,
     /// Keep the recording and intermediate audio after success.
@@ -72,17 +80,27 @@ struct TranscribeReport {
     output_path: Option<String>,
 }
 
+#[derive(Facet)]
+struct SavedPhoneResults {
+    recording_id: String,
+    chunks: Vec<PhoneChunk>,
+}
+
 #[derive(Debug)]
 struct Recovery {
     store: RecordingStore,
     id: RecordingId,
+    phonemes: bool,
 }
 
 impl Recovery {
     fn error(&self, stage: &str, error: eyre::Report) -> eyre::Report {
         error.wrap_err(format!(
-            "{stage} failed. Recording {} was NOT cleaned up; any saved audio and completed transcripts remain at {}. Fix the cause, then retry: teamy-transcriber transcribe --resume {} (repeat any --model-dir/--output options you need)",
-            self.id, self.store.recording_dir(self.id).display(), self.id
+            "{stage} failed. Recording {} was NOT cleaned up; any saved audio and completed results remain at {}. Fix the cause, then retry: teamy-transcriber transcribe --resume {}{} (repeat any model/output options you need)",
+            self.id,
+            self.store.recording_dir(self.id).display(),
+            self.id,
+            if self.phonemes { " --phonemes" } else { "" }
         ))
     }
 
@@ -117,13 +135,29 @@ impl TranscribeArgs {
             self.resume.is_none() || self.kind.is_none(),
             "--kind applies only to a new media file"
         );
+        ensure!(
+            self.phonemes || self.phone_model_dir.is_none(),
+            "--phone-model-dir requires --phonemes"
+        );
+        ensure!(
+            !self.phonemes || self.model_dir.is_none(),
+            "--model-dir selects a Whisper model; use --phone-model-dir with --phonemes"
+        );
+        ensure!(
+            !self.phonemes || (!self.no_vad && self.max_decode_tokens.is_none()),
+            "--no-vad and --max-decode-tokens only apply to Whisper text mode"
+        );
         let store = RecordingStore::new(AppHome::resolve()?.0);
         let id = if let Some(id) = &self.resume {
             RecordingId::parse(id).wrap_err("--resume must be a recording UUID")?
         } else {
             RecordingId::new()
         };
-        let recovery = Recovery { store, id };
+        let recovery = Recovery {
+            store,
+            id,
+            phonemes: self.phonemes,
+        };
         if let Some(source) = &self.source {
             let path = Path::new(source)
                 .canonicalize()
@@ -167,13 +201,28 @@ impl TranscribeArgs {
 
     fn run(&self, recovery: &Recovery, token: &CancellationToken) -> Result<TranscribeReport> {
         token.bail_if_cancelled()?;
-        let model_dir = self.model_dir.as_ref().map_or_else(
-            || ModelHome::resolve().map(|home| home.0),
-            |path| Ok(PathBuf::from(path)),
-        )?;
-        crate::native_whisper::model::inspect_model_dir(&model_dir).wrap_err(
-            "model validation: run teamy-transcriber model prepare or supply --model-dir",
-        )?;
+        let phone_model = if self.phonemes {
+            let model_dir = crate::phone_runtime::resolve(self.phone_model_dir.as_deref())?;
+            Some(
+                teamy_whisper_native::phones::PhoneModel::load(&model_dir, 0)
+                    .map_err(|error| eyre::eyre!("{error:#}"))
+                    .wrap_err("phone model validation")?,
+            )
+        } else {
+            None
+        };
+        let whisper_model_dir = if self.phonemes {
+            None
+        } else {
+            let model_dir = self.model_dir.as_ref().map_or_else(
+                || ModelHome::resolve().map(|home| home.0),
+                |path| Ok(PathBuf::from(path)),
+            )?;
+            crate::native_whisper::model::inspect_model_dir(&model_dir).wrap_err(
+                "model validation: run teamy-transcriber model prepare or supply --model-dir",
+            )?;
+            Some(model_dir)
+        };
         let audio = audio_path_for_profile(&recovery.store, recovery.id, AudioProfile::Original);
         let incomplete = recovery
             .store
@@ -191,40 +240,67 @@ impl TranscribeArgs {
             std::fs::remove_file(&incomplete)?;
         }
         token.bail_if_cancelled()?;
-        let bridge = CancelBridge::new(token.clone());
-        let options = TranscriptionOptions {
-            model_dir,
-            max_decode_tokens: self.max_decode_tokens.unwrap_or(448),
-            chunk_duration_us: self.no_vad.then_some(30_000_000),
-            profile: AudioProfile::Original,
-        };
-        let report = if self.resume.is_some() {
-            crate::workflow::resume_recording(
-                &recovery.store,
-                recovery.id,
-                options,
-                Some(&bridge.cancelled),
+        let (text, no_speech, chunk_count) = if let Some(model) = phone_model {
+            let chunks = crate::phone_runtime::recognize_wav(&model, &audio, Some(token))
+                .wrap_err("phone recognition")?;
+            token.bail_if_cancelled()?;
+            let text = chunks
+                .iter()
+                .map(|chunk| chunk.ipa.as_str())
+                .filter(|ipa| !ipa.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let no_speech = text.is_empty();
+            let chunk_count = chunks.len();
+            std::fs::write(
+                recovery
+                    .store
+                    .recording_dir(recovery.id)
+                    .join("phones.json"),
+                facet_json::to_string_pretty(&SavedPhoneResults {
+                    recording_id: recovery.id.to_string(),
+                    chunks,
+                })?,
             )
+            .wrap_err("saving phone results")?;
+            (text, no_speech, chunk_count)
         } else {
-            TranscriptionSession::default().transcribe(
-                &recovery.store,
-                recovery.id,
-                options,
-                Some(&bridge.cancelled),
-                None,
-            )
-        }
-        .wrap_err("model inference")?;
-        ensure!(
-            !report.cancelled && !token.is_cancelled(),
-            "transcription cancelled"
-        );
-        let text = report
-            .chunks
-            .iter()
-            .map(|chunk| chunk.text.trim())
-            .collect::<Vec<_>>()
-            .join("\n");
+            let bridge = CancelBridge::new(token.clone());
+            let options = TranscriptionOptions {
+                model_dir: whisper_model_dir.expect("text mode selects a Whisper model"),
+                max_decode_tokens: self.max_decode_tokens.unwrap_or(448),
+                chunk_duration_us: self.no_vad.then_some(30_000_000),
+                profile: AudioProfile::Original,
+            };
+            let report = if self.resume.is_some() {
+                crate::workflow::resume_recording(
+                    &recovery.store,
+                    recovery.id,
+                    options,
+                    Some(&bridge.cancelled),
+                )
+            } else {
+                TranscriptionSession::default().transcribe(
+                    &recovery.store,
+                    recovery.id,
+                    options,
+                    Some(&bridge.cancelled),
+                    None,
+                )
+            }
+            .wrap_err("model inference")?;
+            ensure!(
+                !report.cancelled && !token.is_cancelled(),
+                "transcription cancelled"
+            );
+            let text = report
+                .chunks
+                .iter()
+                .map(|chunk| chunk.text.trim())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (text, report.no_speech, report.chunks.len())
+        };
         if !self.keep_recording {
             recovery.checked_directory()?;
         }
@@ -260,8 +336,8 @@ impl TranscribeArgs {
         Ok(TranscribeReport {
             recording_id: recovery.id.to_string(),
             text,
-            no_speech: report.no_speech,
-            chunk_count: report.chunks.len(),
+            no_speech,
+            chunk_count,
             cleanup_requested: !self.keep_recording,
             output_path: self.output.clone(),
         })
@@ -289,10 +365,14 @@ impl CliOutputValue for TranscribeOutput {
     fn before_emit(&self) -> Result<()> {
         self.token.bail_if_cancelled()?;
         if self.report.no_speech {
-            writeln!(
-                std::io::stderr(),
-                "No speech was detected. For singing or music, retry the file with --no-vad to transcribe every window."
-            )?;
+            if self.recovery.phonemes {
+                writeln!(std::io::stderr(), "No phones were recognized in the file.")?;
+            } else {
+                writeln!(
+                    std::io::stderr(),
+                    "No speech was detected. For singing or music, retry the file with --no-vad to transcribe every window."
+                )?;
+            }
         }
         Ok(())
     }
@@ -386,7 +466,11 @@ mod tests {
         };
         let output = CliOutput::custom(TranscribeOutput {
             report,
-            recovery: Recovery { store, id },
+            recovery: Recovery {
+                store,
+                id,
+                phonemes: false,
+            },
             token: CancellationToken::new(),
         });
         (root, source, id, output)
@@ -435,7 +519,13 @@ mod tests {
                 },
             )
             .unwrap();
-        let error = Recovery { store, id }.checked_directory().unwrap_err();
+        let error = Recovery {
+            store,
+            id,
+            phonemes: false,
+        }
+        .checked_directory()
+        .unwrap_err();
         assert!(error.to_string().contains("original source is inside"));
         assert_eq!(std::fs::read(source).unwrap(), b"original");
         std::fs::remove_dir_all(root).unwrap();

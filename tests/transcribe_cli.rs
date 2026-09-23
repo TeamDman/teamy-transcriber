@@ -145,3 +145,38 @@ fn phone_model_option_requires_phone_mode_without_opening_microphone() {
     assert!(output.stdout.is_empty());
     assert!(!root.exists());
 }
+
+#[test]
+fn file_transcribe_phone_flags_select_phone_model_and_preserve_retry_mode() {
+    let root = std::env::temp_dir().join(format!("file-phones-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("sample.wav");
+    std::fs::write(&source, b"RIFF\x00\x00\x00\x00WAVE").unwrap();
+    for flag in ["--phonemes", "--phones"] {
+        let result = run(
+            &root,
+            &[
+                "transcribe",
+                source.to_str().unwrap(),
+                flag,
+                "--phone-model-dir",
+                root.join("missing-phone-model").to_str().unwrap(),
+            ],
+        );
+        assert!(!result.status.success());
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("phone model validation"), "{error}");
+        assert!(
+            error.contains("--resume") && error.contains("--phonemes"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        RecordingStore::new(root.join("app"))
+            .list_recordings()
+            .unwrap()
+            .len(),
+        2
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
