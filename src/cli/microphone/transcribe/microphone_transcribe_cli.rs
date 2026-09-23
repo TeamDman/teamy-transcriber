@@ -26,7 +26,7 @@ pub struct MicrophoneTranscribeArgs {
     #[facet(args::named)]
     pub model_dir: Option<String>,
     /// Emit IPA phones using native `PhoneticXeus` instead of Whisper text.
-    #[facet(args::named, default)]
+    #[facet(args::named, args::alias = "phonemes", default)]
     #[arbitrary(default)]
     pub phones: bool,
     /// Phone model folder; only applies with --phones.
