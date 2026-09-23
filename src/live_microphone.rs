@@ -17,8 +17,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::SyncSender;
-use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::channel;
 
 mod endpoint;
 
@@ -108,7 +108,10 @@ where
         "audio windows must be 500..30000 ms"
     );
     let abort = AtomicBool::new(false);
-    let (sender, receiver) = sync_channel(8);
+    // Only recording IDs enter this queue; each audio window is already on
+    // disk. Let inference/output lag temporarily and drain every saved window
+    // after capture stops instead of failing when eight IDs are pending.
+    let (sender, receiver) = channel();
     std::thread::scope(|scope| {
         let producer = scope.spawn(|| {
             let mut recorder = WindowRecorder {
@@ -144,7 +147,7 @@ where
 struct WindowRecorder<'a> {
     store: &'a RecordingStore,
     chunk_ms: u64,
-    sender: SyncSender<RecordingId>,
+    sender: Sender<RecordingId>,
     rate: Option<u32>,
     samples: Vec<f32>,
     detector: Option<endpoint::Detector>,
@@ -220,9 +223,9 @@ impl WindowRecorder<'_> {
             Ok(())
         })();
         saved.wrap_err_with(|| recovery(id))?;
-        self.sender.try_send(id).wrap_err_with(|| {
+        self.sender.send(id).wrap_err_with(|| {
             format!(
-                "transcription queue could not accept more audio; {}",
+                "transcription consumer stopped before accepting saved audio; {}",
                 recovery(id)
             )
         })?;
@@ -315,31 +318,33 @@ mod tests {
     }
 
     #[test]
-    fn overloaded_queue_fails_explicitly_with_retained_audio() {
+    fn slow_consumer_drains_all_saved_windows() -> Result<()> {
         let fixture = Fixture::new();
         let store = RecordingStore::new(&fixture.0);
         let (done, blocked) = mpsc::channel();
         let mut waited = false;
-        let error = pipeline(
+        let mut consumed = 0;
+        pipeline(
             &store,
             500,
             None,
             |_, sink| {
-                let result = sink(&vec![0.; 10000], 1000);
+                sink(&vec![0.; 10000], 1000)?;
                 done.send(())?;
-                result
+                Ok(())
             },
             |_| {
                 if !waited {
                     blocked.recv_timeout(Duration::from_secs(5))?;
                     waited = true;
                 }
+                consumed += 1;
                 Ok(())
             },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("queue could not accept"));
-        assert!(store.list_recordings().unwrap().len() >= 9);
+        )?;
+        assert_eq!(consumed, 20);
+        assert_eq!(store.list_recordings()?.len(), 20);
+        Ok(())
     }
     #[test]
     #[ignore = "requires CUDA, TEST_MODEL and a speech TEST_WAV"]
