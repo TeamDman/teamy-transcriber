@@ -47,7 +47,7 @@ pub struct TranscribeArgs {
     /// Override the selected Whisper model; text mode only.
     #[facet(args::named)]
     pub model_dir: Option<String>,
-    /// Emit PhoneticXeus IPA phones instead of Whisper text.
+    /// Emit `PhoneticXeus` IPA phones instead of Whisper text.
     #[facet(args::named, args::alias = "phones", default)]
     #[arbitrary(default)]
     pub phonemes: bool,
@@ -223,22 +223,7 @@ impl TranscribeArgs {
             )?;
             Some(model_dir)
         };
-        let audio = audio_path_for_profile(&recovery.store, recovery.id, AudioProfile::Original);
-        let incomplete = recovery
-            .store
-            .recording_dir(recovery.id)
-            .join("preparation-incomplete");
-        if audio.exists() && !incomplete.exists() {
-            WavMediaAdapter
-                .inspect(&audio)
-                .wrap_err("saved prepared audio is invalid")?;
-        } else {
-            // A failed decoder may leave a valid but truncated WAV. Persist the
-            // incomplete stage so retries replace it instead of accepting it.
-            std::fs::write(&incomplete, b"audio preparation has not completed")?;
-            prepare_recording(&recovery.store, recovery.id).wrap_err("audio preparation")?;
-            std::fs::remove_file(&incomplete)?;
-        }
+        let audio = Self::prepare_audio(recovery)?;
         token.bail_if_cancelled()?;
         let (text, no_speech, chunk_count) = if let Some(model) = phone_model {
             let chunks = crate::phone_runtime::recognize_wav(&model, &audio, Some(token))
@@ -304,6 +289,38 @@ impl TranscribeArgs {
         if !self.keep_recording {
             recovery.checked_directory()?;
         }
+        self.save_output(recovery, &text)?;
+        Ok(TranscribeReport {
+            recording_id: recovery.id.to_string(),
+            text,
+            no_speech,
+            chunk_count,
+            cleanup_requested: !self.keep_recording,
+            output_path: self.output.clone(),
+        })
+    }
+
+    fn prepare_audio(recovery: &Recovery) -> Result<PathBuf> {
+        let audio = audio_path_for_profile(&recovery.store, recovery.id, AudioProfile::Original);
+        let incomplete = recovery
+            .store
+            .recording_dir(recovery.id)
+            .join("preparation-incomplete");
+        if audio.exists() && !incomplete.exists() {
+            WavMediaAdapter
+                .inspect(&audio)
+                .wrap_err("saved prepared audio is invalid")?;
+        } else {
+            // A failed decoder may leave a valid but truncated WAV. Persist the
+            // incomplete stage so retries replace it instead of accepting it.
+            std::fs::write(&incomplete, b"audio preparation has not completed")?;
+            prepare_recording(&recovery.store, recovery.id).wrap_err("audio preparation")?;
+            std::fs::remove_file(&incomplete)?;
+        }
+        Ok(audio)
+    }
+
+    fn save_output(&self, recovery: &Recovery, text: &str) -> Result<()> {
         if let Some(output) = &self.output {
             let path = Path::new(output);
             let parent = path
@@ -333,14 +350,7 @@ impl TranscribeArgs {
                 return Err(error).wrap_err("saving transcript output");
             }
         }
-        Ok(TranscribeReport {
-            recording_id: recovery.id.to_string(),
-            text,
-            no_speech,
-            chunk_count,
-            cleanup_requested: !self.keep_recording,
-            output_path: self.output.clone(),
-        })
+        Ok(())
     }
 }
 

@@ -137,14 +137,13 @@ where
                 consumed = Err(error);
                 break;
             }
-            if !keep_recording {
-                if let Err(error) = crate::recording_cleanup::remove_completed_microphone(store, id)
+            if !keep_recording
+                && let Err(error) = crate::recording_cleanup::remove_completed_microphone(store, id)
                     .wrap_err_with(|| format!("output was emitted but cleanup of recording {id} failed; the recording was retained"))
-                {
-                    abort.store(true, Ordering::Relaxed);
-                    consumed = Err(error);
-                    break;
-                }
+            {
+                abort.store(true, Ordering::Relaxed);
+                consumed = Err(error);
+                break;
             }
         }
         drop(receiver);
