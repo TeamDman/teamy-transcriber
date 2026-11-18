@@ -937,6 +937,7 @@ fn finish_and_write(
 
 #[cfg(test)]
 mod tests {
+    use super::CudaWhisperOptions;
     use super::VctkCanaryOptions;
     use super::VerificationStatus;
     use super::levenshtein;
@@ -977,7 +978,7 @@ mod tests {
             &AppHome(std::env::temp_dir()),
             &CacheHome(std::env::temp_dir()),
             VctkCanaryOptions {
-                cuda: Default::default(),
+                cuda: CudaWhisperOptions::default(),
                 vctk_root: Some(PathBuf::from("this-corpus-does-not-exist")),
                 receipt_path: Some(receipt.clone()),
                 model_dir: None,

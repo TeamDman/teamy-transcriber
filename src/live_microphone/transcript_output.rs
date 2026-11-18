@@ -51,10 +51,11 @@ impl TranscriptOutput<'_, '_> {
 
         thread::scope(|scope| {
             let (wake, updates) = channel();
-            let timer =
-                scope.spawn(|| write_inactivity_markers(&state, updates, inactivity, cancellation));
+            let state = &state;
+            let timer = scope
+                .spawn(move || write_inactivity_markers(state, &updates, inactivity, cancellation));
             let result = run(&TranscriptOutput {
-                state: &state,
+                state,
                 wake: Some(wake),
             });
             let marker = timer
@@ -90,7 +91,7 @@ impl TranscriptOutput<'_, '_> {
 
 fn write_inactivity_markers(
     output: &Mutex<OutputState<'_>>,
-    updates: Receiver<()>,
+    updates: &Receiver<()>,
     inactivity: Duration,
     cancellation: &CancellationScope,
 ) -> io::Result<()> {

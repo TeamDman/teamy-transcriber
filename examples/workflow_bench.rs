@@ -1,15 +1,16 @@
 //! Exercise the same import/prepare/transcribe/persist/export workflow as the
 //! application, with a resident session or the previous per-recording lifetime.
-use std::io::Write;
 use eyre::Result;
 use eyre::ensure;
 use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipPlanKind;
 use teamy_transcriber::media::AudioProfile;
+use teamy_transcriber::native_whisper::cuda::CudaWhisperOptions;
 use teamy_transcriber::storage::RecordingStore;
 use teamy_transcriber::workflow::TranscriptionOptions;
 use teamy_transcriber::workflow::TranscriptionSession;
@@ -74,7 +75,7 @@ fn main() -> Result<()> {
     let store = RecordingStore::new(root);
     let mut session = TranscriptionSession::default();
     let options = TranscriptionOptions {
-        cuda: Default::default(),
+        cuda: CudaWhisperOptions::default(),
         model_dir,
         max_decode_tokens: 448,
         chunk_duration_us: None,

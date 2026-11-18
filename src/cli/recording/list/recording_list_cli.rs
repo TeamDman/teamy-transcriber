@@ -1,6 +1,7 @@
 use crate::cli::output::CliOutput;
 use crate::cli::output::CliOutputValue;
 use crate::cli::output::OutputFormat;
+use crate::cli::output::write_facet;
 use crate::domain::AssetKind;
 use crate::domain::RecordingStatus;
 use crate::paths::AppHome;
@@ -9,8 +10,7 @@ use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
 use facet::Facet;
-use facet_pretty::ColorMode;
-use facet_pretty::PrettyPrinter;
+use std::io::Write;
 use std::time::Duration;
 
 #[derive(Facet, Debug)]
@@ -34,27 +34,27 @@ struct RecordingListOutput {
 }
 
 impl CliOutputValue for RecordingListOutput {
-    fn render(&self, format: OutputFormat, stdout_is_terminal: bool) -> Result<Option<String>> {
-        let rendered = match format {
-            OutputFormat::Text if self.entries.is_empty() => "No saved recordings.".to_owned(),
-            OutputFormat::Text => PrettyPrinter::new()
-                .with_colors(if stdout_is_terminal {
-                    ColorMode::Always
-                } else {
-                    ColorMode::Never
-                })
-                .format(&self.entries),
-            OutputFormat::Json => facet_json::to_string_pretty(&self.entries)?,
+    fn write_to(
+        &self,
+        format: OutputFormat,
+        stdout_is_terminal: bool,
+        writer: &mut dyn Write,
+    ) -> Result<()> {
+        match format {
+            OutputFormat::Text if self.entries.is_empty() => {
+                writer.write_all(b"No saved recordings.")?;
+                Ok(())
+            }
             OutputFormat::Csv => {
                 // The CSV serializer accepts one flat record at a time.
-                let mut csv = "recording_id,source_path,source_kind,status,failure,clip_count,transcript_count\n".to_owned();
+                writer.write_all(b"recording_id,source_path,source_kind,status,failure,clip_count,transcript_count\n")?;
                 for entry in &self.entries {
-                    csv.push_str(&facet_csv::to_string(entry)?);
+                    write_facet(entry, format, stdout_is_terminal, writer)?;
                 }
-                csv
+                Ok(())
             }
-        };
-        Ok(Some(rendered))
+            _ => write_facet(&self.entries, format, stdout_is_terminal, writer),
+        }
     }
 }
 

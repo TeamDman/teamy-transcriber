@@ -3,10 +3,10 @@
 mod batch;
 mod cuda;
 mod cuda_device_index;
-pub use cuda_device_index::CudaDeviceIndex;
 pub use batch::BatchDecodeResult;
 pub use batch::BatchTranscript;
 pub use batch::MAX_BATCH_SIZE;
+pub use cuda_device_index::CudaDeviceIndex;
 pub mod decoding;
 pub mod frontend;
 #[cfg(test)]
@@ -17,9 +17,9 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::ensure;
-use facet::Facet;
 use cuda::Buffer;
 use cuda::Device;
+use facet::Facet;
 use half::bf16;
 use half::f16;
 use half::slice::HalfFloatSliceExt;

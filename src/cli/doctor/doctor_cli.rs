@@ -1,5 +1,6 @@
 use crate::cli::output::CliOutput;
 use crate::media::FfmpegMediaAdapter;
+use crate::native_whisper::cuda::CudaWhisperOptions;
 use crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS;
 use crate::paths::AppHome;
 use crate::paths::CacheHome;
@@ -48,7 +49,7 @@ impl DoctorArgs {
         let model_home = WhisperModelDir::resolve(app_home, cache_home)?;
         let model_inventory = LocalModelInventory::inspect(model_home.as_ref())?;
         let backend = NativeWhisperBackend::new(NativeWhisperConfig {
-            cuda: Default::default(),
+            cuda: CudaWhisperOptions::default(),
             model_dir: model_home.to_path_buf(),
             max_decode_tokens: DEFAULT_MAX_DECODE_TOKENS,
         });

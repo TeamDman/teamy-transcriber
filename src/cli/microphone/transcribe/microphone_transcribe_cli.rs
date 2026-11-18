@@ -5,6 +5,7 @@ use crate::cli::positive_milliseconds::PositiveMilliseconds;
 use crate::live_microphone::LiveTranscriptionOptions;
 use crate::live_microphone::Recognition;
 use crate::microphone_chunk_milliseconds::MicrophoneChunkMilliseconds;
+use crate::native_whisper::cuda::CudaWhisperOptions;
 use crate::native_whisper::selection::validate_prepared;
 use crate::paths::AppHome;
 use crate::paths::CacheHome;
@@ -125,7 +126,7 @@ impl MicrophoneTranscribeArgs {
                 cuda: if recognition.includes_words() {
                     resolve_cuda_whisper_options()?
                 } else {
-                    Default::default()
+                    CudaWhisperOptions::default()
                 },
                 chunk_ms,
                 keep_recording: self.keep_recording,

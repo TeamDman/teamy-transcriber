@@ -299,6 +299,7 @@ impl WindowRecorder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_whisper::cuda::CudaWhisperOptions;
     use crate::paths::AppHome;
     use std::io::Error;
     use std::sync::atomic::AtomicBool;
@@ -508,7 +509,7 @@ mod tests {
                 &model,
                 &Recognition::Words,
                 LiveTranscriptionOptions {
-                    cuda: Default::default(),
+                    cuda: CudaWhisperOptions::default(),
                     chunk_ms: MicrophoneChunkMilliseconds::default(),
                     keep_recording: false,
                     inactivity: None,
@@ -589,7 +590,7 @@ mod tests {
                 &vad,
                 &Recognition::Phonemes(model),
                 LiveTranscriptionOptions {
-                    cuda: Default::default(),
+                    cuda: CudaWhisperOptions::default(),
                     chunk_ms: MicrophoneChunkMilliseconds::default(),
                     keep_recording: false,
                     inactivity: None,

@@ -1,6 +1,8 @@
 # Policy, checks and scoped exceptions:
 # https://teamdman.github.io/teamy-docs/code-standards.html
 
+absolute-paths-max-segments = 3
+
 disallowed-methods = [
   { path = "std::env::set_var", reason = "Avoid setting global environment variables; use helpers (tempfile/TempEnv) or design APIs that accept configuration explicitly" },
   { path = "serde_json::from_str", reason = "Use facet_json::from_str instead." },

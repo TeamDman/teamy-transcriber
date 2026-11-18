@@ -148,12 +148,7 @@ pub fn main() -> eyre::Result<()> {
         let started = Instant::now();
         let output = cli.invoke(&app_home, &cache_home, &cancellation)?;
         let threshold = output.elapsed_duration_warn_threshold;
-        let emitted = (|| {
-            if !drains_capture {
-                output.check_cancellation(&cancellation)?;
-            }
-            output.emit(requested_output_format)
-        })();
+        let emitted = output.emit(requested_output_format, &cancellation);
         elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
         emitted?;
         if !drains_capture {

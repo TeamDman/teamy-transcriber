@@ -7,6 +7,7 @@ use teamy_cancellation::CancellationToken;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipStatus;
 use teamy_transcriber::media::AudioProfile;
+use teamy_transcriber::native_whisper::cuda::CudaWhisperOptions;
 use teamy_transcriber::storage::RecordingStore;
 use teamy_transcriber::workflow::TranscriptionOptions;
 use teamy_transcriber::workflow::TranscriptionSession;
@@ -47,7 +48,7 @@ fn exercise_session(model: &Path, wav: &Path, root: &Path) -> Result<()> {
         "supply a speech WAV between two and thirty seconds long"
     );
     let options = TranscriptionOptions {
-        cuda: Default::default(),
+        cuda: CudaWhisperOptions::default(),
         model_dir: staged.clone(),
         max_decode_tokens: 448,
         chunk_duration_us: Some(prepared.metadata.duration_us.div_ceil(2)),

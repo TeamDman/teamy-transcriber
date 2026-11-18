@@ -1,6 +1,7 @@
 use crate::cli::output::CliOutput;
 use crate::cli::output::CliOutputValue;
 use crate::cli::output::OutputFormat;
+use crate::cli::output::write_facet;
 use crate::domain::AppState;
 use crate::domain::Command;
 use crate::domain::RecordingId;
@@ -15,6 +16,7 @@ use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::io::Write;
 use std::path::Path;
 use teamy_cancellation::CancellationScope;
 use teamy_whisper_native::CudaDeviceIndex;
@@ -85,16 +87,24 @@ impl CliOutputValue for Report {
     fn default_format(&self) -> Option<OutputFormat> {
         Some(OutputFormat::Text)
     }
-    fn render(&self, format: OutputFormat, _stdout_is_terminal: bool) -> Result<Option<String>> {
-        Ok(Some(match format {
-            OutputFormat::Text => self
-                .chunks
-                .iter()
-                .map(|c| c.ipa.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            OutputFormat::Json => facet_json::to_string_pretty(self)?,
+    fn write_to(
+        &self,
+        format: OutputFormat,
+        stdout_is_terminal: bool,
+        writer: &mut dyn Write,
+    ) -> Result<()> {
+        match format {
+            OutputFormat::Text => {
+                for (index, chunk) in self.chunks.iter().enumerate() {
+                    if index != 0 {
+                        writer.write_all(b"\n")?;
+                    }
+                    writer.write_all(chunk.ipa.as_bytes())?;
+                }
+                Ok(())
+            }
+            OutputFormat::Json => write_facet(self, format, stdout_is_terminal, writer),
             OutputFormat::Csv => eyre::bail!("phone output supports text or JSON"),
-        }))
+        }
     }
 }

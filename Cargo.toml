@@ -32,11 +32,11 @@ tokenizers = { version = "0.22.0", default-features = false, features = ["onig"]
 raw-window-handle = "0.6"
 thiserror = "1.0.69"
 tracing = "0.1.41"
+teamy-tracing = "=0.2.3"
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
     "ansi",
     "env-filter",
     "fmt",
-    "json",
     "registry",
 ] }
 tracing-tracy = { version = "0.11", optional = true, default-features = false, features = ["enable", "system-tracing", "context-switch-tracing", "sampling", "code-transfer", "callstack-inlines", "only-localhost"] }
@@ -90,6 +90,7 @@ unsafe_op_in_unsafe_fn = "warn"
 unused_lifetimes = "warn"
 
 [lints.clippy]
+absolute_paths = "warn"
 disallowed_macros = "deny"
 disallowed_methods = "deny"
 disallowed_types = "deny"

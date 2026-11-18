@@ -3,6 +3,7 @@ use crate::cli::decode_token_limit::DecodeTokenLimit;
 use crate::cli::output::CliOutput;
 use crate::cli::output::CliOutputValue;
 use crate::cli::output::OutputFormat;
+use crate::cli::output::write_facet;
 use crate::cli::recording::create::RecordingKind;
 use crate::domain::AppState;
 use crate::domain::Command;
@@ -378,12 +379,18 @@ struct TranscribeOutput {
 }
 
 impl CliOutputValue for TranscribeOutput {
-    fn render(&self, format: OutputFormat, _: bool) -> Result<Option<String>> {
-        Ok(Some(match format {
-            OutputFormat::Text => self.report.text.clone(),
-            OutputFormat::Json => facet_json::to_string_pretty(&self.report)?,
-            OutputFormat::Csv => facet_csv::to_string(&self.report)?,
-        }))
+    fn write_to(
+        &self,
+        format: OutputFormat,
+        stdout_is_terminal: bool,
+        writer: &mut dyn Write,
+    ) -> Result<()> {
+        if format == OutputFormat::Text {
+            writer.write_all(self.report.text.as_bytes())?;
+            Ok(())
+        } else {
+            write_facet(&self.report, format, stdout_is_terminal, writer)
+        }
     }
     fn default_format(&self) -> Option<OutputFormat> {
         Some(OutputFormat::Text)
@@ -473,8 +480,10 @@ mod tests {
     fn failed_output_retains_recording_and_reports_resume() {
         CancellationToken::new()
             .with_scope(|cancellation| -> Result<()> {
-                let (root, source, id, output) = prepared_output(cancellation);
-                let error = output.emit_to(None, false, &mut BrokenPipe).unwrap_err();
+                let (root, source, id, output) = prepared_output(cancellation.clone());
+                let error = output
+                    .emit_to(None, false, &mut BrokenPipe, &cancellation)
+                    .unwrap_err();
                 assert!(
                     error
                         .to_string()
@@ -489,12 +498,63 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_json_output_retains_recording_and_reports_resume() -> Result<()> {
+        struct CancelOnWrite<'a> {
+            cancellation: &'a CancellationScope,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for CancelOnWrite<'_> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(buf);
+                self.cancellation
+                    .request_cancel("cancel during JSON output");
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                panic!("cancelled output must not flush");
+            }
+        }
+
+        CancellationToken::new().with_scope(|cancellation| {
+            let (root, source, id, output) = prepared_output(cancellation.clone());
+            let mut writer = CancelOnWrite {
+                cancellation: &cancellation,
+                bytes: Vec::new(),
+            };
+            let error = output
+                .emit_to(Some(OutputFormat::Json), false, &mut writer, &cancellation)
+                .unwrap_err();
+            assert!(writer.bytes.starts_with(b"{"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("transcribe --resume {id}"))
+            );
+            let io_error = error.downcast_ref::<std::io::Error>().unwrap();
+            assert!(
+                io_error
+                    .get_ref()
+                    .unwrap()
+                    .is::<teamy_cancellation::CancellationError>()
+            );
+            assert!(root.join("app/recordings").join(id.to_string()).exists());
+            assert_eq!(std::fs::read(source)?, b"original");
+            std::fs::remove_dir_all(root)?;
+            Ok(())
+        })
+    }
+
+    #[test]
     fn successful_plain_output_cleans_only_recording() {
         CancellationToken::new()
             .with_scope(|cancellation| -> Result<()> {
-                let (root, source, id, output) = prepared_output(cancellation);
+                let (root, source, id, output) = prepared_output(cancellation.clone());
                 let mut text = Vec::new();
-                output.emit_to(None, false, &mut text).unwrap();
+                output
+                    .emit_to(None, false, &mut text, &cancellation)
+                    .unwrap();
                 assert_eq!(text, b"transcribed text\n");
                 assert!(!root.join("app/recordings").join(id.to_string()).exists());
                 assert_eq!(std::fs::read(source).unwrap(), b"original");

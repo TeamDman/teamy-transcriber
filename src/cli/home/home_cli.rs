@@ -1,7 +1,7 @@
 use crate::cli::home::open::HomeOpenArgs;
-use crate::paths::AppHome;
 use crate::cli::home::show::HomeShowArgs;
 use crate::cli::output::CliOutput;
+use crate::paths::AppHome;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;

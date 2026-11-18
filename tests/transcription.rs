@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use teamy_transcriber::domain::ClipId;
 use teamy_transcriber::domain::RecordingId;
+use teamy_transcriber::native_whisper::cuda::CudaWhisperOptions;
 use teamy_transcriber::transcription::NativeWhisperBackend;
 use teamy_transcriber::transcription::NativeWhisperConfig;
 use teamy_transcriber::transcription::RuntimeAssetStatus;
@@ -11,7 +12,7 @@ use teamy_transcriber::transcription::TranscriptionRequest;
 #[test]
 fn native_whisper_rejects_missing_configuration_before_model_load() {
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
-        cuda: Default::default(),
+        cuda: CudaWhisperOptions::default(),
         model_dir: PathBuf::from("missing-model-directory"),
         max_decode_tokens: 64,
     });
@@ -32,7 +33,7 @@ fn native_whisper_rejects_missing_configuration_before_model_load() {
 #[test]
 fn native_whisper_readiness_reports_missing_artifacts() {
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
-        cuda: Default::default(),
+        cuda: CudaWhisperOptions::default(),
         model_dir: PathBuf::from("missing-model-directory"),
         max_decode_tokens: 64,
     });

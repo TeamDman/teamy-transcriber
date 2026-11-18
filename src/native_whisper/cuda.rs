@@ -80,7 +80,7 @@ impl CudaWhisperRuntime {
         batch_size: usize,
     ) -> Result<Self, String> {
         if !(1..=MAX_BATCH_SIZE).contains(&batch_size) {
-            return Err(format!("CUDA batch size must be 1..={}", MAX_BATCH_SIZE));
+            return Err(format!("CUDA batch size must be 1..={MAX_BATCH_SIZE}"));
         }
         let (sender, receiver) = mpsc::sync_channel::<Request>(1);
         let (ready_tx, ready_rx) = mpsc::channel();

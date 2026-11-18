@@ -1,6 +1,6 @@
 use crate::cli::output::CliOutput;
-use crate::domain::RecordingId;
 use crate::domain::AssetKind;
+use crate::domain::RecordingId;
 use crate::media::FfmpegMediaAdapter;
 use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;

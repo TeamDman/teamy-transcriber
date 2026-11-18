@@ -784,7 +784,7 @@ pub fn transcribe_recording(
         store,
         recording_id,
         TranscriptionOptions {
-            cuda: Default::default(),
+            cuda: CudaWhisperOptions::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,
@@ -817,7 +817,7 @@ pub fn transcribe_recording_with_cancellation(
         store,
         recording_id,
         TranscriptionOptions {
-            cuda: Default::default(),
+            cuda: CudaWhisperOptions::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,
@@ -849,7 +849,7 @@ pub fn transcribe_recording_with_profile_and_cancellation(
         store,
         recording_id,
         TranscriptionOptions {
-            cuda: Default::default(),
+            cuda: CudaWhisperOptions::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,

@@ -3642,6 +3642,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "teamy-tracing"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a42c3ad8f8d92631bbc63804d13d54f8796a6df8b4840c4de0d67fd89b1024a"
+dependencies = [
+ "teamy-facet",
+ "teamy-facet-format",
+ "teamy-facet-json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "teamy-transcriber"
 version = "0.1.0"
 dependencies = [
@@ -3669,6 +3682,7 @@ dependencies = [
  "teamy-facet-json",
  "teamy-facet-pretty",
  "teamy-figue",
+ "teamy-tracing",
  "teamy-whisper-native",
  "thiserror 1.0.69",
  "tokenizers",
@@ -3972,16 +3986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-serde"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3991,15 +3995,12 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
- "serde",
- "serde_json",
  "sharded-slab",
  "smallvec 1.15.2",
  "thread_local",
  "tracing",
  "tracing-core",
  "tracing-log",
- "tracing-serde",
 ]
 
 [[package]]

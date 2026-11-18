@@ -40,8 +40,7 @@ impl ModelShowArgs {
                 exists: inventory.exists,
                 file_count: inventory.file_count,
                 download_policy: format!(
-                    "download explicitly with hf download {} --revision {} --quiet; then run teamy-transcriber model prepare",
-                    DEFAULT_REPOSITORY, DEFAULT_REVISION
+                    "download explicitly with hf download {DEFAULT_REPOSITORY} --revision {DEFAULT_REVISION} --quiet; then run teamy-transcriber model prepare"
                 ),
             },
             Some(Duration::from_secs(5)),

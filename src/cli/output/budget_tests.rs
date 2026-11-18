@@ -1,4 +1,5 @@
 use super::*;
+use teamy_cancellation::CancellationToken;
 
 #[derive(Facet)]
 struct Report {
@@ -15,14 +16,17 @@ fn execution_budget_never_changes_serialized_results() {
             Some(Duration::from_secs(100)),
         ] {
             let mut bytes = Vec::new();
-            CliOutput::facet(
-                Report {
-                    value: "fixture".into(),
-                },
-                threshold,
-            )
-            .emit_to(Some(format), false, &mut bytes)
-            .unwrap();
+            CancellationToken::new()
+                .with_scope(|cancellation| {
+                    CliOutput::facet(
+                        Report {
+                            value: "fixture".into(),
+                        },
+                        threshold,
+                    )
+                    .emit_to(Some(format), false, &mut bytes, &cancellation)
+                })
+                .unwrap();
             if let Some(expected) = &expected {
                 assert_eq!(&bytes, expected);
             } else {

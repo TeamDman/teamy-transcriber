@@ -15,8 +15,6 @@ pub mod recording;
 pub mod recording_chunk_milliseconds;
 pub mod transcribe;
 pub mod verify;
-pub use crate::microphone_chunk_milliseconds;
-
 use crate::cli::cache::CacheArgs;
 use crate::cli::doctor::DoctorArgs;
 use crate::cli::global_args::GlobalArgs;
@@ -27,6 +25,7 @@ use crate::cli::model::ModelArgs;
 use crate::cli::output::CliOutput;
 use crate::cli::recording::RecordingArgs;
 use crate::cli::verify::VerifyArgs;
+pub use crate::microphone_chunk_milliseconds;
 use crate::paths::AppHome;
 use crate::paths::CacheHome;
 use arbitrary::Arbitrary;

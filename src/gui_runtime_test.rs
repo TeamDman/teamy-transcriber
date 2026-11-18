@@ -324,7 +324,7 @@ fn hidden_gui_reuses_model_and_closes_during_transcription() -> Result<()> {
     let mut app = GuiApplication::from_home(
         home,
         &CacheHome(root.join("cache")),
-        Default::default(),
+        CudaWhisperOptions::default(),
         false,
         event_loop.create_proxy(),
     )?;

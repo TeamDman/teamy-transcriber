@@ -1,12 +1,14 @@
-use std::io::Write;
-use teamy_whisper_native::CudaDeviceIndex;
 use eyre::Result;
 use eyre::ensure;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
+use teamy_whisper_native::CudaDeviceIndex;
 use teamy_whisper_native::phones::PhoneModelDir;
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let args: Vec<String> = std::env::args().collect();
     ensure!(args.len() == 4, "phone_probe MODEL WAV OUTPUT");
     let mut wav = hound::WavReader::open(&args[2])?;

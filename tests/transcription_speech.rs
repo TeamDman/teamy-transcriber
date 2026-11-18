@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipPlanKind;
 use teamy_transcriber::media::AudioProfile;
+use teamy_transcriber::native_whisper::cuda::CudaWhisperOptions;
 use teamy_transcriber::native_whisper::prepare::prepare_safetensors_model;
 use teamy_transcriber::native_whisper::speech;
 use teamy_transcriber::storage::RecordingStore;
@@ -172,7 +173,7 @@ fn exercise_silent_workflow(root: &Path, model: &Path, wav: &Path) -> Result<()>
     let id = create_recording(&store, AssetKind::AudioFile, wav)?;
     prepare_recording(&store, id)?;
     let options = TranscriptionOptions {
-        cuda: Default::default(),
+        cuda: CudaWhisperOptions::default(),
         model_dir: model.into(),
         max_decode_tokens: 448,
         chunk_duration_us: None,
