@@ -1,22 +1,15 @@
 //! Whisper model topology in Rust, numerical primitives in CUDA, weights in safetensors.
 //! No serialized computation graph, LibTorch, or Python is used by this runtime.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_types,
-    reason = "This standalone engine uses serde for Hugging Face/safetensors interchange, independently of the application's Facet data model."
-)]
 mod batch;
 mod cuda;
+mod cuda_device_index;
+pub use cuda_device_index::CudaDeviceIndex;
 pub use batch::BatchDecodeResult;
 pub use batch::BatchTranscript;
 pub use batch::MAX_BATCH_SIZE;
 pub mod decoding;
 pub mod frontend;
 #[cfg(test)]
-#[allow(
-    clippy::disallowed_macros,
-    reason = "Malformed external JSON fixtures exercise the safetensors loader boundary."
-)]
 mod loader_tests;
 pub mod vad;
 
@@ -24,6 +17,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::ensure;
+use facet::Facet;
 use cuda::Buffer;
 use cuda::Device;
 use half::bf16;
@@ -32,8 +26,6 @@ use half::slice::HalfFloatSliceExt;
 use memmap2::Mmap;
 use safetensors::Dtype;
 use safetensors::SafeTensors;
-use serde::Deserialize;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
@@ -43,12 +35,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct Dims {
     pub audio: AudioDims,
     pub text: TextDims,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct AudioDims {
     pub n_mels: usize,
     pub n_audio_ctx: usize,
@@ -56,7 +48,7 @@ pub struct AudioDims {
     pub n_audio_head: usize,
     pub n_audio_layer: usize,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct TextDims {
     pub n_vocab: usize,
     pub n_text_ctx: usize,
@@ -155,9 +147,13 @@ impl Weights {
         let paths: Vec<PathBuf> = if single.is_file() {
             vec![single]
         } else {
-            let index: serde_json::Value = serde_json::from_reader(File::open(index_path)?)?;
-            let map: HashMap<String, String> = serde_json::from_value(index["weight_map"].clone())
+            #[derive(Facet)]
+            struct Index {
+                weight_map: HashMap<String, String>,
+            }
+            let index: Index = facet_json::from_slice(&std::fs::read(index_path)?)
                 .context("invalid weight_map")?;
+            let map = index.weight_map;
             let mut names = HashSet::new();
             for value in map.values() {
                 let name = value.as_str();
@@ -390,7 +386,7 @@ impl Workspace {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Facet)]
 pub struct DecodeResult {
     pub text: String,
     pub tokens: Vec<usize>,
@@ -430,8 +426,8 @@ impl std::fmt::Debug for Engine {
     }
 }
 impl Engine {
-    pub fn load(root: &Path, device_index: i32, tf32: bool) -> Result<Self> {
-        let dims: Dims = serde_json::from_reader(File::open(root.join("dims.json"))?)?;
+    pub fn load(root: &Path, device_index: CudaDeviceIndex, tf32: bool) -> Result<Self> {
+        let dims: Dims = facet_json::from_slice(&std::fs::read(root.join("dims.json"))?)?;
         dims.validate()?;
         let device = Device::new(device_index, tf32)?;
         let mut weights = Weights::open(root, &device)?;

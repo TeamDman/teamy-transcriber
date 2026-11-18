@@ -1,9 +1,12 @@
+use std::io::Write;
+use teamy_whisper_native::CudaDeviceIndex;
 use eyre::Result;
 use eyre::ensure;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
-use teamy_whisper_native::phones::PhoneModel;
+use teamy_whisper_native::phones::PhoneModelDir;
 fn main() -> Result<()> {
+    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
     let args: Vec<String> = std::env::args().collect();
     ensure!(args.len() == 4, "phone_probe MODEL WAV OUTPUT");
     let mut wav = hound::WavReader::open(&args[2])?;
@@ -20,11 +23,13 @@ fn main() -> Result<()> {
             .collect::<Result<_, _>>()?
     };
     let t = Instant::now();
-    let model = PhoneModel::load(Path::new(&args[1]), 0).map_err(|e| eyre::eyre!("{e:#}"))?;
-    eprintln!("load {:?}", t.elapsed());
+    let model = PhoneModelDir::from(PathBuf::from(&args[1]))
+        .load(CudaDeviceIndex::FIRST)
+        .map_err(|e| eyre::eyre!("{e:#}"))?;
+    tracing::info!("load {:?}", t.elapsed());
     let t = Instant::now();
     let (logits, frames) = model.logits(&samples).map_err(|e| eyre::eyre!("{e:#}"))?;
-    eprintln!("inference {:?}, frames {frames}", t.elapsed());
+    tracing::info!("inference {:?}, frames {frames}", t.elapsed());
     std::fs::write(
         &args[3],
         logits
@@ -36,7 +41,7 @@ fn main() -> Result<()> {
     let result = model
         .recognize(&samples)
         .map_err(|e| eyre::eyre!("{e:#}"))?;
-    eprintln!("warm {:?}", t.elapsed());
-    println!("{}", result.ipa);
+    tracing::info!("warm {:?}", t.elapsed());
+    writeln!(std::io::stdout().lock(), "{}", result.ipa)?;
     Ok(())
 }

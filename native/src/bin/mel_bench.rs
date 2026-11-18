@@ -1,13 +1,13 @@
 //! Low-level parity/timing harness. Input is an explicit little-endian f32 mel matrix.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "Development receipts serialize the standalone engine's serde types for external benchmark interoperability."
-)]
 use anyhow::Result;
 use anyhow::ensure;
+use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
+use teamy_whisper_native::CudaDeviceIndex;
+use teamy_whisper_native::DecodeResult;
+
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
@@ -15,11 +15,9 @@ fn main() -> Result<()> {
         "usage: mel_bench MODEL MEL_F32 [REPEATS] [TF32:0|1]"
     );
     let started = Instant::now();
-    let mut engine = teamy_whisper_native::Engine::load(
-        Path::new(&args[0]),
-        0,
-        args.get(3).is_some_and(|s| s == "1"),
-    )?;
+    let tf32 = args.get(3).is_some_and(|s| s == "1");
+    let mut engine =
+        teamy_whisper_native::Engine::load(Path::new(&args[0]), CudaDeviceIndex::FIRST, tf32)?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let data = std::fs::read(&args[1])?;
     ensure!(data.len() % 4 == 0, "truncated mel input");
@@ -32,11 +30,25 @@ fn main() -> Result<()> {
     for _ in 0..repeats {
         runs.push(engine.transcribe_mel(&mel, 448)?);
     }
-    println!(
+    #[derive(Facet)]
+    struct Receipt {
+        backend: &'static str,
+        precision: &'static str,
+        scope: &'static str,
+        load_ms: f64,
+        runs: Vec<DecodeResult>,
+    }
+
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
-        serde_json::to_string_pretty(
-            &serde_json::json!({"backend":"native-cuda","precision":if args.get(3).is_some_and(|s|s=="1") {"tf32"} else {"fp32"},"scope":"mel-to-text only; excludes frontend, alignment, diarization","load_ms":load_ms,"runs":runs})
-        )?
-    );
+        facet_json::to_string_pretty(&Receipt {
+            backend: "native-cuda",
+            precision: if tf32 { "tf32" } else { "fp32" },
+            scope: "mel-to-text only; excludes frontend, alignment, diarization",
+            load_ms,
+            runs
+        })?
+    )?;
     Ok(())
 }

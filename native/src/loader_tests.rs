@@ -1,6 +1,8 @@
 use super::*;
 use safetensors::tensor::TensorView;
 use safetensors::tensor::serialize_to_file;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 #[test]
 fn fp16_conversion_handles_aligned_and_unaligned_tensor_data() {
@@ -25,9 +27,7 @@ fn fp16_conversion_handles_aligned_and_unaligned_tensor_data() {
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Result<Self> {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let root = std::env::temp_dir().join(format!(
             "whisper-native-loader-{}-{suffix}",
             std::process::id()
@@ -35,10 +35,10 @@ impl Fixture {
         std::fs::create_dir(&root)?;
         Ok(Self(root))
     }
-    fn index(&self, map: serde_json::Value) -> Result<()> {
+    fn index(&self, map: &str) -> Result<()> {
         std::fs::write(
             self.0.join("model.safetensors.index.json"),
-            serde_json::to_vec(&serde_json::json!({"weight_map": map}))?,
+            format!(r#"{{"weight_map":{map}}}"#),
         )?;
         Ok(())
     }
@@ -61,7 +61,7 @@ impl Drop for Fixture {
 #[test]
 #[ignore = "requires a CUDA device; exercises real model-file loading"]
 fn indexed_weights_preserve_values_and_reject_inconsistent_packages() -> Result<()> {
-    let device = Device::new(0, false)?;
+    let device = Device::new(CudaDeviceIndex::FIRST, false)?;
     let fixture = Fixture::new()?;
     let a: Vec<_> = [1.5_f32, -2.25]
         .into_iter()
@@ -73,7 +73,7 @@ fn indexed_weights_preserve_values_and_reject_inconsistent_packages() -> Result<
         .collect();
     fixture.tensor("one.safetensors", "a", Dtype::F32, &a)?;
     fixture.tensor("two.safetensors", "b", Dtype::F16, &b)?;
-    fixture.index(serde_json::json!({"a":"one.safetensors","b":"two.safetensors"}))?;
+    fixture.index(r#"{"a":"one.safetensors","b":"two.safetensors"}"#)?;
     let mut weights = Weights::open(&fixture.0, &device)?;
     let first = weights.take("a", &[2])?;
     let second = weights.take("b", &[2])?;
@@ -87,16 +87,16 @@ fn indexed_weights_preserve_values_and_reject_inconsistent_packages() -> Result<
     drop(weights);
 
     for map in [
-        serde_json::json!({"a":"two.safetensors","b":"one.safetensors"}),
-        serde_json::json!({"a":"one.safetensors","b":"two.safetensors","missing":"one.safetensors"}),
-        serde_json::json!({"a":"one.safetensors","wrong":"two.safetensors"}),
-        serde_json::json!({"a":"../one.safetensors"}),
-        serde_json::json!({}),
+        r#"{"a":"two.safetensors","b":"one.safetensors"}"#,
+        r#"{"a":"one.safetensors","b":"two.safetensors","missing":"one.safetensors"}"#,
+        r#"{"a":"one.safetensors","wrong":"two.safetensors"}"#,
+        r#"{"a":"../one.safetensors"}"#,
+        r#"{}"#,
     ] {
         fixture.index(map)?;
         assert!(Weights::open(&fixture.0, &device).is_err());
     }
-    fixture.index(serde_json::json!({"a":"one.safetensors","b":"two.safetensors"}))?;
+    fixture.index(r#"{"a":"one.safetensors","b":"two.safetensors"}"#)?;
     fixture.tensor("two.safetensors", "b", Dtype::F32, &f32::NAN.to_le_bytes())?;
     assert!(Weights::open(&fixture.0, &device).is_err());
     fixture.tensor(
@@ -118,10 +118,12 @@ fn indexed_weights_preserve_values_and_reject_inconsistent_packages() -> Result<
 
 #[test]
 fn invalid_model_dimensions_fail_before_allocation() -> Result<()> {
-    let dims: Dims = serde_json::from_value(serde_json::json!({
+    let dims: Dims = facet_json::from_str(
+        r#"{
         "audio":{"n_mels":128,"n_audio_ctx":1500,"n_audio_state":1280,"n_audio_head":20,"n_audio_layer":32},
         "text":{"n_vocab":51866,"n_text_ctx":448,"n_text_state":1280,"n_text_head":20,"n_text_layer":32}
-    }))?;
+    }"#,
+    )?;
     dims.validate()?;
     let mut invalid = dims.clone();
     invalid.audio.n_audio_head = 0;

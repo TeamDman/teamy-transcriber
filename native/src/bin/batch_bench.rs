@@ -1,14 +1,13 @@
 //! Batched ASR regression harness, with resident reuse and a final partial batch.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "Development receipts use serde for reference interoperability."
-)]
 use anyhow::Result;
 use anyhow::ensure;
+use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
+use teamy_whisper_native::BatchTranscript;
+use teamy_whisper_native::CudaDeviceIndex;
 use teamy_whisper_native::Engine;
 use teamy_whisper_native::MAX_BATCH_SIZE;
 use teamy_whisper_native::decoding::GreedySuppression;
@@ -20,7 +19,7 @@ fn main() -> Result<()> {
         args.len() == 6,
         "usage: batch_bench MODEL WAV_LIST REPEATS BATCH_SIZE fp32|tf32 GENERATION_CONFIG"
     );
-    let paths: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(&args[1])?)?;
+    let paths: Vec<PathBuf> = facet_json::from_slice(&std::fs::read(&args[1])?)?;
     let repeats: usize = args[2].parse()?;
     let batch_size: usize = args[3].parse()?;
     ensure!(
@@ -28,15 +27,37 @@ fn main() -> Result<()> {
         "invalid benchmark dimensions"
     );
     ensure!(args[4] == "fp32" || args[4] == "tf32", "invalid precision");
-    let policy: GreedySuppression = serde_json::from_slice(&std::fs::read(&args[5])?)?;
+    let policy: GreedySuppression = facet_json::from_slice(&std::fs::read(&args[5])?)?;
     let started = Instant::now();
-    let mut engine = Engine::load(Path::new(&args[0]), 0, args[4] == "tf32")?;
+    let mut engine = Engine::load(
+        Path::new(&args[0]),
+        CudaDeviceIndex::FIRST,
+        args[4] == "tf32",
+    )?;
     engine.configure_greedy(&policy)?;
     let mut frontend = Frontend::new(engine.dims().audio.n_mels)?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let mut first_result_ms = None;
-    let mut runs = Vec::new();
-    let mut batches = Vec::new();
+    #[derive(Facet)]
+    struct Run<'a> {
+        file: &'a Path,
+        index: usize,
+        batch_index: usize,
+        result: BatchTranscript,
+    }
+
+    let mut runs: Vec<Run<'_>> = Vec::new();
+    #[derive(Facet)]
+    struct Batch {
+        index: usize,
+        size: usize,
+        frontend_ms: f64,
+        prepare_ms: f64,
+        decode_ms: f64,
+        total_ms: f64,
+    }
+
+    let mut batches: Vec<Batch> = Vec::new();
     for index in 0..repeats {
         for group in paths.chunks(batch_size) {
             let begin = Instant::now();
@@ -66,21 +87,52 @@ fn main() -> Result<()> {
             let total_ms = begin.elapsed().as_secs_f64() * 1000.;
             first_result_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.);
             for (path, result) in group.iter().zip(result.transcripts) {
-                runs.push(serde_json::json!({"file":path,"index":index,"batch_index":batches.len(),"result":result}));
+                runs.push(Run {
+                    file: path,
+                    index,
+                    batch_index: batches.len(),
+                    result,
+                });
             }
-            batches.push(
-                serde_json::json!({"index":index,"size":group.len(),"frontend_ms":frontend_ms,
-                "prepare_ms":result.prepare_ms,"decode_ms":result.decode_ms,"total_ms":total_ms}),
-            );
+            batches.push(Batch {
+                index,
+                size: group.len(),
+                frontend_ms,
+                prepare_ms: result.prepare_ms,
+                decode_ms: result.decode_ms,
+                total_ms,
+            });
         }
     }
-    println!(
+    #[derive(Facet)]
+    struct Receipt<'a> {
+        backend: &'static str,
+        scope: &'static str,
+        batch_size: usize,
+        precision: &'a str,
+        suppression: GreedySuppression,
+        load_ms: f64,
+        first_result_ms: Option<f64>,
+        batch_workspace_bytes: usize,
+        runs: Vec<Run<'a>>,
+        batches: Vec<Batch>,
+    }
+
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
-        serde_json::to_string(&serde_json::json!({"backend":"native-batched-asr",
-        "scope":"WAV reads, frontend and batched greedy English ASR; no VAD/alignment/diarization",
-        "batch_size":batch_size,"precision":args[4],"suppression":policy,
-        "load_ms":load_ms,"first_result_ms":first_result_ms,"batch_workspace_bytes":engine.batch_workspace_bytes(),
-        "runs":runs,"batches":batches}))?
-    );
+        facet_json::to_string(&Receipt {
+            backend: "native-batched-asr",
+            scope: "WAV reads, frontend and batched greedy English ASR; no VAD/alignment/diarization",
+            batch_size,
+            precision: &args[4],
+            suppression: policy,
+            load_ms,
+            first_result_ms,
+            batch_workspace_bytes: engine.batch_workspace_bytes(),
+            runs,
+            batches
+        })?
+    )?;
     Ok(())
 }

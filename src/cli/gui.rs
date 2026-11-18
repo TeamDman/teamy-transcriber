@@ -1,4 +1,7 @@
+use crate::cli::cuda_whisper_options::resolve_cuda_whisper_options;
 use crate::cli::output::CliOutput;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -16,8 +19,10 @@ impl GuiArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        crate::gui::run()?;
-        Ok(CliOutput::none())
+    pub async fn invoke(self, app_home: &AppHome, cache_home: &CacheHome) -> Result<CliOutput> {
+        crate::gui::run(app_home, cache_home, resolve_cuda_whisper_options()?)?;
+        Ok(CliOutput::none(
+            None, /* User-interactive desktop lifetime. */
+        ))
     }
 }

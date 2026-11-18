@@ -1,7 +1,10 @@
+use super::prepare_phones::ModelPreparePhonesArgs;
 use crate::cli::model::prepare::ModelPrepareArgs;
 use crate::cli::model::prepare_vad::ModelPrepareVadArgs;
 use crate::cli::model::show::ModelShowArgs;
 use crate::cli::output::CliOutput;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -25,19 +28,19 @@ pub enum ModelCommand {
     /// Prepare local data-only speech detection weights without downloading.
     PrepareVad(ModelPrepareVadArgs),
     /// Select data-only `PhoneticXeus` phone recognition weights.
-    PreparePhones(super::prepare_phones::ModelPreparePhonesArgs),
+    PreparePhones(ModelPreparePhonesArgs),
 }
 
 impl ModelArgs {
     /// # Errors
     ///
     /// This function will return an error if the model subcommand fails.
-    pub async fn invoke(self) -> Result<CliOutput> {
+    pub async fn invoke(self, app_home: &AppHome, cache_home: &CacheHome) -> Result<CliOutput> {
         match self.command {
-            ModelCommand::Show(args) => args.invoke().await,
-            ModelCommand::Prepare(args) => args.invoke().await,
+            ModelCommand::Show(args) => args.invoke(app_home, cache_home).await,
+            ModelCommand::Prepare(args) => args.invoke(app_home, cache_home).await,
             ModelCommand::PrepareVad(args) => args.invoke().await,
-            ModelCommand::PreparePhones(args) => args.invoke(),
+            ModelCommand::PreparePhones(args) => args.invoke(app_home),
         }
     }
 }

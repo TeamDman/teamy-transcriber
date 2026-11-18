@@ -1,15 +1,15 @@
 //! Full-recording development harness: WAV, native VAD, merge and native ASR.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "Development receipts use serde for reference interoperability."
-)]
 use anyhow::Result;
 use anyhow::ensure;
+use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
+use teamy_whisper_native::BatchTranscript;
+use teamy_whisper_native::CudaDeviceIndex;
 use teamy_whisper_native::Engine;
+use teamy_whisper_native::MAX_BATCH_SIZE;
 use teamy_whisper_native::decoding::GreedySuppression;
 use teamy_whisper_native::frontend::Frontend;
 use teamy_whisper_native::vad::Silero;
@@ -22,27 +22,66 @@ fn main() -> Result<()> {
         args.len() == 5 || args.len() == 6,
         "usage: pipeline_bench WHISPER_MODEL SILERO_WEIGHTS WAV_LIST REPEATS GENERATION_CONFIG [BATCH_SIZE]"
     );
-    let paths: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(&args[2])?)?;
+    let paths: Vec<PathBuf> = facet_json::from_slice(&std::fs::read(&args[2])?)?;
     let repeats: usize = args[3].parse()?;
     ensure!(!paths.is_empty() && repeats > 0, "empty benchmark");
     let batch_size: usize = args.get(5).map_or(Ok(1), |s| s.parse())?;
     ensure!(
-        (1..=teamy_whisper_native::MAX_BATCH_SIZE).contains(&batch_size),
+        (1..=MAX_BATCH_SIZE).contains(&batch_size),
         "unsupported batch size"
     );
-    let suppression: GreedySuppression = serde_json::from_slice(&std::fs::read(&args[4])?)?;
+    let suppression: GreedySuppression = facet_json::from_slice(&std::fs::read(&args[4])?)?;
     let begin = Instant::now();
     let mut vad = Silero::load(Path::new(&args[1]))?;
-    let mut engine = Engine::load(Path::new(&args[0]), 0, true)?;
+    let mut engine = Engine::load(Path::new(&args[0]), CudaDeviceIndex::FIRST, true)?;
     engine.configure_greedy(&suppression)?;
     let mut frontend = Frontend::new(engine.dims().audio.n_mels)?;
     let load_ms = begin.elapsed().as_secs_f64() * 1000.;
     let mut first_result_ms = None;
-    let mut runs = Vec::new();
-    for path in paths {
+    #[derive(Facet)]
+    struct Segment {
+        start: f64,
+        end: f64,
+        start_sample: usize,
+        end_sample: usize,
+        batch_index: usize,
+        text: String,
+        result: BatchTranscript,
+    }
+
+    #[derive(Facet)]
+    struct Batch {
+        size: usize,
+        frontend_ms: f64,
+        prepare_ms: f64,
+        decode_ms: f64,
+        total_ms: f64,
+    }
+
+    #[derive(Facet)]
+    struct RunResult {
+        segments: Vec<Segment>,
+        language: &'static str,
+    }
+
+    #[derive(Facet)]
+    struct Run<'a> {
+        source: &'a Path,
+        index: usize,
+        batch_size: usize,
+        batches: Vec<Batch>,
+        audio_seconds: f64,
+        audio_ms: f64,
+        vad_ms: f64,
+        total_ms: f64,
+        result: RunResult,
+    }
+
+    let mut runs: Vec<Run<'_>> = Vec::new();
+    for path in &paths {
         for index in 0..repeats {
             let started = Instant::now();
-            let mut wav = hound::WavReader::open(&path)?;
+            let mut wav = hound::WavReader::open(path)?;
             let spec = wav.spec();
             ensure!(
                 spec.channels == 1
@@ -82,7 +121,7 @@ fn main() -> Result<()> {
                 let (texts, prepare_ms, decode_ms) = if batch_size == 1 {
                     let r = engine.transcribe_mel(&features[0], 448)?;
                     (
-                        vec![teamy_whisper_native::BatchTranscript {
+                        vec![BatchTranscript {
                             text: r.text,
                             tokens: r.tokens,
                             ended: r.ended,
@@ -98,38 +137,79 @@ fn main() -> Result<()> {
                 for ((start, end, start_sample, end_sample), result) in
                     bounds.into_iter().zip(texts)
                 {
-                    segments.push(serde_json::json!({"start":start,"end":end,
-                    "start_sample":start_sample,"end_sample":end_sample,
-                    "batch_index":batches.len(),"text":result.text,"result":result}));
+                    segments.push(Segment {
+                        start,
+                        end,
+                        start_sample,
+                        end_sample,
+                        batch_index: batches.len(),
+                        text: result.text.clone(),
+                        result,
+                    });
                 }
-                batches.push(serde_json::json!({"size":spans.len(),"frontend_ms":frontend_ms,
-                    "prepare_ms":prepare_ms,"decode_ms":decode_ms,"total_ms":batch_start.elapsed().as_secs_f64()*1000.}));
+                batches.push(Batch {
+                    size: spans.len(),
+                    frontend_ms,
+                    prepare_ms,
+                    decode_ms,
+                    total_ms: batch_start.elapsed().as_secs_f64() * 1000.,
+                });
             }
             let total_ms = started.elapsed().as_secs_f64() * 1000.;
             first_result_ms.get_or_insert_with(|| begin.elapsed().as_secs_f64() * 1000.);
-            eprintln!(
+            writeln!(
+                std::io::stderr().lock(),
                 "{} request {}: {:.1} ms, {} segments",
                 path.display(),
                 index,
                 total_ms,
                 segments.len()
-            );
-            runs.push(
-                serde_json::json!({"source":path,"index":index,"batch_size":batch_size,"batches":batches,
-                "audio_seconds":audio.len() as f64/16000.,"audio_ms":audio_ms,"vad_ms":vad_ms,
-                "total_ms":total_ms,"result":{"segments":segments,"language":"en"}}),
-            );
+            )?;
+            runs.push(Run {
+                source: path,
+                index,
+                batch_size,
+                batches,
+                audio_seconds: audio.len() as f64 / 16000.,
+                audio_ms,
+                vad_ms,
+                total_ms,
+                result: RunResult {
+                    segments,
+                    language: "en",
+                },
+            });
         }
     }
-    println!(
+    #[derive(Facet)]
+    struct Receipt<'a> {
+        backend: &'static str,
+        scope: &'static str,
+        batch_size: usize,
+        batch_workspace_bytes: usize,
+        precision: &'static str,
+        suppression: GreedySuppression,
+        load_ms: f64,
+        first_result_ms: Option<f64>,
+        runs: Vec<Run<'a>>,
+        full_goal_acceptance: bool,
+    }
+
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
-        serde_json::to_string(
-            &serde_json::json!({"backend":"source-defined-native-pipeline",
-        "scope":"PCM16 WAV loading, CPU Silero VAD, merging, CUDA greedy English ASR and assembly. Excludes alignment, diarization and file export. Development harness, not application integration.",
-        "batch_size":batch_size,"batch_workspace_bytes":engine.batch_workspace_bytes(),
-        "precision":"tf32","suppression":suppression,"load_ms":load_ms,
-        "first_result_ms":first_result_ms,"runs":runs,"full_goal_acceptance":false})
-        )?
-    );
+        facet_json::to_string(&Receipt {
+            backend: "source-defined-native-pipeline",
+            scope: "PCM16 WAV loading, CPU Silero VAD, merging, CUDA greedy English ASR and assembly. Excludes alignment, diarization and file export. Development harness, not application integration.",
+            batch_size,
+            batch_workspace_bytes: engine.batch_workspace_bytes(),
+            precision: "tf32",
+            suppression,
+            load_ms,
+            first_result_ms,
+            runs,
+            full_goal_acceptance: false
+        })?
+    )?;
     Ok(())
 }

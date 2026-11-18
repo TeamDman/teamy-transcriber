@@ -1,9 +1,10 @@
 use crate::cli::output::CliOutput;
-use crate::domain::AssetKind;
 use crate::domain::RecordingId;
+use crate::domain::AssetKind;
 use crate::media::FfmpegMediaAdapter;
 use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;
+use crate::paths::AppHome;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
 use eyre::Context;
@@ -27,7 +28,7 @@ struct RecordingPrepareReport {
 pub struct RecordingPrepareArgs {
     /// Recording UUID returned by recording create.
     #[facet(args::positional)]
-    pub recording_id: String,
+    pub recording_id: RecordingId,
 }
 
 impl RecordingPrepareArgs {
@@ -39,16 +40,13 @@ impl RecordingPrepareArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let recording_id =
-            RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let recording = store
-            .load_recording(recording_id)
+            .load_recording(self.recording_id)
             .wrap_err("failed to load recording manifest")?;
         let source = Path::new(&recording.source.path);
-        let output_dir = store.recording_dir(recording_id).join("audio");
+        let output_dir = store.recording_dir(self.recording_id).join("audio");
         let prepared = match recording.source.kind {
             AssetKind::AudioFile | AssetKind::MicrophoneRecording
                 if source.extension().is_some_and(|extension| {
@@ -66,13 +64,16 @@ impl RecordingPrepareArgs {
             }
         };
 
-        Ok(CliOutput::facet(RecordingPrepareReport {
-            recording_id: recording_id.to_string(),
-            normalized_path: prepared.path.display().to_string(),
-            duration_us: prepared.metadata.duration_us,
-            sample_rate_hz: prepared.metadata.sample_rate_hz,
-            channels: prepared.metadata.channels,
-            frame_count: prepared.metadata.frame_count,
-        }))
+        Ok(CliOutput::facet(
+            RecordingPrepareReport {
+                recording_id: self.recording_id.to_string(),
+                normalized_path: prepared.path.display().to_string(),
+                duration_us: prepared.metadata.duration_us,
+                sample_rate_hz: prepared.metadata.sample_rate_hz,
+                channels: prepared.metadata.channels,
+                frame_count: prepared.metadata.frame_count,
+            },
+            None, /* Media duration and normalization work are unbounded. */
+        ))
     }
 }

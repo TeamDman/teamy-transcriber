@@ -7,6 +7,8 @@ use crate::cli::recording::list::RecordingListArgs;
 use crate::cli::recording::prepare::RecordingPrepareArgs;
 use crate::cli::recording::show::RecordingShowArgs;
 use crate::cli::recording::transcribe::RecordingTranscribeArgs;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
@@ -45,16 +47,16 @@ impl RecordingArgs {
     /// # Errors
     ///
     /// This function returns an error if the recording subcommand fails.
-    pub async fn invoke(self) -> Result<CliOutput> {
+    pub async fn invoke(self, app_home: &AppHome, cache_home: &CacheHome) -> Result<CliOutput> {
         match self.command {
-            RecordingCommand::Clip(args) => args.invoke().await,
-            RecordingCommand::Clean(args) => args.invoke().await,
-            RecordingCommand::Create(args) => args.invoke().await,
-            RecordingCommand::Export(args) => args.invoke().await,
-            RecordingCommand::List(args) => args.invoke().await,
-            RecordingCommand::Prepare(args) => args.invoke().await,
-            RecordingCommand::Show(args) => args.invoke().await,
-            RecordingCommand::Transcribe(args) => args.invoke().await,
+            RecordingCommand::Clip(args) => args.invoke(app_home).await,
+            RecordingCommand::Clean(args) => args.invoke(app_home).await,
+            RecordingCommand::Create(args) => args.invoke(app_home).await,
+            RecordingCommand::Export(args) => args.invoke(app_home).await,
+            RecordingCommand::List(args) => args.invoke(app_home).await,
+            RecordingCommand::Prepare(args) => args.invoke(app_home).await,
+            RecordingCommand::Show(args) => args.invoke(app_home).await,
+            RecordingCommand::Transcribe(args) => args.invoke(app_home, cache_home).await,
         }
     }
 }

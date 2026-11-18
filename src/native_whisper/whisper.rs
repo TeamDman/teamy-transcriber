@@ -1,19 +1,18 @@
 //! Metadata and tokenizer validation for source-defined CUDA Whisper.
 use super::model::WhisperModelArtifacts;
-use serde::Deserialize;
-use serde::Serialize;
+use facet::Facet;
 use std::path::Path;
 
 /// Maximum generated tokens for one 30-second Whisper window.
 pub const DEFAULT_MAX_DECODE_TOKENS: usize = 448;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct WhisperDims {
     pub audio: AudioEncoderDims,
     pub text: TextDecoderDims,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct AudioEncoderDims {
     pub n_mels: usize,
     pub n_audio_ctx: usize,
@@ -22,7 +21,7 @@ pub struct AudioEncoderDims {
     pub n_audio_layer: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct TextDecoderDims {
     pub n_vocab: usize,
     pub n_text_ctx: usize,

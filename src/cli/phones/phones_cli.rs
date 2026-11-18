@@ -5,6 +5,9 @@ use crate::domain::AppState;
 use crate::domain::Command;
 use crate::domain::RecordingId;
 use crate::domain::SourceAsset;
+use crate::paths::AppHome;
+use crate::paths::PhoneModelDir;
+use crate::paths::PhoneModelDirSelection;
 use crate::phone_runtime::PhoneChunk;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
@@ -13,7 +16,8 @@ use eyre::Result;
 use facet::Facet;
 use figue as args;
 use std::path::Path;
-use teamy_cancellation::CancellationToken;
+use teamy_cancellation::CancellationScope;
+use teamy_whisper_native::CudaDeviceIndex;
 
 /// Recognize IPA phones directly from audio/video using native CUDA `PhoneticXeus`.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -33,15 +37,16 @@ struct Report {
 impl PhonesArgs {
     /// # Errors
     /// Returns source/model/audio/output errors, retaining created recordings.
-    pub fn invoke(self, token: &CancellationToken) -> Result<CliOutput> {
+    pub fn invoke(self, app_home: &AppHome, cancellation: &CancellationScope) -> Result<CliOutput> {
         let source = Path::new(&self.source)
             .canonicalize()
             .wrap_err("phone source is unavailable")?;
-        let model_dir = crate::phone_runtime::resolve(self.model_dir.as_deref())?;
-        let model = teamy_whisper_native::phones::PhoneModel::load(&model_dir, 0)
-            .map_err(|e| eyre::eyre!("{e:#}"))?;
-        token.bail_if_cancelled()?;
-        let store = RecordingStore::new(crate::paths::AppHome::resolve()?.0);
+        let model_dir = PhoneModelDir::resolve(app_home, self.model_dir.as_deref())?;
+        let model = model_dir
+            .load(CudaDeviceIndex::FIRST)
+            .map_err(|error| eyre::eyre!("{error:#}"))?;
+        cancellation.bail_if_cancelled()?;
+        let store = RecordingStore::new(app_home.as_ref());
         let id = RecordingId::new();
         let run = (|| -> Result<CliOutput> {
             store.apply_command(
@@ -55,8 +60,11 @@ impl PhonesArgs {
                 },
             )?;
             let audio = crate::workflow::prepare_recording(&store, id)?;
-            let chunks =
-                crate::phone_runtime::recognize_wav(&model, &audio.normalized_path, Some(token))?;
+            let chunks = crate::phone_runtime::recognize_wav(
+                &model,
+                &audio.normalized_path,
+                Some(cancellation),
+            )?;
             let report = Report {
                 recording_id: id.to_string(),
                 chunks,
@@ -65,8 +73,10 @@ impl PhonesArgs {
                 store.recording_dir(id).join("phones.json"),
                 facet_json::to_string_pretty(&report)?,
             )?;
-            eprintln!("Phone results and prepared audio retained in recording {id}.");
-            Ok(CliOutput::custom(report))
+            tracing::info!("Phone results and prepared audio retained in recording {id}.");
+            Ok(CliOutput::custom(
+                report, None, /* Media duration and phone inference work are unbounded. */
+            ))
         })();
         run.wrap_err_with(||format!("Phone recognition failed; recording {id} was retained if created. Retry the source file; find saved audio with recording list."))
     }

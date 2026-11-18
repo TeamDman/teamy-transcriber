@@ -1,4 +1,5 @@
 use crate::cli::home::open::HomeOpenArgs;
+use crate::paths::AppHome;
 use crate::cli::home::show::HomeShowArgs;
 use crate::cli::output::CliOutput;
 use arbitrary::Arbitrary;
@@ -28,10 +29,10 @@ impl HomeArgs {
     /// # Errors
     ///
     /// This function will return an error if the subcommand fails.
-    pub async fn invoke(self) -> Result<CliOutput> {
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
         match self.command {
-            HomeCommand::Open(args) => args.invoke().await,
-            HomeCommand::Show(args) => args.invoke().await,
+            HomeCommand::Open(args) => args.invoke(app_home).await,
+            HomeCommand::Show(args) => args.invoke(app_home).await,
         }
     }
 }

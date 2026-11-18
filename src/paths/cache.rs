@@ -2,19 +2,6 @@ use directories_next::ProjectDirs;
 use eyre::bail;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::LazyLock;
-use tracing::warn;
-
-/// The cache home directory for API responses.
-/// This MUST NOT be used within functions outside of a top-level resolution function; any function relying on
-/// a [`CacheHome`] must take it as a parameter to ensure testing is straightforward.
-pub static CACHE_DIR: LazyLock<CacheHome> = LazyLock::new(|| match CacheHome::resolve() {
-    Ok(c) => c,
-    Err(e) => {
-        warn!("Failed to resolve cache home: {}", e);
-        CacheHome(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    }
-});
 
 /// Helper that resolves the application cache directory.
 #[derive(Clone, Debug)]
@@ -40,6 +27,12 @@ impl CacheHome {
     }
 }
 
+impl AsRef<Path> for CacheHome {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
+    }
+}
+
 impl std::ops::Deref for CacheHome {
     type Target = Path;
 
@@ -53,8 +46,8 @@ impl std::ops::Deref for CacheHome {
 /// # Errors
 ///
 /// This function will return an error if removing files or directories fails.
-pub fn clean_cache() -> eyre::Result<CleanResult> {
-    let cache_dir = CACHE_DIR.0.as_path();
+pub fn clean_cache(cache_home: &CacheHome) -> eyre::Result<CleanResult> {
+    let cache_dir = cache_home.as_ref();
     let mut result = CleanResult::default();
 
     if !cache_dir.exists() {

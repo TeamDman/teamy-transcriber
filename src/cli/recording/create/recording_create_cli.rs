@@ -4,13 +4,16 @@ use crate::domain::AssetKind;
 use crate::domain::Command;
 use crate::domain::RecordingId;
 use crate::domain::SourceAsset;
+use crate::paths::AppHome;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Facet, Arbitrary, Debug, PartialEq)]
 #[facet(rename_all = "kebab-case")]
@@ -59,13 +62,12 @@ impl RecordingCreateArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0.clone());
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let recording_id = RecordingId::new();
         let source = SourceAsset::new(
             self.kind.map_or_else(
-                || crate::workflow::asset_kind_for_path(std::path::Path::new(&self.source)),
+                || crate::workflow::asset_kind_for_path(Path::new(&self.source)),
                 RecordingKind::asset_kind,
             ),
             PathBuf::from(&self.source),
@@ -81,10 +83,13 @@ impl RecordingCreateArgs {
             )
             .wrap_err("failed to persist recording manifest")?;
 
-        Ok(CliOutput::facet(RecordingCreateReport {
-            recording_id: recording_id.to_string(),
-            manifest_path: store.manifest_path(recording_id).display().to_string(),
-            events_path: store.events_path(recording_id).display().to_string(),
-        }))
+        Ok(CliOutput::facet(
+            RecordingCreateReport {
+                recording_id: recording_id.to_string(),
+                manifest_path: store.manifest_path(recording_id).display().to_string(),
+                events_path: store.events_path(recording_id).display().to_string(),
+            },
+            Some(Duration::from_secs(1)),
+        ))
     }
 }

@@ -1,10 +1,10 @@
 use crate::cli::output::CliOutput;
 use crate::domain::RecordingId;
+use crate::paths::AppHome;
 use crate::storage::RecordingStore;
 use crate::workflow::export_recording;
 use crate::workflow::export_recording_with_timestamps;
 use arbitrary::Arbitrary;
-use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
@@ -23,7 +23,7 @@ struct RecordingExportReport {
 pub struct RecordingExportArgs {
     /// Recording UUID returned by recording create.
     #[facet(args::positional)]
-    pub recording_id: String,
+    pub recording_id: RecordingId,
     /// Destination text file; defaults to the recording transcript directory.
     #[facet(args::named)]
     pub output: Option<String>,
@@ -42,23 +42,23 @@ impl RecordingExportArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let recording_id =
-            RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let output = self.output.map(PathBuf::from);
         let report = if self.timestamps {
-            export_recording_with_timestamps(&store, recording_id, output)?
+            export_recording_with_timestamps(&store, self.recording_id, output)?
         } else {
-            export_recording(&store, recording_id, output)?
+            export_recording(&store, self.recording_id, output)?
         };
 
-        Ok(CliOutput::facet(RecordingExportReport {
-            recording_id: recording_id.to_string(),
-            output_path: report.output_path.display().to_string(),
-            transcript_count: report.transcript_count,
-            byte_count: report.byte_count,
-        }))
+        Ok(CliOutput::facet(
+            RecordingExportReport {
+                recording_id: self.recording_id.to_string(),
+                output_path: report.output_path.display().to_string(),
+                transcript_count: report.transcript_count,
+                byte_count: report.byte_count,
+            },
+            None, /* Recording history and export size are unbounded. */
+        ))
     }
 }

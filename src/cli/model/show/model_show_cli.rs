@@ -1,8 +1,14 @@
 use crate::cli::output::CliOutput;
+use crate::native_whisper::selection::DEFAULT_REPOSITORY;
+use crate::native_whisper::selection::DEFAULT_REVISION;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
+use crate::paths::WhisperModelDir;
 use crate::transcription::LocalModelInventory;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
+use std::time::Duration;
 
 #[derive(Facet, Debug)]
 struct ModelShowReport {
@@ -24,19 +30,21 @@ impl ModelShowArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let model_home = crate::paths::ModelHome::resolve()?;
-        let inventory = LocalModelInventory::inspect(model_home.0)?;
+    pub async fn invoke(self, app_home: &AppHome, cache_home: &CacheHome) -> Result<CliOutput> {
+        let model_home = WhisperModelDir::resolve(app_home, cache_home)?;
+        let inventory = LocalModelInventory::inspect(model_home)?;
 
-        Ok(CliOutput::facet(ModelShowReport {
-            path: inventory.root.display().to_string(),
-            exists: inventory.exists,
-            file_count: inventory.file_count,
-            download_policy: format!(
-                "download explicitly with hf download {} --revision {} --quiet; then run teamy-transcriber model prepare",
-                crate::native_whisper::selection::DEFAULT_REPOSITORY,
-                crate::native_whisper::selection::DEFAULT_REVISION
-            ),
-        }))
+        Ok(CliOutput::facet(
+            ModelShowReport {
+                path: inventory.root.display().to_string(),
+                exists: inventory.exists,
+                file_count: inventory.file_count,
+                download_policy: format!(
+                    "download explicitly with hf download {} --revision {} --quiet; then run teamy-transcriber model prepare",
+                    DEFAULT_REPOSITORY, DEFAULT_REVISION
+                ),
+            },
+            Some(Duration::from_secs(5)),
+        ))
     }
 }

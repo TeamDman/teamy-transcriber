@@ -4,10 +4,31 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::thread::Builder as ThreadBuilder;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use teamy_whisper_native::CudaDeviceIndex;
+use teamy_whisper_native::Engine;
+use teamy_whisper_native::MAX_BATCH_SIZE;
+use teamy_whisper_native::decoding::GreedySuppression;
+use teamy_whisper_native::frontend::Frontend;
 
-const BATCH_SIZE_ENV: &str = "TEAMY_TRANSCRIBER_CUDA_BATCH_SIZE";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CudaWhisperOptions {
+    pub device: CudaDeviceIndex,
+    pub tf32: bool,
+    pub batch_size: usize,
+}
+
+impl Default for CudaWhisperOptions {
+    fn default() -> Self {
+        Self {
+            device: CudaDeviceIndex::FIRST,
+            tf32: true,
+            batch_size: MAX_BATCH_SIZE,
+        }
+    }
+}
 
 #[derive(Debug)]
 enum Response {
@@ -52,23 +73,21 @@ impl CudaWhisperRuntime {
     ///
     /// # Errors
     /// Returns an error for invalid model assets, unavailable CUDA, or a failed worker.
-    pub fn load(path: PathBuf) -> Result<Self, String> {
+    pub fn load(
+        path: PathBuf,
+        device: CudaDeviceIndex,
+        tf32: bool,
+        batch_size: usize,
+    ) -> Result<Self, String> {
+        if !(1..=MAX_BATCH_SIZE).contains(&batch_size) {
+            return Err(format!("CUDA batch size must be 1..={}", MAX_BATCH_SIZE));
+        }
         let (sender, receiver) = mpsc::sync_channel::<Request>(1);
         let (ready_tx, ready_rx) = mpsc::channel();
-        let device = std::env::var("TEAMY_TRANSCRIBER_CUDA_DEVICE").map_or(Ok(0), |value| {
-            value.parse::<i32>().map_err(|error| error.to_string())
-        })?;
-        let tf32 = match std::env::var("TEAMY_TRANSCRIBER_CUDA_MATH") {
-            Err(std::env::VarError::NotPresent) => true,
-            Ok(value) if value == "tf32" => true,
-            Ok(value) if value == "fp32" => false,
-            _ => return Err("TEAMY_TRANSCRIBER_CUDA_MATH must be tf32 or fp32".to_string()),
-        };
-        let batch_size = configured_batch_size()?;
         let generation = path.join("generation_config.json");
         let policy = if generation.exists() {
             Some(
-                serde_json::from_slice::<teamy_whisper_native::decoding::GreedySuppression>(
+                facet_json::from_slice::<GreedySuppression>(
                     &std::fs::read(&generation).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| format!("invalid generation_config.json: {e}"))?,
@@ -76,20 +95,19 @@ impl CudaWhisperRuntime {
         } else {
             None
         };
-        let thread = std::thread::Builder::new()
+        let thread = ThreadBuilder::new()
             .name("whisper-cuda-inference".into())
             .spawn(move || {
                 let initialized = (|| {
-                    let mut engine = teamy_whisper_native::Engine::load(&path, device, tf32)
-                        .map_err(|error| error.to_string())?;
+                    let mut engine =
+                        Engine::load(&path, device, tf32).map_err(|error| error.to_string())?;
                     if let Some(policy) = policy {
                         engine
                             .configure_greedy(&policy)
                             .map_err(|e| e.to_string())?;
                     }
-                    let frontend =
-                        teamy_whisper_native::frontend::Frontend::new(engine.dims().audio.n_mels)
-                            .map_err(|error| error.to_string())?;
+                    let frontend = Frontend::new(engine.dims().audio.n_mels)
+                        .map_err(|error| error.to_string())?;
                     Ok::<_, String>((engine, frontend))
                 })();
                 let (mut engine, mut frontend) = match initialized {
@@ -150,7 +168,7 @@ impl CudaWhisperRuntime {
         should_stop: &mut dyn FnMut() -> bool,
         on_complete: &mut dyn FnMut(usize, String) -> Result<(), String>,
     ) -> Result<bool, String> {
-        if !(1..=teamy_whisper_native::MAX_BATCH_SIZE).contains(&windows.len()) {
+        if !(1..=MAX_BATCH_SIZE).contains(&windows.len()) {
             return Err("CUDA requests must contain one to eight windows".into());
         }
         let (reply, result) = mpsc::channel();
@@ -209,23 +227,9 @@ impl Drop for CancelOnDrop {
     }
 }
 
-fn configured_batch_size() -> Result<usize, String> {
-    let size = match std::env::var(BATCH_SIZE_ENV) {
-        Err(std::env::VarError::NotPresent) => teamy_whisper_native::MAX_BATCH_SIZE,
-        Ok(value) => value
-            .parse()
-            .map_err(|error| format!("{BATCH_SIZE_ENV} must be 1..=8: {error}"))?,
-        Err(error) => return Err(error.to_string()),
-    };
-    if !(1..=teamy_whisper_native::MAX_BATCH_SIZE).contains(&size) {
-        return Err(format!("{BATCH_SIZE_ENV} must be 1..=8"));
-    }
-    Ok(size)
-}
-
 fn run_request(
-    engine: &mut teamy_whisper_native::Engine,
-    frontend: &mut teamy_whisper_native::frontend::Frontend,
+    engine: &mut Engine,
+    frontend: &mut Frontend,
     request: &Request,
     batch_size: usize,
 ) -> Result<bool, String> {

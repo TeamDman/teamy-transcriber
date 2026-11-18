@@ -1,5 +1,8 @@
+use arbitrary::Arbitrary;
+use arbitrary::Unstructured;
 use facet::Facet;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use thiserror::Error;
 use uuid::Uuid;
@@ -22,6 +25,18 @@ impl RecordingId {
     /// Returns an error when the value is not a UUID.
     pub fn parse(value: &str) -> Result<Self, uuid::Error> {
         Uuid::parse_str(value).map(Self)
+    }
+}
+
+impl<'a> Arbitrary<'a> for RecordingId {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self(Uuid::from_bytes(<[u8; 16]>::arbitrary(u)?)))
+    }
+}
+
+impl From<Uuid> for RecordingId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
     }
 }
 
@@ -233,7 +248,7 @@ impl ClipPlan {
         {
             return Err(DomainError::InvalidClipPlan);
         }
-        let mut ids = std::collections::BTreeSet::new();
+        let mut ids = BTreeSet::new();
         let mut end = 0;
         for clip in &self.clips {
             clip.source_range.validate()?;

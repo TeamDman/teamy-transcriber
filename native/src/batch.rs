@@ -1,9 +1,10 @@
 //! Bounded independent audio sequences sharing weights and decoder launches.
 use super::*;
+use facet::Facet;
 
 pub const MAX_BATCH_SIZE: usize = 8;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Facet)]
 pub struct BatchTranscript {
     pub text: String,
     pub tokens: Vec<usize>,
@@ -31,7 +32,7 @@ mod tests {
                 .map(|s| s.map(|s| f32::from(s) / 32768.))
                 .collect::<Result<_, _>>()?,
         };
-        let mut engine = Engine::load(Path::new(&root), 0, false)?;
+        let mut engine = Engine::load(Path::new(&root), CudaDeviceIndex::FIRST, false)?;
         let mut frontend = frontend::Frontend::new(engine.dims.audio.n_mels)?;
         let mels = [
             frontend.compute(&audio)?,
@@ -153,7 +154,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Facet)]
 pub struct BatchDecodeResult {
     pub transcripts: Vec<BatchTranscript>,
     /// Only the completed, delivered prefix is returned after cancellation.

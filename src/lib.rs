@@ -4,10 +4,12 @@
 pub mod capture;
 pub mod cli;
 pub mod domain;
+mod elapsed_duration;
 pub mod gui;
 pub(crate) mod live_microphone;
 pub mod logging_init;
 pub mod media;
+pub mod microphone_chunk_milliseconds;
 pub mod native_whisper;
 pub mod paths;
 pub mod presentation;
@@ -20,10 +22,18 @@ mod windows_startup;
 pub mod workflow;
 
 use crate::cli::Cli;
+use crate::cli::Command;
+use crate::cli::cuda_whisper_options::resolve_cuda_whisper_options;
+use crate::cli::global_args::GlobalArgs;
+use crate::cli::microphone::MicrophoneCommand;
+use crate::cli::output::OutputFormat;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::Utc;
 use std::ffi::OsString;
+use std::time::Instant;
 use teamy_cancellation::CtrlCHandler;
 
 /// Version string combining package version, git repository metadata, and build time.
@@ -81,11 +91,13 @@ pub fn main() -> eyre::Result<()> {
     // unwrap() is figue's intended CLI entry behavior:
     // it exits with proper codes for --help/--version/completions/parse-errors.
     let command_line_arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let app_home = AppHome::resolve()?;
+    let cache_home = CacheHome::resolve()?;
     if launch_gui_without_command(&command_line_arguments) {
-        let global_args = crate::cli::global_args::GlobalArgs::default();
+        let global_args = GlobalArgs::default();
         logging_init::init_logging(&global_args, cancellation_token.clone())?;
-        gui::run()?;
-        cancellation_token.bail_if_cancelled()?;
+        gui::run(&app_home, &cache_home, resolve_cuda_whisper_options()?)?;
+        cancellation_token.with_scope(|scope| scope.bail_if_cancelled())?;
         return Ok(());
     }
     let version = version();
@@ -109,13 +121,13 @@ pub fn main() -> eyre::Result<()> {
 
     // For live microphone transcription cancellation stops the producer; the
     // consumer must finish queued audio and return success after draining.
-    let drains_capture = matches!(&cli.command, crate::cli::Command::Microphone(args)
-        if matches!(&args.command, crate::cli::microphone::MicrophoneCommand::Transcribe(_)));
+    let drains_capture = matches!(&cli.command, Command::Microphone(args)
+        if matches!(&args.command, MicrophoneCommand::Transcribe(_)));
     if drains_capture
         && cli
             .global_args
             .output_format
-            .is_some_and(|format| format != crate::cli::output::OutputFormat::Text)
+            .is_some_and(|format| format != OutputFormat::Text)
     {
         eyre::bail!("live microphone transcription emits plain text; use --output-format text");
     }
@@ -128,17 +140,33 @@ pub fn main() -> eyre::Result<()> {
     // Initialize logging
     logging_init::init_logging(&cli.global_args, cancellation_token.clone())?;
 
-    // Invoke whatever command was requested and render its output once at the top level
-    let requested_output_format = cli.global_args.output_format;
-    let output = cli.invoke(cancellation_token.clone())?;
-    if !drains_capture {
-        output.check_cancellation(&cancellation_token)?;
-    }
-    output.emit(requested_output_format)?;
-    if !drains_capture {
-        cancellation_token.bail_if_cancelled()?;
-    }
-    Ok(())
+    let command_name = cli.command.name()?;
+    tracing::debug!(command = command_name, "Dispatching command");
+    let result = cancellation_token.with_scope(|cancellation| -> eyre::Result<()> {
+        let _span = tracing::info_span!("command", command = command_name).entered();
+        let requested_output_format = cli.global_args.output_format;
+        let started = Instant::now();
+        let output = cli.invoke(&app_home, &cache_home, &cancellation)?;
+        let threshold = output.elapsed_duration_warn_threshold;
+        let emitted = (|| {
+            if !drains_capture {
+                output.check_cancellation(&cancellation)?;
+            }
+            output.emit(requested_output_format)
+        })();
+        elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
+        emitted?;
+        if !drains_capture {
+            cancellation.bail_if_cancelled()?;
+        }
+        Ok(())
+    });
+    tracing::debug!(
+        command = command_name,
+        success = result.is_ok(),
+        "Command finished"
+    );
+    result
 }
 
 fn launch_gui_without_command(arguments: &[OsString]) -> bool {

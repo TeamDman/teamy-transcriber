@@ -1,6 +1,10 @@
 use super::whisper::WhisperDims;
 use eyre::WrapErr;
 use eyre::bail;
+use facet::Facet;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -97,9 +101,9 @@ pub fn inspect_model_dir(root: &Path) -> eyre::Result<WhisperModelArtifacts> {
     )
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Facet)]
 struct SafetensorsIndex {
-    weight_map: std::collections::BTreeMap<String, String>,
+    weight_map: BTreeMap<String, String>,
 }
 
 /// Resolve a canonical single-file or indexed-shard safetensors package.
@@ -127,18 +131,18 @@ pub fn resolve_safetensor_paths(root: &Path) -> eyre::Result<Vec<PathBuf>> {
             index_path.display()
         );
     }
-    let index: SafetensorsIndex = serde_json::from_str(
+    let index: SafetensorsIndex = facet_json::from_str(
         &std::fs::read_to_string(&index_path)
             .wrap_err_with(|| format!("failed to read {}", index_path.display()))?,
     )
     .wrap_err_with(|| format!("failed to parse {}", index_path.display()))?;
-    let mut paths = std::collections::BTreeSet::new();
+    let mut paths = BTreeSet::new();
     for relative_name in index.weight_map.values() {
         let relative = Path::new(relative_name);
         if relative.is_absolute()
             || relative
                 .components()
-                .any(|component| component == std::path::Component::ParentDir)
+                .any(|component| component == Component::ParentDir)
         {
             bail!("safetensors index contains an unsafe shard path: {relative_name}");
         }
@@ -179,7 +183,7 @@ fn read_dims_file(path: &Path) -> eyre::Result<WhisperDims> {
             path.display()
         )
     })?;
-    serde_json::from_str(&contents).wrap_err_with(|| {
+    facet_json::from_str(&contents).wrap_err_with(|| {
         format!(
             "failed to parse native Whisper dimensions {}",
             path.display()

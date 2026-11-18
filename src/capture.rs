@@ -1,7 +1,7 @@
 use facet::Facet;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use teamy_cancellation::CancellationToken;
 
 pub(crate) mod live;
 
@@ -214,7 +214,7 @@ pub fn record_audio_input(
 pub fn record_audio_input_until_stopped(
     endpoint_id: Option<&str>,
     output_path: &Path,
-    stop_requested: &AtomicBool,
+    stop_requested: &CancellationToken,
 ) -> eyre::Result<AudioCaptureReport> {
     windows_capture::record_audio_input_until_stopped(endpoint_id, output_path, stop_requested)
 }
@@ -242,7 +242,7 @@ pub fn record_audio_input(
 pub fn record_audio_input_until_stopped(
     _endpoint_id: Option<&str>,
     _output_path: &Path,
-    _stop_requested: &AtomicBool,
+    _stop_requested: &CancellationToken,
 ) -> eyre::Result<AudioCaptureReport> {
     eyre::bail!("microphone capture is currently implemented for Windows only")
 }
@@ -253,11 +253,12 @@ mod windows_capture {
     use eyre::Context;
     use std::ffi::c_void;
     use std::path::Path;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
     use std::time::Instant;
+    use teamy_cancellation::CancellationToken;
     use windows::Win32::Foundation::E_INVALIDARG;
     use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
     use windows::Win32::Media::Audio::AUDCLNT_SHAREMODE_EXCLUSIVE;
@@ -366,7 +367,7 @@ mod windows_capture {
         if duration.is_zero() {
             eyre::bail!("capture duration must be greater than zero")
         }
-        let stop_requested = AtomicBool::new(false);
+        let stop_requested = CancellationToken::new();
         capture_with_recovery(
             endpoint_id,
             output_path,
@@ -378,7 +379,7 @@ mod windows_capture {
     pub fn record_audio_input_until_stopped(
         endpoint_id: Option<&str>,
         output_path: &Path,
-        stop_requested: &AtomicBool,
+        stop_requested: &CancellationToken,
     ) -> eyre::Result<AudioCaptureReport> {
         capture_with_recovery(endpoint_id, output_path, None, stop_requested)
     }
@@ -387,7 +388,7 @@ mod windows_capture {
         endpoint_id: Option<&str>,
         output_path: &Path,
         stop_at: Option<Instant>,
-        stop_requested: &AtomicBool,
+        stop_requested: &CancellationToken,
     ) -> eyre::Result<AudioCaptureReport> {
         match record_audio_input_inner(endpoint_id, output_path, stop_at, stop_requested) {
             Ok(report) => Ok(report),
@@ -411,7 +412,7 @@ mod windows_capture {
         endpoint_id: Option<&str>,
         output_path: &Path,
         stop_at: Option<Instant>,
-        stop_requested: &AtomicBool,
+        stop_requested: &CancellationToken,
     ) -> eyre::Result<AudioCaptureReport> {
         let _com = ComApartment::initialize()?;
         let enumerator: IMMDeviceEnumerator = unsafe {
@@ -501,13 +502,11 @@ mod windows_capture {
         endpoint_id: Option<&str>,
         output_path: &Path,
         stop_at: Option<Instant>,
-        stop_requested: &AtomicBool,
+        stop_requested: &CancellationToken,
     ) -> eyre::Result<AudioCaptureReport> {
         use cpal::traits::DeviceTrait;
         use cpal::traits::HostTrait;
         use cpal::traits::StreamTrait;
-        use std::sync::Arc;
-        use std::sync::Mutex;
 
         let host = cpal::default_host();
         let desired_name = endpoint_id.and_then(|endpoint_id| {
@@ -556,7 +555,7 @@ mod windows_capture {
             .play()
             .wrap_err("CPAL could not start the microphone stream")?;
 
-        while !stop_requested.load(Ordering::Relaxed)
+        while !stop_requested.is_cancelled()
             && stop_at.is_none_or(|deadline| Instant::now() < deadline)
         {
             if stream_error
@@ -600,21 +599,21 @@ mod windows_capture {
         config: &cpal::StreamConfig,
         sample_format: cpal::SampleFormat,
         channels: usize,
-        samples: &std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
-        stream_error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        samples: &Arc<Mutex<Vec<f32>>>,
+        stream_error: &Arc<Mutex<Option<String>>>,
     ) -> eyre::Result<cpal::Stream> {
         use cpal::traits::DeviceTrait;
 
         macro_rules! build_stream {
             ($sample_type:ty) => {{
-                let samples = std::sync::Arc::clone(samples);
+                let samples = Arc::clone(samples);
                 device
                     .build_input_stream(
                         config,
                         move |data: &[$sample_type], _| {
                             append_cpal_samples(data, channels, &samples);
                         },
-                        cpal_error_callback(std::sync::Arc::clone(stream_error)),
+                        cpal_error_callback(Arc::clone(stream_error)),
                         None,
                     )
                     .wrap_err("CPAL could not build the microphone input stream")
@@ -637,7 +636,7 @@ mod windows_capture {
     }
 
     fn cpal_error_callback(
-        stream_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        stream_error: Arc<Mutex<Option<String>>>,
     ) -> impl FnMut(cpal::StreamError) + Send + 'static {
         move |error| {
             if let Ok(mut slot) = stream_error.lock()
@@ -648,11 +647,8 @@ mod windows_capture {
         }
     }
 
-    fn append_cpal_samples<T>(
-        input: &[T],
-        channels: usize,
-        samples: &std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
-    ) where
+    fn append_cpal_samples<T>(input: &[T], channels: usize, samples: &Arc<Mutex<Vec<f32>>>)
+    where
         T: cpal::Sample,
         f32: cpal::FromSample<T>,
     {
@@ -772,10 +768,10 @@ mod windows_capture {
         capture_client: &IAudioCaptureClient,
         capture_format: AudioCaptureFormat,
         stop_at: Option<Instant>,
-        stop_requested: &AtomicBool,
+        stop_requested: &CancellationToken,
     ) -> eyre::Result<Vec<f32>> {
         let mut samples = Vec::new();
-        while !stop_requested.load(Ordering::Relaxed)
+        while !stop_requested.is_cancelled()
             && stop_at.is_none_or(|deadline| Instant::now() < deadline)
         {
             let mut packet_frames = unsafe { capture_client.GetNextPacketSize()? };

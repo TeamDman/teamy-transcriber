@@ -6,6 +6,8 @@ use facet_pretty::PrettyPrinter;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::io::{self};
+use std::time::Duration;
+use teamy_cancellation::CancellationScope;
 
 #[derive(Arbitrary, Facet, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[facet(rename_all = "kebab-case")]
@@ -17,12 +19,20 @@ pub enum OutputFormat {
     Csv,
 }
 
-pub struct CliOutput(Option<Box<dyn CliOutputValue>>);
+pub struct CliOutput {
+    value: Option<Box<dyn CliOutputValue>>,
+    /// Execution metadata; never serialized into command results.
+    pub elapsed_duration_warn_threshold: Option<Duration>,
+}
 
 impl core::fmt::Debug for CliOutput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CliOutput")
-            .field("has_value", &self.0.is_some())
+            .field("has_value", &self.value.is_some())
+            .field(
+                "elapsed_duration_warn_threshold",
+                &self.elapsed_duration_warn_threshold,
+            )
             .finish()
     }
 }
@@ -53,35 +63,44 @@ struct FacetCliOutput<T> {
 }
 
 impl CliOutput {
-    pub(crate) fn custom(value: impl CliOutputValue + 'static) -> Self {
-        Self(Some(Box::new(value)))
+    pub(crate) fn custom(
+        value: impl CliOutputValue + 'static,
+        elapsed_duration_warn_threshold: Option<Duration>,
+    ) -> Self {
+        Self {
+            value: Some(Box::new(value)),
+            elapsed_duration_warn_threshold,
+        }
     }
 
     /// Check cancellation while preserving a command's recovery information.
     /// # Errors
     /// Returns a contextual cancellation error.
-    pub fn check_cancellation(
-        &self,
-        token: &teamy_cancellation::CancellationToken,
-    ) -> eyre::Result<()> {
-        token.bail_if_cancelled().map_err(|error| {
-            self.0.as_ref().map_or_else(
+    pub fn check_cancellation(&self, cancellation: &CancellationScope) -> eyre::Result<()> {
+        cancellation.bail_if_cancelled().map_err(|error| {
+            self.value.as_ref().map_or_else(
                 || eyre::eyre!("{error:#}"),
                 |output| output.output_error(eyre::eyre!("{error:#}")),
             )
         })
     }
     #[must_use]
-    pub const fn none() -> Self {
-        Self(None)
+    pub const fn none(elapsed_duration_warn_threshold: Option<Duration>) -> Self {
+        Self {
+            value: None,
+            elapsed_duration_warn_threshold,
+        }
     }
 
     #[must_use]
-    pub fn facet<T>(value: T) -> Self
+    pub fn facet<T>(value: T, elapsed_duration_warn_threshold: Option<Duration>) -> Self
     where
         T: Facet<'static> + 'static,
     {
-        Self(Some(Box::new(FacetCliOutput { value })))
+        Self {
+            value: Some(Box::new(FacetCliOutput { value })),
+            elapsed_duration_warn_threshold,
+        }
     }
 
     /// # Errors
@@ -102,7 +121,7 @@ impl CliOutput {
         stdout_is_terminal: bool,
         stdout: &mut dyn Write,
     ) -> eyre::Result<()> {
-        let Some(output) = self.0 else {
+        let Some(output) = self.value else {
             return Ok(());
         };
 
@@ -131,12 +150,6 @@ impl CliOutput {
     }
 }
 
-impl Default for CliOutput {
-    fn default() -> Self {
-        Self::none()
-    }
-}
-
 impl<T> CliOutputValue for FacetCliOutput<T>
 where
     T: Facet<'static> + 'static,
@@ -162,3 +175,6 @@ where
         Ok(Some(rendered))
     }
 }
+
+#[cfg(test)]
+mod budget_tests;

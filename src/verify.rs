@@ -5,23 +5,30 @@
 //! or turn a missing corpus/model into a passing result.
 
 use crate::domain::AssetKind;
+use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::TranscriptProvenance;
+use crate::media::AudioProfile;
+use crate::native_whisper::cuda::CudaWhisperOptions;
 use crate::native_whisper::model::inspect_model_dir;
+use crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS;
 use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use crate::paths::MODEL_DIR_ENV_VAR;
-use crate::paths::ModelHome;
+use crate::paths::WhisperModelDir;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
 use crate::transcription::TranscriptionBackend;
 use crate::workflow::MediaToolConfig;
+use crate::workflow::TranscriptionOptions;
+use crate::workflow::TranscriptionSession;
 use crate::workflow::create_recording;
 use crate::workflow::prepare_recording_with_tools_and_profile;
-use crate::workflow::transcribe_recording;
 use facet::Facet;
 use sha2::Digest;
 use sha2::Sha256;
+use std::fs::DirEntry;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -213,6 +220,7 @@ pub struct CanaryReceipt {
 
 #[derive(Clone, Debug, Default)]
 pub struct VctkCanaryOptions {
+    pub cuda: CudaWhisperOptions,
     pub vctk_root: Option<PathBuf>,
     pub receipt_path: Option<PathBuf>,
     pub model_dir: Option<PathBuf>,
@@ -237,7 +245,11 @@ struct HashResult {
     clippy::too_many_lines,
     reason = "the canary deliberately keeps its bounded receipt-producing workflow together"
 )]
-pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt> {
+pub fn run_vctk_canary(
+    app_home: &AppHome,
+    cache_home: &CacheHome,
+    options: VctkCanaryOptions,
+) -> eyre::Result<CanaryReceipt> {
     let descriptor = facet_json::from_str::<VctkDescriptor>(VCTK_DESCRIPTOR_JSON)
         .map_err(|error| eyre::eyre!("committed VCTK descriptor is invalid: {error}"))?;
     let receipt_path = options
@@ -249,19 +261,17 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         || "<not supplied>".to_string(),
         |path| path.display().to_string(),
     );
-    let (model_dir, model_source, model_resolution_error) = resolve_model_dir(options.model_dir);
-    let (app_home, app_home_source, app_home_error) = resolve_app_home();
+    let (model_dir, model_source, model_resolution_error) =
+        resolve_model_dir(app_home, cache_home, options.model_dir);
+    let app_home_source = app_home_source();
     let max_decode_tokens = options
         .max_decode_tokens
-        .unwrap_or(crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS);
+        .unwrap_or(DEFAULT_MAX_DECODE_TOKENS);
     let model_dir_display = model_dir.as_deref().map_or_else(
         || "<unresolved>".to_string(),
         |path| path.display().to_string(),
     );
-    let app_home_display = app_home.as_ref().map_or_else(
-        || "<unresolved>".to_string(),
-        |path| path.0.display().to_string(),
-    );
+    let app_home_display = app_home.display().to_string();
     let binary = binary_receipt();
     let mut receipt = CanaryReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
@@ -295,12 +305,9 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
             app_home_source,
             recording_store_root: None,
             max_decode_tokens,
-            cuda_device_setting: std::env::var("TEAMY_TRANSCRIBER_CUDA_DEVICE")
-                .unwrap_or_else(|_| "0".into()),
-            cuda_math_setting: std::env::var("TEAMY_TRANSCRIBER_CUDA_MATH")
-                .unwrap_or_else(|_| "tf32".into()),
-            cuda_batch_size_setting: std::env::var("TEAMY_TRANSCRIBER_CUDA_BATCH_SIZE")
-                .unwrap_or_else(|_| "8".into()),
+            cuda_device_setting: options.cuda.device.to_string(),
+            cuda_math_setting: if options.cuda.tf32 { "tf32" } else { "fp32" }.into(),
+            cuda_batch_size_setting: options.cuda.batch_size.to_string(),
             media_adapter: "native-wav".to_string(),
             network_access: "disabled-by-workflow-no-downloaders".to_string(),
         },
@@ -381,21 +388,12 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         return Ok(receipt);
     }
 
-    let Some(app_home) = app_home else {
-        fail(
-            &mut receipt,
-            FailureStage::AppHome,
-            app_home_error.unwrap_or_else(|| "application home could not be resolved".to_string()),
-        );
-        finish_and_write(&mut receipt, total_start, &receipt_path)?;
-        return Ok(receipt);
-    };
     if let Err(error) = app_home.ensure_dir() {
         fail(&mut receipt, FailureStage::AppHome, error.to_string());
         finish_and_write(&mut receipt, total_start, &receipt_path)?;
         return Ok(receipt);
     }
-    let store_root = app_home.0.join("verification").join(&descriptor.logical_id);
+    let store_root = app_home.join("verification").join(&descriptor.logical_id);
     let store = RecordingStore::new(&store_root);
     receipt.configuration.recording_store_root = Some(store_root.display().to_string());
 
@@ -417,7 +415,7 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         &store,
         recording_id,
         &MediaToolConfig::from_environment(),
-        crate::media::AudioProfile::Original,
+        AudioProfile::Original,
     );
     receipt.timings.normalize_ms = elapsed_ms(normalize_start);
     let preparation = match preparation {
@@ -475,6 +473,7 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
         return Ok(receipt);
     };
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+        cuda: options.cuda,
         model_dir: model_dir.clone(),
         max_decode_tokens,
     });
@@ -506,8 +505,19 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
     receipt.timings.model_load_ms = elapsed_ms(model_start);
 
     let transcription_start = Instant::now();
-    let transcription =
-        transcribe_recording(&store, recording_id, model_dir, max_decode_tokens, None);
+    let transcription = TranscriptionSession::default().transcribe(
+        &store,
+        recording_id,
+        TranscriptionOptions {
+            cuda: options.cuda,
+            model_dir,
+            max_decode_tokens,
+            chunk_duration_us: None,
+            profile: AudioProfile::Original,
+        },
+        None,
+        None,
+    );
     receipt.timings.transcription_ms = elapsed_ms(transcription_start);
     let transcription = match transcription {
         Ok(report) => report,
@@ -632,7 +642,11 @@ pub fn run_vctk_canary(options: VctkCanaryOptions) -> eyre::Result<CanaryReceipt
     Ok(receipt)
 }
 
-fn resolve_model_dir(explicit: Option<PathBuf>) -> (Option<PathBuf>, String, Option<String>) {
+fn resolve_model_dir(
+    app_home: &AppHome,
+    cache_home: &CacheHome,
+    explicit: Option<PathBuf>,
+) -> (Option<PathBuf>, String, Option<String>) {
     if let Some(path) = explicit {
         return (Some(path), "argument".to_string(), None);
     }
@@ -643,21 +657,17 @@ fn resolve_model_dir(explicit: Option<PathBuf>) -> (Option<PathBuf>, String, Opt
             None,
         );
     }
-    match ModelHome::resolve() {
-        Ok(home) => (Some(home.0), "resolved_default".to_string(), None),
+    match WhisperModelDir::resolve(app_home, cache_home) {
+        Ok(home) => (Some(home.into()), "resolved_default".to_string(), None),
         Err(error) => (None, "unresolved".to_string(), Some(error.to_string())),
     }
 }
 
-fn resolve_app_home() -> (Option<AppHome>, String, Option<String>) {
-    let source = if std::env::var_os(crate::paths::APP_HOME_ENV_VAR).is_some() {
+fn app_home_source() -> String {
+    if std::env::var_os(crate::paths::APP_HOME_ENV_VAR).is_some() {
         crate::paths::APP_HOME_ENV_VAR.to_string()
     } else {
         "resolved_default".to_string()
-    };
-    match AppHome::resolve() {
-        Ok(home) => (Some(home), source, None),
-        Err(error) => (None, "unresolved".to_string(), Some(error.to_string())),
     }
 }
 
@@ -753,7 +763,7 @@ fn artifact_receipt(path: &Path) -> ArtifactReceipt {
 fn replay_evidence(
     store: &RecordingStore,
     recording_id: RecordingId,
-    persisted: &crate::domain::Recording,
+    persisted: &Recording,
 ) -> eyre::Result<ReplayEvidence> {
     let events_path = store.events_path(recording_id);
     let event_count = std::fs::read_to_string(&events_path).map(|contents| {
@@ -828,7 +838,7 @@ fn collect_files(
     files: &mut Vec<(String, PathBuf)>,
 ) -> eyre::Result<()> {
     let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    entries.sort_by_key(DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
         if entry.file_type()?.is_dir() {
@@ -933,6 +943,8 @@ mod tests {
     use super::normalize_for_metrics;
     use super::ratio;
     use super::run_vctk_canary;
+    use crate::paths::AppHome;
+    use crate::paths::CacheHome;
     use std::path::PathBuf;
 
     #[test]
@@ -961,12 +973,17 @@ mod tests {
             "teamy-transcriber-vctk-test-{}.json",
             uuid::Uuid::new_v4()
         ));
-        let report = run_vctk_canary(VctkCanaryOptions {
-            vctk_root: Some(PathBuf::from("this-corpus-does-not-exist")),
-            receipt_path: Some(receipt.clone()),
-            model_dir: None,
-            max_decode_tokens: None,
-        })
+        let report = run_vctk_canary(
+            &AppHome(std::env::temp_dir()),
+            &CacheHome(std::env::temp_dir()),
+            VctkCanaryOptions {
+                cuda: Default::default(),
+                vctk_root: Some(PathBuf::from("this-corpus-does-not-exist")),
+                receipt_path: Some(receipt.clone()),
+                model_dir: None,
+                max_decode_tokens: None,
+            },
+        )
         .expect("unavailable corpus should still produce a receipt");
         assert_eq!(report.status, VerificationStatus::Unavailable);
         assert!(!report.passed);

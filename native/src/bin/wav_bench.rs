@@ -1,14 +1,16 @@
 //! Complete WAV-to-text timing. A JSON array of WAV paths exercises resident reuse.
-#![allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "Development receipts serialize the standalone engine's serde types for external benchmark interoperability."
-)]
 use anyhow::Result;
 use anyhow::ensure;
+use facet::Facet;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
+use teamy_whisper_native::CudaDeviceIndex;
+use teamy_whisper_native::DecodeResult;
+use teamy_whisper_native::decoding::GreedySuppression;
+use teamy_whisper_native::frontend::Frontend;
+
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
@@ -16,29 +18,38 @@ fn main() -> Result<()> {
         "usage: wav_bench MODEL WAV_OR_JSON_LIST [REPEATS] [DUMP_PREFIX_OR_DASH] [fp32|tf32] [GENERATION_CONFIG]"
     );
     let paths: Vec<PathBuf> = if args[1].ends_with(".json") {
-        serde_json::from_slice(&std::fs::read(&args[1])?)?
+        facet_json::from_slice(&std::fs::read(&args[1])?)?
     } else {
         vec![PathBuf::from(&args[1])]
     };
     let started = Instant::now();
     let tf32 = args.get(4).is_some_and(|s| s == "tf32");
-    let mut engine = teamy_whisper_native::Engine::load(Path::new(&args[0]), 0, tf32)?;
+    let mut engine =
+        teamy_whisper_native::Engine::load(Path::new(&args[0]), CudaDeviceIndex::FIRST, tf32)?;
     let suppression = args
         .get(5)
-        .map(
-            |path| -> Result<teamy_whisper_native::decoding::GreedySuppression> {
-                Ok(serde_json::from_slice(&std::fs::read(path)?)?)
-            },
-        )
+        .map(|path| -> Result<GreedySuppression> {
+            Ok(facet_json::from_slice(&std::fs::read(path)?)?)
+        })
         .transpose()?;
     if let Some(policy) = &suppression {
         engine.configure_greedy(policy)?;
     }
-    let mut frontend = teamy_whisper_native::frontend::Frontend::new(engine.dims().audio.n_mels)?;
+    let mut frontend = Frontend::new(engine.dims().audio.n_mels)?;
     let load_ms = started.elapsed().as_secs_f64() * 1000.;
     let repeats: usize = args.get(2).map_or(Ok(3), |s| s.parse())?;
     ensure!(repeats > 0 && !paths.is_empty(), "empty benchmark");
-    let mut runs = Vec::new();
+    #[derive(Facet)]
+    struct Run {
+        file: Option<String>,
+        index: usize,
+        audio_seconds: f64,
+        frontend_ms: f64,
+        total_ms: f64,
+        result: DecodeResult,
+    }
+
+    let mut runs: Vec<Run> = Vec::new();
     let mut first_result_ms = None;
     for path in &paths {
         for index in 0..repeats {
@@ -85,14 +96,41 @@ fn main() -> Result<()> {
                         .collect::<Vec<_>>(),
                 )?;
             }
-            runs.push(serde_json::json!({"file":path.file_name().map(|s|s.to_string_lossy()),"index":index,"audio_seconds":samples.len() as f64/16000.,"frontend_ms":frontend_ms,"total_ms":total_ms,"result":result}));
+            runs.push(Run {
+                file: path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+                index,
+                audio_seconds: samples.len() as f64 / 16000.,
+                frontend_ms,
+                total_ms,
+                result,
+            });
         }
     }
-    println!(
+    #[derive(Facet)]
+    struct Receipt {
+        backend: &'static str,
+        precision: &'static str,
+        suppression: Option<GreedySuppression>,
+        scope: &'static str,
+        load_ms: f64,
+        first_result_ms: Option<f64>,
+        runs: Vec<Run>,
+    }
+
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
-        serde_json::to_string_pretty(
-            &serde_json::json!({"backend":"native-cuda","precision":if tf32 {"tf32"} else {"fp32"},"suppression":suppression,"scope":"WAV-to-text ASR; greedy English, batch one; excludes VAD/alignment/diarization","load_ms":load_ms,"first_result_ms":first_result_ms,"runs":runs})
-        )?
-    );
+        facet_json::to_string_pretty(&Receipt {
+            backend: "native-cuda",
+            precision: if tf32 { "tf32" } else { "fp32" },
+            suppression,
+            scope: "WAV-to-text ASR; greedy English, batch one; excludes VAD/alignment/diarization",
+            load_ms,
+            first_result_ms,
+            runs
+        })?
+    )?;
     Ok(())
 }

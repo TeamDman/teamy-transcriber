@@ -1,7 +1,9 @@
 use crate::cli::output::CliOutput;
+use crate::paths::AppHome;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
+use std::time::Duration;
 
 #[derive(Facet, Debug)]
 struct HomeShowReport {
@@ -20,9 +22,12 @@ impl HomeShowArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        Ok(CliOutput::facet(HomeShowReport {
-            path: crate::paths::APP_HOME.display().to_string(),
-        }))
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        Ok(CliOutput::facet(
+            HomeShowReport {
+                path: app_home.display().to_string(),
+            },
+            Some(Duration::from_secs(1)),
+        ))
     }
 }

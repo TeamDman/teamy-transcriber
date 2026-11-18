@@ -1,9 +1,11 @@
 use eyre::Result;
 use eyre::ensure;
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use teamy_cancellation::CancellationToken;
 use teamy_transcriber::domain::AssetKind;
+use teamy_transcriber::domain::ClipStatus;
 use teamy_transcriber::media::AudioProfile;
 use teamy_transcriber::storage::RecordingStore;
 use teamy_transcriber::workflow::TranscriptionOptions;
@@ -11,6 +13,8 @@ use teamy_transcriber::workflow::TranscriptionSession;
 use teamy_transcriber::workflow::create_recording;
 use teamy_transcriber::workflow::export_recording_with_timestamps;
 use teamy_transcriber::workflow::prepare_recording;
+use teamy_whisper_native::CudaDeviceIndex;
+use teamy_whisper_native::MAX_BATCH_SIZE;
 
 /// Real model lifecycle regression, opt-in because it needs local CUDA/assets.
 /// Supply a small prepared single-file model and a short speech WAV. Files are
@@ -29,11 +33,7 @@ fn session_recovers_from_model_repair_and_cancellation() -> Result<()> {
     result
 }
 
-fn exercise_session(
-    model: &std::path::Path,
-    wav: &std::path::Path,
-    root: &std::path::Path,
-) -> Result<()> {
+fn exercise_session(model: &Path, wav: &Path, root: &Path) -> Result<()> {
     let staged = root.join("model");
     std::fs::create_dir(&staged)?;
     for file in ["dims.json", "tokenizer.json", "model.safetensors"] {
@@ -47,6 +47,7 @@ fn exercise_session(
         "supply a speech WAV between two and thirty seconds long"
     );
     let options = TranscriptionOptions {
+        cuda: Default::default(),
         model_dir: staged.clone(),
         max_decode_tokens: 448,
         chunk_duration_us: Some(prepared.metadata.duration_us.div_ceil(2)),
@@ -64,19 +65,20 @@ fn exercise_session(
     );
     std::fs::copy(model.join("dims.json"), staged.join("dims.json"))?;
     check_policy_repair(&mut session, &store, id, &options)?;
-    let cancelled = AtomicBool::new(false);
-    let mut cancel_after_first = |completed, _| {
-        if completed == 1 {
-            cancelled.store(true, Ordering::Relaxed);
-        }
-    };
-    let partial = session.transcribe(
-        &store,
-        id,
-        options.clone(),
-        Some(&cancelled),
-        Some(&mut cancel_after_first),
-    )?;
+    let partial = CancellationToken::new().with_scope(|cancelled| {
+        let mut cancel_after_first = |completed, _| {
+            if completed == 1 {
+                cancelled.request_cancel("test cancellation");
+            }
+        };
+        session.transcribe(
+            &store,
+            id,
+            options.clone(),
+            Some(&cancelled),
+            Some(&mut cancel_after_first),
+        )
+    })?;
     ensure!(
         partial.cancelled && partial.chunks.len() == 1,
         "cancellation did not stop after one committed clip"
@@ -90,7 +92,7 @@ fn exercise_session(
             .load_recording(id)?
             .clips
             .iter()
-            .all(|clip| clip.status != teamy_transcriber::domain::ClipStatus::Processing),
+            .all(|clip| clip.status != ClipStatus::Processing),
         "cancelled batch left a processing clip"
     );
     let resumed = session.transcribe(&store, id, options.clone(), None, None)?;
@@ -177,7 +179,8 @@ fn cuda_worker_drains_callback_failure_and_panic_before_reuse() -> Result<()> {
                 .collect::<Result<_, _>>()?
         }
     };
-    let runtime = CudaWhisperRuntime::load(model).map_err(|e| eyre::eyre!(e))?;
+    let runtime = CudaWhisperRuntime::load(model, CudaDeviceIndex::FIRST, true, MAX_BATCH_SIZE)
+        .map_err(|e| eyre::eyre!(e))?;
     let expected = runtime
         .transcribe(samples.clone(), 448)
         .map_err(|e| eyre::eyre!(e))?;
@@ -208,7 +211,7 @@ fn cuda_worker_drains_callback_failure_and_panic_before_reuse() -> Result<()> {
         })
         .unwrap_err();
     ensure!(error == "persistence refused", "callback error was lost");
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
         runtime.transcribe_batch(vec![samples.clone(); 3], 448, &mut || false, &mut |_, _| {
             panic!("injected callback panic")
         })

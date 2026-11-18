@@ -1,17 +1,23 @@
 use crate::domain::ClipId;
 use crate::domain::RecordingId;
+use crate::domain::TimeRange;
 use crate::domain::TranscriptProvenance;
+use crate::native_whisper::cuda::CudaWhisperOptions;
+use crate::native_whisper::cuda::CudaWhisperRuntime;
 use crate::native_whisper::model::MODEL_DIMS_FILE_NAME;
 use crate::native_whisper::model::MODEL_SAFETENSORS_FILE_NAME;
 use crate::native_whisper::model::MODEL_SAFETENSORS_INDEX_FILE_NAME;
 use crate::native_whisper::model::TOKENIZER_FILE_NAME;
 use crate::native_whisper::model::WhisperModelArtifacts;
 use crate::native_whisper::model::inspect_model_dir;
+use crate::native_whisper::speech::DIRECTORY as SPEECH_MODEL_DIRECTORY;
+use crate::native_whisper::speech::detect as detect_speech;
 use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use teamy_whisper_native::MAX_BATCH_SIZE;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, Facet, PartialEq)]
@@ -69,7 +75,7 @@ pub enum SpeechPlan {
     Unavailable,
     Cancelled,
     Detected {
-        ranges: Vec<crate::domain::TimeRange>,
+        ranges: Vec<TimeRange>,
         weights_sha256: String,
     },
 }
@@ -180,6 +186,7 @@ impl TranscriptionBackend for FakeTranscriptionBackend {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeWhisperConfig {
+    pub cuda: CudaWhisperOptions,
     pub model_dir: PathBuf,
     pub max_decode_tokens: usize,
 }
@@ -188,7 +195,7 @@ pub struct NativeWhisperConfig {
 pub struct NativeWhisperBackend {
     config: NativeWhisperConfig,
     model_artifacts: Arc<OnceLock<Result<WhisperModelArtifacts, String>>>,
-    cuda_runtime: Arc<OnceLock<Result<crate::native_whisper::cuda::CudaWhisperRuntime, String>>>,
+    cuda_runtime: Arc<OnceLock<Result<CudaWhisperRuntime, String>>>,
 }
 
 impl NativeWhisperBackend {
@@ -282,25 +289,17 @@ impl TranscriptionBackend for NativeWhisperBackend {
         audio: &Path,
         should_stop: &mut dyn FnMut() -> bool,
     ) -> Result<SpeechPlan, TranscriptionError> {
-        if self
-            .config
-            .model_dir
-            .join(crate::native_whisper::speech::DIRECTORY)
-            .exists()
-        {
+        if self.config.model_dir.join(SPEECH_MODEL_DIRECTORY).exists() {
             self.validate_configuration(audio)?;
-            return crate::native_whisper::speech::detect(
-                &self.config.model_dir,
-                audio,
-                should_stop,
-            )
-            .map_err(|e| TranscriptionError::Configuration(format!("speech detection: {e:#}")));
+            return detect_speech(&self.config.model_dir, audio, should_stop).map_err(|e| {
+                TranscriptionError::Configuration(format!("speech detection: {e:#}"))
+            });
         }
         Ok(SpeechPlan::Unavailable)
     }
 
     fn batch_capacity(&self) -> usize {
-        teamy_whisper_native::MAX_BATCH_SIZE
+        MAX_BATCH_SIZE
     }
 
     fn transcribe_batch(
@@ -326,7 +325,12 @@ impl TranscriptionBackend for NativeWhisperBackend {
         let runtime = self
             .cuda_runtime
             .get_or_init(|| {
-                crate::native_whisper::cuda::CudaWhisperRuntime::load(artifacts.root.clone())
+                CudaWhisperRuntime::load(
+                    artifacts.root.clone(),
+                    self.config.cuda.device,
+                    self.config.cuda.tf32,
+                    self.config.cuda.batch_size,
+                )
             })
             .as_ref()
             .map_err(|error| TranscriptionError::Inference(error.clone()))?;

@@ -1,7 +1,9 @@
 //! Streaming Silero endpointing. Preserve native-rate PCM; resample only detector input.
+use crate::native_whisper::speech::DIRECTORY as SPEECH_MODEL_DIRECTORY;
+use crate::native_whisper::speech::load as load_speech_model;
+use crate::paths::WhisperModelDir;
 use eyre::Context;
 use eyre::Result;
-use std::path::Path;
 use teamy_whisper_native::vad::Silero;
 use teamy_whisper_native::vad::WINDOW;
 
@@ -36,14 +38,13 @@ impl Endpoint {
 }
 
 impl Detector {
-    pub(super) fn load(model_dir: &Path) -> Result<Option<Self>> {
-        let path = model_dir.join(crate::native_whisper::speech::DIRECTORY);
+    pub(super) fn load(model_dir: &WhisperModelDir) -> Result<Option<Self>> {
+        let path = model_dir.join(SPEECH_MODEL_DIRECTORY);
         if !path.exists() {
-            eprintln!("Selected model has no VAD; using fixed maximum windows.");
+            tracing::info!("Selected model has no VAD; using fixed maximum windows.");
             return Ok(None);
         }
-        let (model, _) =
-            crate::native_whisper::speech::load(&path).wrap_err("loading live microphone VAD")?;
+        let (model, _) = load_speech_model(&path).wrap_err("loading live microphone VAD")?;
         Ok(Some(Self {
             model,
             window: [0.; WINDOW],
@@ -94,6 +95,7 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     #[test]
     fn submits_only_after_speech_and_a_sustained_pause() {
         let mut endpoint = Endpoint::default();
@@ -115,7 +117,7 @@ mod tests {
     #[test]
     #[ignore = "requires TEST_MODEL with prepared Silero weights"]
     fn detector_resampling_preserves_time_for_microphone_rates() -> Result<()> {
-        let model = std::path::PathBuf::from(std::env::var("TEST_MODEL")?);
+        let model = WhisperModelDir::from(PathBuf::from(std::env::var("TEST_MODEL")?));
         for rate in [8000, 16000, 44100, 48000] {
             let mut detector = Detector::load(&model)?.expect("fixture must include VAD");
             for _ in 0..rate {

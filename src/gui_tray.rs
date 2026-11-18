@@ -45,6 +45,7 @@ use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 use windows::Win32::UI::WindowsAndMessaging::DestroyMenu;
 use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
 use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
+use windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::Win32::UI::WindowsAndMessaging::GetMessageW;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
@@ -75,6 +76,7 @@ use windows::Win32::UI::WindowsAndMessaging::WM_RBUTTONUP;
 use windows::Win32::UI::WindowsAndMessaging::WM_USER;
 use windows::Win32::UI::WindowsAndMessaging::WNDCLASSW;
 use windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW;
+use windows::core::PCWSTR;
 use windows::core::w;
 
 const HOTKEY_ID: i32 = 1;
@@ -340,7 +342,7 @@ fn show_context_menu(hwnd: HWND) {
             CMD_TOGGLE_HOTKEY,
             w!("Toggle Ctrl+Shift+Space hotkey"),
         );
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, CMD_EXIT, w!("Exit"));
         let _ = SetForegroundWindow(hwnd);
     }
@@ -371,8 +373,7 @@ fn show_context_menu(hwnd: HWND) {
 }
 
 fn with_state(hwnd: HWND, action: impl FnOnce(&mut TrayState)) {
-    let pointer =
-        unsafe { GetWindowLongPtrW(hwnd, windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA) };
+    let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
     if pointer == 0 {
         return;
     }
@@ -393,13 +394,7 @@ unsafe extern "system" fn window_proc(
     match message {
         WM_NCCREATE => {
             let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
-            unsafe {
-                SetWindowLongPtrW(
-                    hwnd,
-                    windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-                    create.lpCreateParams as isize,
-                )
-            };
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize) };
             LRESULT(1)
         }
         WM_CREATE => LRESULT(0),
@@ -431,13 +426,7 @@ unsafe extern "system" fn window_proc(
         WM_DESTROY => {
             let _ = unsafe { UnregisterHotKey(Some(hwnd), HOTKEY_ID) };
             let _ = delete_tray_icon(hwnd);
-            let pointer = unsafe {
-                SetWindowLongPtrW(
-                    hwnd,
-                    windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-                    0,
-                )
-            };
+            let pointer = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             if pointer != 0 {
                 unsafe { drop(Box::from_raw(pointer as *mut TrayState)) };
             }
@@ -457,8 +446,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn with_taskbar_message(hwnd: HWND) -> u32 {
-    let pointer =
-        unsafe { GetWindowLongPtrW(hwnd, windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA) };
+    let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
     if pointer == 0 {
         return 0;
     }

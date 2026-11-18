@@ -4,6 +4,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
+use facet::Facet;
 use safetensors::Dtype;
 use safetensors::SafeTensors;
 use std::path::Path;
@@ -155,7 +156,7 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 /// Half-open sample range in the original 16 kHz recording.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
 pub struct SpeechSegment {
     pub start: usize,
     pub end: usize,
@@ -545,7 +546,7 @@ mod tests {
     #[test]
     #[ignore = "requires SILERO_POLICY_CASES from tools/export_silero_policy_cases.py"]
     fn segmentation_matches_upstream_oracle() -> Result<()> {
-        #[derive(serde::Deserialize)]
+        #[derive(Facet)]
         struct Case {
             pattern: Vec<(f32, usize)>,
             samples: usize,
@@ -553,12 +554,12 @@ mod tests {
             max_seconds: f64,
             segments: Vec<SpeechSegment>,
         }
-        #[derive(serde::Deserialize)]
+        #[derive(Facet)]
         struct Receipt {
             cases: Vec<Case>,
         }
         let bytes = std::fs::read(std::env::var("SILERO_POLICY_CASES")?)?;
-        let receipt: Receipt = serde_json::from_slice(&bytes)?;
+        let receipt: Receipt = facet_json::from_slice(&bytes)?;
         assert!(receipt.cases.len() >= 100);
         for (index, case) in receipt.cases.iter().enumerate() {
             let probabilities: Vec<_> = case

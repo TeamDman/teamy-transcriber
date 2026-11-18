@@ -30,6 +30,7 @@ use crate::media::PreparedAudio;
 use crate::media::WavMediaAdapter;
 use crate::media::apply_audio_profile;
 use crate::media::plan_time_chunks;
+use crate::native_whisper::cuda::CudaWhisperOptions;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
@@ -43,13 +44,14 @@ use eyre::bail;
 use facet::Facet;
 use std::fmt::Write as _;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use teamy_cancellation::CancellationScope;
+use teamy_cancellation::CancellationToken;
 use thiserror::Error;
 
 #[cfg(test)]
@@ -108,6 +110,7 @@ impl MediaToolConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptionOptions {
+    pub cuda: CudaWhisperOptions,
     pub model_dir: PathBuf,
     pub max_decode_tokens: usize,
     pub chunk_duration_us: Option<u64>,
@@ -152,11 +155,12 @@ impl TranscriptionSession {
         store: &RecordingStore,
         recording_id: RecordingId,
         options: TranscriptionOptions,
-        stop_requested: Option<&AtomicBool>,
+        stop_requested: Option<&CancellationScope>,
         progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<TranscriptionReport> {
         let config = NativeWhisperConfig {
             model_dir: options.model_dir,
+            cuda: options.cuda,
             max_decode_tokens: options.max_decode_tokens,
         };
         if self
@@ -553,7 +557,7 @@ fn has_riff_wave_header(source: &Path) -> Result<bool> {
     let mut header = [0_u8; 12];
     match file.read_exact(&mut header) {
         Ok(()) => Ok(&header[..4] == b"RIFF" && &header[8..12] == b"WAVE"),
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
@@ -626,7 +630,7 @@ fn write_audio_profile_receipt(
     write_atomic_text(&profiles_dir.join(format!("{stem}.json")), &contents)
 }
 
-/// Capture a microphone recording until the returned cancellation flag is set.
+/// Capture a microphone recording until the caller requests cancellation.
 ///
 /// The workflow persists the created/recording/saved or failed lifecycle, so a
 /// GUI shutdown or capture error remains recoverable in the same event receipt.
@@ -637,7 +641,7 @@ fn write_audio_profile_receipt(
 pub fn record_microphone(
     store: &RecordingStore,
     endpoint_id: Option<&str>,
-    stop_requested: Arc<AtomicBool>,
+    stop_requested: CancellationToken,
 ) -> std::result::Result<MicrophoneReport, MicrophoneFailure> {
     capture_microphone(
         store,
@@ -676,7 +680,7 @@ pub fn record_microphone_for_duration(
 
 enum CaptureRequest {
     Bounded(Duration),
-    UntilStopped(Arc<AtomicBool>),
+    UntilStopped(CancellationToken),
 }
 
 fn capture_microphone(
@@ -780,6 +784,7 @@ pub fn transcribe_recording(
         store,
         recording_id,
         TranscriptionOptions {
+            cuda: Default::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,
@@ -806,18 +811,19 @@ pub fn transcribe_recording_with_cancellation(
     model_dir: PathBuf,
     max_decode_tokens: usize,
     chunk_duration_us: Option<u64>,
-    stop_requested: &Arc<AtomicBool>,
+    stop_requested: &CancellationScope,
 ) -> Result<TranscriptionReport> {
     TranscriptionSession::default().transcribe(
         store,
         recording_id,
         TranscriptionOptions {
+            cuda: Default::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,
             profile: AudioProfile::Original,
         },
-        Some(stop_requested.as_ref()),
+        Some(stop_requested),
         None,
     )
 }
@@ -836,13 +842,14 @@ pub fn transcribe_recording_with_profile_and_cancellation(
     max_decode_tokens: usize,
     chunk_duration_us: Option<u64>,
     profile: AudioProfile,
-    stop_requested: &Arc<AtomicBool>,
+    stop_requested: &CancellationScope,
 ) -> Result<TranscriptionReport> {
     let mut no_progress = |_: usize, _: usize| {};
     transcribe_recording_with_profile_and_cancellation_and_progress(
         store,
         recording_id,
         TranscriptionOptions {
+            cuda: Default::default(),
             model_dir,
             max_decode_tokens,
             chunk_duration_us,
@@ -868,14 +875,14 @@ pub fn transcribe_recording_with_profile_and_cancellation_and_progress(
     store: &RecordingStore,
     recording_id: RecordingId,
     options: TranscriptionOptions,
-    stop_requested: &Arc<AtomicBool>,
+    stop_requested: &CancellationScope,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<TranscriptionReport> {
     TranscriptionSession::default().transcribe(
         store,
         recording_id,
         options,
-        Some(stop_requested.as_ref()),
+        Some(stop_requested),
         Some(progress),
     )
 }
@@ -887,10 +894,11 @@ pub fn resume_recording(
     store: &RecordingStore,
     recording_id: RecordingId,
     options: TranscriptionOptions,
-    stop_requested: Option<&AtomicBool>,
+    stop_requested: Option<&CancellationScope>,
 ) -> Result<TranscriptionReport> {
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
         model_dir: options.model_dir,
+        cuda: options.cuda,
         max_decode_tokens: options.max_decode_tokens,
     });
     transcribe_recording_inner(
@@ -914,7 +922,7 @@ fn transcribe_recording_inner(
     recording_id: RecordingId,
     chunk_duration_us: Option<u64>,
     profile: AudioProfile,
-    stop_requested: Option<&AtomicBool>,
+    stop_requested: Option<&CancellationScope>,
     mut progress: Option<&mut dyn FnMut(usize, usize)>,
     backend: &dyn TranscriptionBackend,
     reuse_completed: bool,
@@ -929,9 +937,7 @@ fn transcribe_recording_inner(
     let full_range = TimeRange::new(0, metadata.duration_us)
         .wrap_err("prepared recording has no transcribable duration")?;
     let backend_id = backend.capabilities().backend_id;
-    let mut should_stop = || {
-        stop_requested.is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Relaxed))
-    };
+    let mut should_stop = || stop_requested.is_some_and(CancellationScope::is_cancelled);
     let batch = BatchWorkflow {
         store,
         recording_id,

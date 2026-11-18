@@ -1,8 +1,11 @@
 use crate::cli::output::CliOutput;
+use crate::native_whisper::speech::prepare as prepare_speech_model;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::path::Path;
+use std::time::Duration;
 
 /// Validate and add local data-only Silero weights to a native Whisper package.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -23,10 +26,8 @@ impl ModelPrepareVadArgs {
         reason = "CLI dispatch uses async invoke methods"
     )]
     pub async fn invoke(self) -> Result<CliOutput> {
-        let report = crate::native_whisper::speech::prepare(
-            std::path::Path::new(&self.source_weights),
-            std::path::Path::new(&self.model_dir),
-        )?;
-        Ok(CliOutput::facet(report))
+        let report =
+            prepare_speech_model(Path::new(&self.source_weights), Path::new(&self.model_dir))?;
+        Ok(CliOutput::facet(report, Some(Duration::from_secs(10))))
     }
 }

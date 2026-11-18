@@ -1,12 +1,14 @@
 //! Local model selection and offline discovery through the user's hf CLI.
 use super::model::WhisperModelArtifacts;
 use super::model::inspect_model_dir;
+use crate::paths::WhisperModelDir;
 use eyre::Context;
 use eyre::Result;
 use eyre::ensure;
 use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub const DEFAULT_REPOSITORY: &str = "TeamDman/teamy-transcriber-whisper-large-v3";
 pub const DEFAULT_REVISION: &str = "ca74fe211e39bcb869ae19204c39b7b4a2967107";
@@ -18,7 +20,7 @@ struct Selection {
     model_dir: String,
 }
 
-/// Read durable model selection. An environment override is handled by `ModelHome`.
+/// Read durable model selection. An environment override is handled by `WhisperModelDir`.
 pub fn read_selection(app_home: &Path) -> Result<Option<PathBuf>> {
     let path = app_home.join(SELECTION_FILE);
     if !path.exists() {
@@ -34,7 +36,7 @@ pub fn read_selection(app_home: &Path) -> Result<Option<PathBuf>> {
 }
 
 /// Validate the complete prepared model without GPU initialization or conversion.
-pub fn validate_prepared(path: &Path) -> Result<WhisperModelArtifacts> {
+pub fn validate_prepared(path: &WhisperModelDir) -> Result<WhisperModelArtifacts> {
     let artifacts = inspect_model_dir(path)?;
     let vad = path.join(super::speech::DIRECTORY);
     if vad.exists() {
@@ -48,6 +50,7 @@ pub fn select_model(app_home: &Path, model_dir: &Path) -> Result<WhisperModelArt
     let model_dir = model_dir
         .canonicalize()
         .wrap_err("prepared model directory is unavailable")?;
+    let model_dir = WhisperModelDir::from(model_dir);
     let artifacts = validate_prepared(&model_dir)?;
     let config = Selection {
         schema_version: 1,
@@ -101,7 +104,7 @@ pub fn find_cached_model() -> Result<PathBuf> {
     find_cached_repository(DEFAULT_REPOSITORY, DEFAULT_REVISION)
 }
 pub(crate) fn find_cached_repository(repository: &str, revision: &str) -> Result<PathBuf> {
-    let output = std::process::Command::new("hf")
+    let output = Command::new("hf")
         .args(["cache", "list", "--revisions", "--format", "json"])
         .env("HF_HUB_OFFLINE", "1")
         .env("HF_HUB_DISABLE_UPDATE_CHECK", "1")

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use teamy_transcriber::domain::AssetKind;
 use teamy_transcriber::domain::ClipPlanKind;
 use teamy_transcriber::media::AudioProfile;
+use teamy_transcriber::native_whisper::prepare::prepare_safetensors_model;
 use teamy_transcriber::native_whisper::speech;
 use teamy_transcriber::storage::RecordingStore;
 use teamy_transcriber::transcription::SpeechPlan;
@@ -40,7 +41,7 @@ fn exercise(root: &Path, model: &Path, weights: &Path) -> Result<()> {
     let policy = r#"{"suppress_tokens":[1],"begin_suppress_tokens":[2]}"#;
     std::fs::write(staged.join("generation_config.json"), policy)?;
     let prepared = root.join("prepared");
-    teamy_transcriber::native_whisper::prepare::prepare_safetensors_model(&staged, &prepared)?;
+    prepare_safetensors_model(&staged, &prepared)?;
     ensure!(std::fs::read_to_string(prepared.join("generation_config.json"))? == policy);
     let staged = prepared;
     let bad = root.join("bad.safetensors");
@@ -101,7 +102,7 @@ fn exercise(root: &Path, model: &Path, weights: &Path) -> Result<()> {
     exercise_silent_workflow(root, &staged, &wav)?;
     exercise_float_overshoot(root, &staged)?;
     let copied = root.join("prepared-with-vad");
-    teamy_transcriber::native_whisper::prepare::prepare_safetensors_model(&staged, &copied)?;
+    prepare_safetensors_model(&staged, &copied)?;
     speech::validate(&copied.join("vad"))?;
     Ok(())
 }
@@ -171,6 +172,7 @@ fn exercise_silent_workflow(root: &Path, model: &Path, wav: &Path) -> Result<()>
     let id = create_recording(&store, AssetKind::AudioFile, wav)?;
     prepare_recording(&store, id)?;
     let options = TranscriptionOptions {
+        cuda: Default::default(),
         model_dir: model.into(),
         max_decode_tokens: 448,
         chunk_duration_us: None,

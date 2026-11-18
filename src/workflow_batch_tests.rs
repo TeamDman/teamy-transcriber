@@ -3,7 +3,6 @@ use crate::transcription::BackendCapabilities;
 use crate::transcription::FakeTranscriptionBackend;
 use crate::transcription::TranscriptionResult;
 use std::cell::RefCell;
-use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -134,7 +133,7 @@ impl Fixture {
     fn run(
         &self,
         backend: &dyn TranscriptionBackend,
-        stop: Option<&AtomicBool>,
+        stop: Option<&CancellationScope>,
         progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<TranscriptionReport> {
         transcribe_recording_inner(
@@ -169,14 +168,15 @@ impl Drop for Fixture {
 fn cancellation_persists_a_prefix_and_restores_previous_edits() -> Result<()> {
     let f = Fixture::new()?;
     let backend = Backend::new(Mode::Normal);
-    let stop = AtomicBool::new(false);
-    let mut progress = |completed, _| {
-        if completed == 1 {
-            assert_eq!(f.store.load_recording(f.id).unwrap().transcripts.len(), 1);
-            stop.store(true, Ordering::Relaxed);
-        }
-    };
-    let partial = f.run(&backend, Some(&stop), Some(&mut progress))?;
+    let partial = CancellationToken::new().with_scope(|stop| {
+        let mut progress = |completed, _| {
+            if completed == 1 {
+                assert_eq!(f.store.load_recording(f.id).unwrap().transcripts.len(), 1);
+                stop.request_cancel("test cancellation");
+            }
+        };
+        f.run(&backend, Some(&stop), Some(&mut progress))
+    })?;
     assert!(partial.cancelled);
     assert_eq!(partial.chunks.len(), 1);
     assert_eq!(
@@ -195,13 +195,15 @@ fn cancellation_persists_a_prefix_and_restores_previous_edits() -> Result<()> {
     assert_eq!(*backend.calls.borrow(), [3, 3, 1]);
     let edited = resumed.chunks[2].clip_id;
     commit_transcript_edit(&f.store, f.id, edited, "preserved user edit".into())?;
-    stop.store(false, Ordering::Relaxed);
-    let mut progress = |completed, _| {
-        if completed == 1 {
-            stop.store(true, Ordering::Relaxed);
-        }
-    };
-    assert!(f.run(&backend, Some(&stop), Some(&mut progress))?.cancelled);
+    let cancelled = CancellationToken::new().with_scope(|stop| {
+        let mut progress = |completed, _| {
+            if completed == 1 {
+                stop.request_cancel("test cancellation");
+            }
+        };
+        f.run(&backend, Some(&stop), Some(&mut progress))
+    })?;
+    assert!(cancelled.cancelled);
     assert_eq!(
         f.statuses()?,
         [
@@ -301,8 +303,11 @@ fn invalid_completion_sequences_never_commit_another_clips_text() -> Result<()> 
 fn pre_cancel_and_audio_preparation_failure_leave_no_processing_clips() -> Result<()> {
     let f = Fixture::new()?;
     let backend = Backend::new(Mode::Normal);
-    let stop = AtomicBool::new(true);
-    assert!(f.run(&backend, Some(&stop), None)?.cancelled);
+    let report = CancellationToken::new().with_scope(|stop| {
+        stop.request_cancel("test cancellation");
+        f.run(&backend, Some(&stop), None)
+    })?;
+    assert!(report.cancelled);
     assert!(backend.calls.borrow().is_empty());
     assert!(f.statuses()?.is_empty());
     // A file where derived audio's directory belongs makes preparation fail.

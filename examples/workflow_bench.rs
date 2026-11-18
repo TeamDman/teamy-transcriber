@@ -1,5 +1,6 @@
 //! Exercise the same import/prepare/transcribe/persist/export workflow as the
 //! application, with a resident session or the previous per-recording lifetime.
+use std::io::Write;
 use eyre::Result;
 use eyre::ensure;
 use facet::Facet;
@@ -73,6 +74,7 @@ fn main() -> Result<()> {
     let store = RecordingStore::new(root);
     let mut session = TranscriptionSession::default();
     let options = TranscriptionOptions {
+        cuda: Default::default(),
         model_dir,
         max_decode_tokens: 448,
         chunk_duration_us: None,
@@ -97,11 +99,11 @@ fn main() -> Result<()> {
             runs.push(run);
         }
     }
-    println!("{}", facet_json::to_string_pretty(&Receipt {
+    writeln!(std::io::stdout().lock(), "{}", facet_json::to_string_pretty(&Receipt {
         scope: "Application workflow: import, normalize, optional prepared VAD, chunk, ASR, persist and timestamped export; source clip ranges, no word alignment/diarization".into(),
         session_mode: mode.into(), revision: env!("GIT_REVISION").into(),
         worktree_status: env!("GIT_WORKTREE_STATUS").into(), runs,
-    })?);
+    })?)?;
     Ok(())
 }
 

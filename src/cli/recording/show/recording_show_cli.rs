@@ -2,12 +2,14 @@ use crate::cli::output::CliOutput;
 use crate::domain::ClipStatus;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
+use crate::paths::AppHome;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::time::Duration;
 
 #[derive(Facet, Debug)]
 struct RecordingShowReport {
@@ -34,7 +36,7 @@ struct RecordingClipReport {
 pub struct RecordingShowArgs {
     /// Recording UUID returned by recording create.
     #[facet(args::positional)]
-    pub recording_id: String,
+    pub recording_id: RecordingId,
 }
 
 impl RecordingShowArgs {
@@ -45,33 +47,33 @@ impl RecordingShowArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let recording_id =
-            RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let recording = store
-            .load_recording(recording_id)
+            .load_recording(self.recording_id)
             .wrap_err("failed to load recording manifest")?;
 
-        Ok(CliOutput::facet(RecordingShowReport {
-            recording_id: recording.id.to_string(),
-            source_path: recording.source.path,
-            status: recording.status,
-            failure: recording.failure,
-            clip_count: recording.clips.len(),
-            transcript_count: recording.transcripts.len(),
-            clips: recording
-                .clips
-                .into_iter()
-                .map(|clip| RecordingClipReport {
-                    clip_id: clip.id.to_string(),
-                    start_us: clip.source_range.start_us,
-                    end_us: clip.source_range.end_us,
-                    status: clip.status,
-                    failure: clip.failure,
-                })
-                .collect(),
-        }))
+        Ok(CliOutput::facet(
+            RecordingShowReport {
+                recording_id: recording.id.to_string(),
+                source_path: recording.source.path,
+                status: recording.status,
+                failure: recording.failure,
+                clip_count: recording.clips.len(),
+                transcript_count: recording.transcripts.len(),
+                clips: recording
+                    .clips
+                    .into_iter()
+                    .map(|clip| RecordingClipReport {
+                        clip_id: clip.id.to_string(),
+                        start_us: clip.source_range.start_us,
+                        end_us: clip.source_range.end_us,
+                        status: clip.status,
+                        failure: clip.failure,
+                    })
+                    .collect(),
+            },
+            Some(Duration::from_secs(1)),
+        ))
     }
 }

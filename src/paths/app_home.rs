@@ -4,20 +4,6 @@ use std::env;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::LazyLock;
-use tracing::warn;
-
-/// Cached `AppHome` instance
-/// This MUST NOT be used within functions outside of a top-level resolution function; any function relying on
-/// a [`AppHome`] must take it as a parameter to ensure testing is straightforward.
-pub static APP_HOME: LazyLock<AppHome> = LazyLock::new(|| match AppHome::resolve() {
-    Ok(a) => a,
-    Err(e) => {
-        warn!("Warning: failed to resolve app home: {}", e);
-        AppHome(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    }
-});
-
 /// Helper that holds the application home directory and provides helper methods
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppHome(pub PathBuf);
@@ -35,7 +21,7 @@ impl AppHome {
     ///
     /// This function will return an error if creating the directories fails.
     pub fn ensure_dir(&self) -> eyre::Result<()> {
-        std::fs::create_dir_all(&self.0)?;
+        std::fs::create_dir_all(self)?;
         Ok(())
     }
 
@@ -56,12 +42,11 @@ impl AppHome {
             bail!("Could not determine config directory")
         }
     }
+}
 
-    /// Returns true if this `AppHome` equals the global `APP_HOME`
-    #[must_use]
-    pub fn is_default(&self) -> bool {
-        // Compare absolute paths
-        self.0 == APP_HOME.0
+impl AsRef<Path> for AppHome {
+    fn as_ref(&self) -> &Path {
+        self.0.as_path()
     }
 }
 
@@ -69,6 +54,6 @@ impl Deref for AppHome {
     type Target = Path;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_path()
+        self.as_ref()
     }
 }

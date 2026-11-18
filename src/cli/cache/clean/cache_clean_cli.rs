@@ -2,6 +2,7 @@ use crate::cli::output::CliOutput;
 use arbitrary::Arbitrary;
 use eyre::Result;
 use facet::Facet;
+use std::time::Duration;
 
 /// Delete the cache files.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -16,6 +17,6 @@ impl CacheCleanArgs {
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
     pub async fn invoke(self) -> Result<CliOutput> {
-        Ok(CliOutput::none())
+        Ok(CliOutput::none(Some(Duration::from_secs(1))))
     }
 }

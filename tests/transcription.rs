@@ -11,6 +11,7 @@ use teamy_transcriber::transcription::TranscriptionRequest;
 #[test]
 fn native_whisper_rejects_missing_configuration_before_model_load() {
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+        cuda: Default::default(),
         model_dir: PathBuf::from("missing-model-directory"),
         max_decode_tokens: 64,
     });
@@ -31,6 +32,7 @@ fn native_whisper_rejects_missing_configuration_before_model_load() {
 #[test]
 fn native_whisper_readiness_reports_missing_artifacts() {
     let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+        cuda: Default::default(),
         model_dir: PathBuf::from("missing-model-directory"),
         max_decode_tokens: 64,
     });

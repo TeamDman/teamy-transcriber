@@ -1,3 +1,4 @@
+use crate::CudaDeviceIndex;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::ensure;
@@ -146,11 +147,10 @@ impl Device {
         checked(unsafe { tw_free_bytes(self.0.as_ptr(), &mut bytes) })?;
         Ok(bytes)
     }
-    pub fn new(index: i32, tf32: bool) -> Result<Rc<Self>> {
-        ensure!(index >= 0, "CUDA device must be nonnegative");
+    pub fn new(index: CudaDeviceIndex, tf32: bool) -> Result<Rc<Self>> {
         let mut raw = std::ptr::null_mut();
         // SAFETY: out is valid, and the shim initializes it only on success.
-        checked(unsafe { tw_create(&mut raw, index, i32::from(tf32)) })?;
+        checked(unsafe { tw_create(&mut raw, index.get(), i32::from(tf32)) })?;
         Ok(Rc::new(Self(
             NonNull::new(raw).ok_or_else(|| anyhow!("null CUDA session"))?,
         )))
@@ -621,6 +621,7 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::SQRT_2;
     fn close(actual: &[f32], expected: &[f32], tolerance: f32) {
         assert_eq!(actual.len(), expected.len());
         for (i, (&a, &b)) in actual.iter().zip(expected).enumerate() {
@@ -630,7 +631,7 @@ mod tests {
     #[test]
     #[ignore = "requires a CUDA device; run explicitly in release mode"]
     fn batched_decoder_primitives_keep_sequences_independent() -> Result<()> {
-        let device = Device::new(0, false)?;
+        let device = Device::new(CudaDeviceIndex::FIRST, false)?;
         for (batch, heads, keys, capacity) in [
             (1, 1, 1, 8),
             (3, 2, 7, 11),
@@ -741,7 +742,7 @@ mod tests {
     #[test]
     #[ignore = "requires a CUDA device; run explicitly in release mode"]
     fn single_row_linear_matches_scalar_oracle() -> Result<()> {
-        let device = Device::new(0, false)?;
+        let device = Device::new(CudaDeviceIndex::FIRST, false)?;
         // Covers scalar tails, vectorized reads and deliberately unaligned
         // suballocations, with the same shapes used by large-v3's decoder.
         for input in [3, 37, 1280, 5120] {
@@ -780,7 +781,7 @@ mod tests {
                                 .sum();
                             if fused {
                                 value += f64::from(bs[row]);
-                                let z = value / std::f64::consts::SQRT_2;
+                                let z = value / SQRT_2;
                                 let t = 1. / (1. + 0.3275911 * z.abs());
                                 let erf = z.signum()
                                     * (1.
@@ -806,7 +807,7 @@ mod tests {
     #[test]
     #[ignore = "requires a CUDA device; run explicitly in release mode"]
     fn cuda_primitives_match_scalar_oracles() -> Result<()> {
-        let d = Device::new(0, false)?;
+        let d = Device::new(CudaDeviceIndex::FIRST, false)?;
         let input = vec![1., 2., 3., 4., 5., 6.];
         let x = d.upload(&input)?;
         let arena = d.upload(&[10., 20., 30., 40.])?;
@@ -917,7 +918,7 @@ mod tests {
                         }
                         // Normal-CDF GELU via an independent erf approximation
                         // (Abramowitz/Stegun), accurate enough for this oracle.
-                        let z = f64::from(value) / std::f64::consts::SQRT_2;
+                        let z = f64::from(value) / SQRT_2;
                         let t = 1. / (1. + 0.3275911 * z.abs());
                         let erf = z.signum()
                             * (1.

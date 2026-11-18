@@ -1,6 +1,7 @@
 //! Opt-in numerical regression against corrected, independently generated reference logits.
 use std::path::PathBuf;
-use teamy_whisper_native::phones::PhoneModel;
+use teamy_whisper_native::CudaDeviceIndex;
+use teamy_whisper_native::phones::PhoneModelDir;
 #[test]
 #[ignore = "requires CUDA, PHONE_TEST_MODEL and PHONE_TEST_REFERENCE from tools/phone-reference.py"]
 fn native_phone_logits_match_corrected_reference() {
@@ -12,11 +13,9 @@ fn native_phone_logits_match_corrected_reference() {
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
         .collect();
-    let model = PhoneModel::load(
-        &PathBuf::from(std::env::var("PHONE_TEST_MODEL").unwrap()),
-        0,
-    )
-    .unwrap();
+    let model = PhoneModelDir::from(PathBuf::from(std::env::var("PHONE_TEST_MODEL").unwrap()))
+        .load(CudaDeviceIndex::FIRST)
+        .unwrap();
     let (actual, frames) = model.logits(&audio).unwrap();
     assert_eq!(actual.len(), expected.len());
     assert_eq!(actual.len(), frames * 428);

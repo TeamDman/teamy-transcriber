@@ -1,13 +1,12 @@
 //! Token selection data for fixed English greedy decoding.
 use anyhow::Result;
 use anyhow::ensure;
-use serde::Deserialize;
-use serde::Serialize;
+use facet::Facet;
 
 /// The suppression fields of a canonical Whisper generation configuration.
 /// Other generation fields (beam search, language, prompts, sampling, etc.)
 /// are not interpreted here. Callers must select those features explicitly.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Facet)]
 pub struct GreedySuppression {
     pub suppress_tokens: Vec<usize>,
     pub begin_suppress_tokens: Vec<usize>,

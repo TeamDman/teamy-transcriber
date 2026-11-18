@@ -1,6 +1,11 @@
+use super::transcribe::MicrophoneTranscribeArgs;
+use crate::capture::AudioCaptureReport;
 use crate::capture::AudioInputDevice;
 use crate::capture::list_audio_input_devices;
 use crate::cli::output::CliOutput;
+use crate::cli::positive_milliseconds::PositiveMilliseconds;
+use crate::paths::AppHome;
+use crate::paths::CacheHome;
 use crate::storage::RecordingStore;
 use crate::workflow::record_microphone_for_duration;
 use arbitrary::Arbitrary;
@@ -9,7 +14,7 @@ use facet::Facet;
 use figue as args;
 use std::path::PathBuf;
 use std::time::Duration;
-use teamy_cancellation::CancellationToken;
+use teamy_cancellation::CancellationScope;
 
 /// Inspect local microphone input devices.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -27,7 +32,7 @@ pub enum MicrophoneCommand {
     /// Capture a bounded microphone interval into a persisted recording.
     Record(MicrophoneRecordArgs),
     /// Transcribe microphone audio live; Ctrl+C stops capture and drains queued work.
-    Transcribe(super::transcribe::MicrophoneTranscribeArgs),
+    Transcribe(MicrophoneTranscribeArgs),
 }
 
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -40,7 +45,7 @@ pub struct MicrophoneRecordArgs {
     pub device_id: Option<String>,
     /// Capture duration in milliseconds.
     #[facet(args::named)]
-    pub duration_ms: Option<u64>,
+    pub duration_ms: PositiveMilliseconds,
     /// WAV destination; defaults to the recording-owned source directory.
     #[facet(args::named)]
     pub output: Option<String>,
@@ -55,11 +60,16 @@ impl MicrophoneArgs {
     /// # Errors
     ///
     /// Returns an error when microphone inventory cannot be queried.
-    pub async fn invoke(self, token: CancellationToken) -> Result<CliOutput> {
+    pub async fn invoke(
+        self,
+        app_home: &AppHome,
+        cache_home: &CacheHome,
+        cancellation: &CancellationScope,
+    ) -> Result<CliOutput> {
         match self.command {
             MicrophoneCommand::List(args) => args.invoke().await,
-            MicrophoneCommand::Record(args) => args.invoke().await,
-            MicrophoneCommand::Transcribe(args) => args.invoke(&token),
+            MicrophoneCommand::Record(args) => args.invoke(app_home).await,
+            MicrophoneCommand::Transcribe(args) => args.invoke(app_home, cache_home, cancellation),
         }
     }
 }
@@ -68,7 +78,7 @@ impl MicrophoneArgs {
 struct MicrophoneRecordReport {
     recording_id: String,
     device_id: Option<String>,
-    capture: crate::capture::AudioCaptureReport,
+    capture: AudioCaptureReport,
 }
 
 impl MicrophoneRecordArgs {
@@ -80,27 +90,27 @@ impl MicrophoneRecordArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let duration_ms = self
-            .duration_ms
-            .ok_or_else(|| eyre::eyre!("--duration-ms is required"))?;
-        if duration_ms == 0 {
-            eyre::bail!("--duration-ms must be greater than zero");
-        }
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let report = record_microphone_for_duration(
             &store,
             self.device_id.as_deref(),
             self.output.map(PathBuf::from),
-            Duration::from_millis(duration_ms),
+            self.duration_ms.duration(),
         )?;
 
-        Ok(CliOutput::facet(MicrophoneRecordReport {
-            recording_id: report.recording_id.to_string(),
-            device_id: self.device_id,
-            capture: report.capture,
-        }))
+        Ok(CliOutput::facet(
+            MicrophoneRecordReport {
+                recording_id: report.recording_id.to_string(),
+                device_id: self.device_id,
+                capture: report.capture,
+            },
+            Some(
+                self.duration_ms
+                    .duration()
+                    .saturating_add(Duration::from_secs(5)),
+            ),
+        ))
     }
 }
 
@@ -113,8 +123,11 @@ impl MicrophoneListArgs {
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
     pub async fn invoke(self) -> Result<CliOutput> {
-        Ok(CliOutput::facet(MicrophoneListReport {
-            devices: list_audio_input_devices()?,
-        }))
+        Ok(CliOutput::facet(
+            MicrophoneListReport {
+                devices: list_audio_input_devices()?,
+            },
+            Some(Duration::from_secs(3)),
+        ))
     }
 }

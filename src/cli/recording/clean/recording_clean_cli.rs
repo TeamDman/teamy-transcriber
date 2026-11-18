@@ -7,6 +7,7 @@ use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::time::Duration;
 
 /// Remove completed microphone recordings, preserving unfinished work and imported media.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -32,8 +33,8 @@ impl RecordingCleanArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let store = RecordingStore::new(AppHome::resolve()?.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let recordings = store
             .list_recordings()
             .wrap_err("failed to inspect recordings before cleanup")?;
@@ -53,11 +54,14 @@ impl RecordingCleanArgs {
                 removed += 1;
             }
         }
-        Ok(CliOutput::facet(RecordingCleanReport {
-            dry_run: self.dry_run,
-            eligible: eligible.len(),
-            removed,
-            preserved: recordings.len() - eligible.len(),
-        }))
+        Ok(CliOutput::facet(
+            RecordingCleanReport {
+                dry_run: self.dry_run,
+                eligible: eligible.len(),
+                removed,
+                preserved: recordings.len() - eligible.len(),
+            },
+            Some(Duration::from_secs(10)),
+        ))
     }
 }

@@ -4,6 +4,8 @@ use super::*;
 use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;
 use eyre::ensure;
+use std::sync::mpsc::RecvTimeoutError;
+use winit::event::DeviceId;
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
 #[derive(Facet)]
@@ -178,7 +180,7 @@ impl Harness {
                     event_loop,
                     window_id,
                     WindowEvent::MouseInput {
-                        device_id: winit::event::DeviceId::dummy(),
+                        device_id: DeviceId::dummy(),
                         state: ElementState::Released,
                         button: MouseButton::Left,
                     },
@@ -319,7 +321,13 @@ fn hidden_gui_reuses_model_and_closes_during_transcription() -> Result<()> {
         },
     )?;
     let event_loop = EventLoop::builder().with_any_thread(true).build()?;
-    let mut app = GuiApplication::from_home(home, false, event_loop.create_proxy())?;
+    let mut app = GuiApplication::from_home(
+        home,
+        &CacheHome(root.join("cache")),
+        Default::default(),
+        false,
+        event_loop.create_proxy(),
+    )?;
     ensure!(app.state.model_ready, "{}", app.state.model_status);
     app.window_attributes = app
         .window_attributes
@@ -376,7 +384,7 @@ fn hidden_gui_reuses_model_and_closes_during_transcription() -> Result<()> {
         cancelled
             .clips
             .iter()
-            .all(|clip| clip.status != crate::domain::ClipStatus::Processing),
+            .all(|clip| clip.status != ClipStatus::Processing),
         "closing left a clip marked processing"
     );
     let close_start = harness
@@ -417,20 +425,20 @@ fn run_with_deadline(event_loop: EventLoop<()>, harness: &mut Harness) -> Result
     let deadline = std::thread::spawn(move || {
         match ready.recv_timeout(Duration::from_mins(2)) {
             Ok(()) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(RecvTimeoutError::Timeout) => {
                 let _ = proxy.send_event(());
                 return;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Disconnected) => return,
         }
         if matches!(
             stopped.recv_timeout(Duration::from_millis(500)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            Err(RecvTimeoutError::Timeout)
         ) {
             let _ = proxy.send_event(());
             if matches!(
                 stopped.recv_timeout(Duration::from_mins(2)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                Err(RecvTimeoutError::Timeout)
             ) {
                 let _ = proxy.send_event(());
             }

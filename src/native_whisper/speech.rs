@@ -1,4 +1,5 @@
 //! Local, validated weights and streaming source-defined speech detection.
+use super::prepare::PartialModelDirectory;
 use crate::domain::TimeRange;
 use crate::transcription::SpeechPlan;
 use eyre::Context;
@@ -7,6 +8,7 @@ use eyre::ensure;
 use facet::Facet;
 use sha2::Digest;
 use sha2::Sha256;
+use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use teamy_whisper_native::vad::Silero;
@@ -30,7 +32,7 @@ pub struct SpeechModelManifest {
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
+    File::open(path)
         .wrap_err_with(|| format!("opening {}", path.display()))?
         .take(limit + 1)
         .read_to_end(&mut bytes)?;
@@ -61,7 +63,7 @@ pub fn prepare(source: &Path, model_dir: &Path) -> Result<SpeechModelManifest> {
     };
     let staging = model_dir.join(format!(".vad-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&staging)?;
-    let mut partial = super::prepare::PartialModelDirectory::new(&staging);
+    let mut partial = PartialModelDirectory::new(&staging);
     std::fs::write(staging.join(WEIGHTS), bytes)?;
     std::fs::write(
         staging.join(MANIFEST),

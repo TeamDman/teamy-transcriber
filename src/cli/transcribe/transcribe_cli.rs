@@ -1,3 +1,5 @@
+use crate::cli::cuda_whisper_options::resolve_cuda_whisper_options;
+use crate::cli::decode_token_limit::DecodeTokenLimit;
 use crate::cli::output::CliOutput;
 use crate::cli::output::CliOutputValue;
 use crate::cli::output::OutputFormat;
@@ -9,8 +11,12 @@ use crate::domain::SourceAsset;
 use crate::media::AudioProfile;
 use crate::media::MediaAdapter;
 use crate::media::WavMediaAdapter;
+use crate::native_whisper::model::inspect_model_dir;
 use crate::paths::AppHome;
-use crate::paths::ModelHome;
+use crate::paths::CacheHome;
+use crate::paths::PhoneModelDir;
+use crate::paths::PhoneModelDirSelection;
+use crate::paths::WhisperModelDir;
 use crate::phone_runtime::PhoneChunk;
 use crate::storage::RecordingStore;
 use crate::workflow::TranscriptionOptions;
@@ -24,13 +30,12 @@ use eyre::Result;
 use eyre::ensure;
 use facet::Facet;
 use figue as args;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use teamy_cancellation::CancellationToken;
+use teamy_cancellation::CancellationScope;
+use teamy_whisper_native::CudaDeviceIndex;
 
 /// Import, prepare and transcribe media; remove intermediate work after successful output.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -40,7 +45,7 @@ pub struct TranscribeArgs {
     pub source: Option<String>,
     /// Resume a retained recording UUID instead of creating another recording.
     #[facet(args::named)]
-    pub resume: Option<String>,
+    pub resume: Option<RecordingId>,
     /// Override the source kind inferred from its extension.
     #[facet(args::named)]
     pub kind: Option<RecordingKind>,
@@ -67,7 +72,7 @@ pub struct TranscribeArgs {
     pub no_vad: bool,
     /// Maximum generated tokens per clip (default 448).
     #[facet(args::named)]
-    pub max_decode_tokens: Option<usize>,
+    pub max_decode_tokens: Option<DecodeTokenLimit>,
 }
 
 #[derive(Debug, Facet)]
@@ -126,7 +131,12 @@ impl Recovery {
 impl TranscribeArgs {
     /// # Errors
     /// Returns a stage-specific error, retaining created recordings for --resume.
-    pub fn invoke(self, token: CancellationToken) -> Result<CliOutput> {
+    pub fn invoke(
+        self,
+        app_home: &AppHome,
+        cache_home: &CacheHome,
+        cancellation: &CancellationScope,
+    ) -> Result<CliOutput> {
         ensure!(
             self.source.is_some() != self.resume.is_some(),
             "supply a media file OR --resume <recording-id>"
@@ -147,12 +157,8 @@ impl TranscribeArgs {
             !self.phonemes || (!self.no_vad && self.max_decode_tokens.is_none()),
             "--no-vad and --max-decode-tokens only apply to Whisper text mode"
         );
-        let store = RecordingStore::new(AppHome::resolve()?.0);
-        let id = if let Some(id) = &self.resume {
-            RecordingId::parse(id).wrap_err("--resume must be a recording UUID")?
-        } else {
-            RecordingId::new()
-        };
+        let store = RecordingStore::new(app_home.as_ref());
+        let id = self.resume.unwrap_or_default();
         let recovery = Recovery {
             store,
             id,
@@ -190,21 +196,31 @@ impl TranscribeArgs {
                 .map_err(|error| recovery.error("resume", error.into()))?;
         }
         let report = self
-            .run(&recovery, &token)
+            .run(app_home, cache_home, &recovery, cancellation)
             .map_err(|error| recovery.error("transcription workflow", error))?;
-        Ok(CliOutput::custom(TranscribeOutput {
-            report,
-            recovery,
-            token,
-        }))
+        Ok(CliOutput::custom(
+            TranscribeOutput {
+                report,
+                recovery,
+                cancellation: cancellation.clone(),
+            },
+            None, /* Media duration and inference work are unbounded. */
+        ))
     }
 
-    fn run(&self, recovery: &Recovery, token: &CancellationToken) -> Result<TranscribeReport> {
-        token.bail_if_cancelled()?;
+    fn run(
+        &self,
+        app_home: &AppHome,
+        cache_home: &CacheHome,
+        recovery: &Recovery,
+        cancellation: &CancellationScope,
+    ) -> Result<TranscribeReport> {
+        cancellation.bail_if_cancelled()?;
         let phone_model = if self.phonemes {
-            let model_dir = crate::phone_runtime::resolve(self.phone_model_dir.as_deref())?;
+            let model_dir = PhoneModelDir::resolve(app_home, self.phone_model_dir.as_deref())?;
             Some(
-                teamy_whisper_native::phones::PhoneModel::load(&model_dir, 0)
+                model_dir
+                    .load(CudaDeviceIndex::FIRST)
                     .map_err(|error| eyre::eyre!("{error:#}"))
                     .wrap_err("phone model validation")?,
             )
@@ -215,20 +231,20 @@ impl TranscribeArgs {
             None
         } else {
             let model_dir = self.model_dir.as_ref().map_or_else(
-                || ModelHome::resolve().map(|home| home.0),
+                || WhisperModelDir::resolve(app_home, cache_home).map(PathBuf::from),
                 |path| Ok(PathBuf::from(path)),
             )?;
-            crate::native_whisper::model::inspect_model_dir(&model_dir).wrap_err(
+            inspect_model_dir(&model_dir).wrap_err(
                 "model validation: run teamy-transcriber model prepare or supply --model-dir",
             )?;
             Some(model_dir)
         };
         let audio = Self::prepare_audio(recovery)?;
-        token.bail_if_cancelled()?;
+        cancellation.bail_if_cancelled()?;
         let (text, no_speech, chunk_count) = if let Some(model) = phone_model {
-            let chunks = crate::phone_runtime::recognize_wav(&model, &audio, Some(token))
+            let chunks = crate::phone_runtime::recognize_wav(&model, &audio, Some(cancellation))
                 .wrap_err("phone recognition")?;
-            token.bail_if_cancelled()?;
+            cancellation.bail_if_cancelled()?;
             let text = chunks
                 .iter()
                 .map(|chunk| chunk.ipa.as_str())
@@ -250,10 +266,10 @@ impl TranscribeArgs {
             .wrap_err("saving phone results")?;
             (text, no_speech, chunk_count)
         } else {
-            let bridge = CancelBridge::new(token.clone());
             let options = TranscriptionOptions {
+                cuda: resolve_cuda_whisper_options()?,
                 model_dir: whisper_model_dir.expect("text mode selects a Whisper model"),
-                max_decode_tokens: self.max_decode_tokens.unwrap_or(448),
+                max_decode_tokens: self.max_decode_tokens.map_or(448, DecodeTokenLimit::get),
                 chunk_duration_us: self.no_vad.then_some(30_000_000),
                 profile: AudioProfile::Original,
             };
@@ -262,20 +278,20 @@ impl TranscribeArgs {
                     &recovery.store,
                     recovery.id,
                     options,
-                    Some(&bridge.cancelled),
+                    Some(cancellation),
                 )
             } else {
                 TranscriptionSession::default().transcribe(
                     &recovery.store,
                     recovery.id,
                     options,
-                    Some(&bridge.cancelled),
+                    Some(cancellation),
                     None,
                 )
             }
             .wrap_err("model inference")?;
             ensure!(
-                !report.cancelled && !token.is_cancelled(),
+                !report.cancelled && !cancellation.is_cancelled(),
                 "transcription cancelled"
             );
             let text = report
@@ -334,7 +350,7 @@ impl TranscribeArgs {
                 !parent.starts_with(recovery.store.recording_dir(recovery.id).canonicalize()?),
                 "output must be outside the recording directory"
             );
-            let mut file = std::fs::OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(path)
@@ -358,7 +374,7 @@ impl TranscribeArgs {
 struct TranscribeOutput {
     report: TranscribeReport,
     recovery: Recovery,
-    token: CancellationToken,
+    cancellation: CancellationScope,
 }
 
 impl CliOutputValue for TranscribeOutput {
@@ -373,7 +389,7 @@ impl CliOutputValue for TranscribeOutput {
         Some(OutputFormat::Text)
     }
     fn before_emit(&self) -> Result<()> {
-        self.token.bail_if_cancelled()?;
+        self.cancellation.bail_if_cancelled()?;
         if self.report.no_speech {
             if self.recovery.phonemes {
                 writeln!(std::io::stderr(), "No phones were recognized in the file.")?;
@@ -390,9 +406,9 @@ impl CliOutputValue for TranscribeOutput {
         self.recovery.error("output", error)
     }
     fn after_emit(&self) -> Result<()> {
-        self.token
+        self.cancellation
             .bail_if_cancelled()
-            .map_err(|error| self.recovery.error("cleanup cancelled", error))?;
+            .map_err(|error| self.recovery.error("cleanup cancelled", error.into()))?;
         if self.report.cleanup_requested {
             let directory = self
                 .recovery
@@ -404,68 +420,32 @@ impl CliOutputValue for TranscribeOutput {
     }
 }
 
-#[derive(Debug)]
-struct CancelBridge {
-    cancelled: Arc<AtomicBool>,
-    finished: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl CancelBridge {
-    fn new(token: CancellationToken) -> Self {
-        let cancelled = Arc::new(AtomicBool::new(token.is_cancelled()));
-        let finished = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&cancelled);
-        let done = Arc::clone(&finished);
-        let thread = std::thread::spawn(move || {
-            while !done.load(Ordering::Relaxed) {
-                if token.is_cancelled() {
-                    flag.store(true, Ordering::Relaxed);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        });
-        Self {
-            cancelled,
-            finished,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for CancelBridge {
-    fn drop(&mut self) {
-        self.finished.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::AssetKind;
+    use std::io::ErrorKind;
+    use teamy_cancellation::CancellationToken;
 
     struct BrokenPipe;
     impl Write for BrokenPipe {
         fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
+            Err(ErrorKind::BrokenPipe.into())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
 
-    fn prepared_output() -> (PathBuf, PathBuf, RecordingId, CliOutput) {
+    fn prepared_output(
+        cancellation: CancellationScope,
+    ) -> (PathBuf, PathBuf, RecordingId, CliOutput) {
         let root = std::env::temp_dir().join(format!("transcribe-output-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let source = root.join("source.wav");
         std::fs::write(&source, b"original").unwrap();
         let store = RecordingStore::new(root.join("app"));
-        let id =
-            crate::workflow::create_recording(&store, crate::domain::AssetKind::AudioFile, &source)
-                .unwrap();
+        let id = crate::workflow::create_recording(&store, AssetKind::AudioFile, &source).unwrap();
         let report = TranscribeReport {
             recording_id: id.to_string(),
             text: "transcribed text".into(),
@@ -474,41 +454,54 @@ mod tests {
             cleanup_requested: true,
             output_path: None,
         };
-        let output = CliOutput::custom(TranscribeOutput {
-            report,
-            recovery: Recovery {
-                store,
-                id,
-                phonemes: false,
+        let output = CliOutput::custom(
+            TranscribeOutput {
+                report,
+                recovery: Recovery {
+                    store,
+                    id,
+                    phonemes: false,
+                },
+                cancellation,
             },
-            token: CancellationToken::new(),
-        });
+            None, /* Media duration and inference work are unbounded. */
+        );
         (root, source, id, output)
     }
 
     #[test]
     fn failed_output_retains_recording_and_reports_resume() {
-        let (root, source, id, output) = prepared_output();
-        let error = output.emit_to(None, false, &mut BrokenPipe).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("transcribe --resume {id}"))
-        );
-        assert!(root.join("app/recordings").join(id.to_string()).exists());
-        assert_eq!(std::fs::read(source).unwrap(), b"original");
-        std::fs::remove_dir_all(root).unwrap();
+        CancellationToken::new()
+            .with_scope(|cancellation| -> Result<()> {
+                let (root, source, id, output) = prepared_output(cancellation);
+                let error = output.emit_to(None, false, &mut BrokenPipe).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("transcribe --resume {id}"))
+                );
+                assert!(root.join("app/recordings").join(id.to_string()).exists());
+                assert_eq!(std::fs::read(source).unwrap(), b"original");
+                std::fs::remove_dir_all(root).unwrap();
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
     fn successful_plain_output_cleans_only_recording() {
-        let (root, source, id, output) = prepared_output();
-        let mut text = Vec::new();
-        output.emit_to(None, false, &mut text).unwrap();
-        assert_eq!(text, b"transcribed text\n");
-        assert!(!root.join("app/recordings").join(id.to_string()).exists());
-        assert_eq!(std::fs::read(source).unwrap(), b"original");
-        std::fs::remove_dir_all(root).unwrap();
+        CancellationToken::new()
+            .with_scope(|cancellation| -> Result<()> {
+                let (root, source, id, output) = prepared_output(cancellation);
+                let mut text = Vec::new();
+                output.emit_to(None, false, &mut text).unwrap();
+                assert_eq!(text, b"transcribed text\n");
+                assert!(!root.join("app/recordings").join(id.to_string()).exists());
+                assert_eq!(std::fs::read(source).unwrap(), b"original");
+                std::fs::remove_dir_all(root).unwrap();
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
@@ -525,7 +518,7 @@ mod tests {
                 &mut AppState::new(),
                 Command::CreateRecording {
                     recording_id: id,
-                    source: SourceAsset::new(crate::domain::AssetKind::AudioFile, &source).unwrap(),
+                    source: SourceAsset::new(AssetKind::AudioFile, &source).unwrap(),
                 },
             )
             .unwrap();

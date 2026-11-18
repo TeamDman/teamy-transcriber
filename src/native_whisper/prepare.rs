@@ -11,11 +11,11 @@ use super::whisper::TextDecoderDims;
 use super::whisper::WhisperDims;
 use eyre::WrapErr;
 use eyre::bail;
-use serde::Deserialize;
+use facet::Facet;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Facet)]
 struct HuggingFaceWhisperConfig {
     num_mel_bins: usize,
     max_source_positions: usize,
@@ -109,7 +109,7 @@ pub fn prepare_safetensors_model(
         }
     }
     let config: HuggingFaceWhisperConfig =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).wrap_err_with(|| {
+        facet_json::from_str(&std::fs::read_to_string(&config_path).wrap_err_with(|| {
             format!(
                 "failed to read Hugging Face Whisper config {}",
                 config_path.display()
@@ -170,7 +170,7 @@ pub fn prepare_safetensors_model(
     let dims_path = output_dir.join(MODEL_DIMS_FILE_NAME);
     std::fs::write(
         &dims_path,
-        serde_json::to_string_pretty(&dims).wrap_err("failed to serialize Whisper dimensions")?,
+        facet_json::to_string_pretty(&dims).wrap_err("failed to serialize Whisper dimensions")?,
     )
     .wrap_err_with(|| format!("failed to write {}", dims_path.display()))?;
 

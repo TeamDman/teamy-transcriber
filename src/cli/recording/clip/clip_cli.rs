@@ -3,12 +3,14 @@ use crate::domain::ClipId;
 use crate::domain::Command;
 use crate::domain::RecordingId;
 use crate::domain::TimeRange;
+use crate::paths::AppHome;
 use crate::storage::RecordingStore;
 use arbitrary::Arbitrary;
 use eyre::Context;
 use eyre::Result;
 use facet::Facet;
 use figue as args;
+use std::time::Duration;
 
 /// Manage immutable recording clips.
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
@@ -38,7 +40,7 @@ struct ClipAddReport {
 pub struct ClipAddArgs {
     /// Recording UUID returned by recording create.
     #[facet(args::positional)]
-    pub recording_id: String,
+    pub recording_id: RecordingId,
     /// Inclusive start position in microseconds.
     #[facet(args::positional)]
     pub start_us: u64,
@@ -51,9 +53,9 @@ impl ClipArgs {
     /// # Errors
     ///
     /// Returns an error when the clip command cannot be persisted.
-    pub async fn invoke(self) -> Result<CliOutput> {
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
         match self.command {
-            ClipCommand::Add(args) => args.invoke().await,
+            ClipCommand::Add(args) => args.invoke(app_home).await,
         }
     }
 }
@@ -67,32 +69,32 @@ impl ClipAddArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let recording_id =
-            RecordingId::parse(&self.recording_id).wrap_err("recording ID must be a UUID")?;
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
         let source_range = TimeRange::new(self.start_us, self.end_us)?;
-        let app_home = crate::paths::AppHome::resolve()?;
-        let store = RecordingStore::new(app_home.0);
+        let store = RecordingStore::new(app_home.as_ref());
         let mut state = store
-            .load_state(recording_id)
+            .load_state(self.recording_id)
             .wrap_err("failed to load recording event state")?;
         let clip_id = ClipId::new();
         store
             .apply_command(
                 &mut state,
                 Command::AddClip {
-                    recording_id,
+                    recording_id: self.recording_id,
                     clip_id,
                     source_range,
                 },
             )
             .wrap_err("failed to persist clip")?;
 
-        Ok(CliOutput::facet(ClipAddReport {
-            recording_id: recording_id.to_string(),
-            clip_id: clip_id.to_string(),
-            start_us: source_range.start_us,
-            end_us: source_range.end_us,
-        }))
+        Ok(CliOutput::facet(
+            ClipAddReport {
+                recording_id: self.recording_id.to_string(),
+                clip_id: clip_id.to_string(),
+                start_us: source_range.start_us,
+                end_us: source_range.end_us,
+            },
+            Some(Duration::from_secs(1)),
+        ))
     }
 }

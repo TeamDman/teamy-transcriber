@@ -2,27 +2,26 @@
 //! Architecture follows changelinglab/PhoneticXeus (Apache-2.0), including
 //! self-conditioning after layers 4, 8 and 12. No executable model graph is loaded.
 use super::Buffer;
+use super::CudaDeviceIndex;
 use super::Device;
 use super::Linear;
 use super::Norm;
 use super::Weights;
-use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
-use serde::Deserialize;
-use serde::Serialize;
-use std::path::Path;
+use facet::Facet;
+use ipa_vocabulary::IpaVocabularyCodec;
+use phonetic_xeus_config::PhoneticXeusConfigCodec;
 use std::rc::Rc;
+
+mod ipa_vocabulary;
+mod phone_model_dir;
+mod phonetic_xeus_config;
+
+pub use phone_model_dir::PhoneModelDir;
 
 const D: usize = 1024;
 const VOCAB: usize = 428;
-#[derive(Deserialize)]
-struct Config {
-    model_type: String,
-    sampling_rate: usize,
-    interctc_layer_idx: Vec<usize>,
-    interctc_use_conditioning: bool,
-}
 struct Conv {
     w: Buffer,
     b: Buffer,
@@ -192,7 +191,7 @@ fn ff(d: &Rc<Device>, x: &Buffer, t: usize, n: &Norm, a: &Linear, b: &Linear) ->
     Ok(y)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Facet)]
 pub struct PhoneResult {
     pub phones: Vec<String>,
     pub ipa: String,
@@ -212,29 +211,13 @@ pub struct PhoneModel {
     blank: usize,
 }
 impl PhoneModel {
-    pub fn load(root: &Path, device: i32) -> Result<Self> {
-        let c: Config = serde_json::from_reader(std::fs::File::open(root.join("config.json"))?)?;
-        ensure!(
-            c.model_type == "phoneticxeus"
-                && c.sampling_rate == 16000
-                && c.interctc_layer_idx == [4, 8, 12]
-                && c.interctc_use_conditioning,
-            "unsupported PhoneticXeus architecture/conditioning configuration"
-        );
-        let vocab: std::collections::HashMap<String, usize> =
-            serde_json::from_reader(std::fs::File::open(root.join("ipa_vocab.json"))?)?;
-        ensure!(vocab.len() == VOCAB, "unsupported phone vocabulary");
-        let blank = *vocab.get("<blank>").context("missing CTC blank token")?;
-        let mut tokens = vec![String::new(); VOCAB];
-        for (token, id) in vocab {
-            ensure!(
-                id < VOCAB && tokens[id].is_empty(),
-                "invalid phone token ID"
-            );
-            tokens[id] = token;
-        }
+    /// Load validated PhoneticXeus weights onto the requested CUDA device.
+    pub fn load(model_dir: &PhoneModelDir, device: CudaDeviceIndex) -> Result<Self> {
+        PhoneticXeusConfigCodec::validate_file(&model_dir.join("config.json"))?;
+        let (tokens, blank) =
+            IpaVocabularyCodec::read(&model_dir.join("ipa_vocab.json"))?.into_decoder_tokens();
         let d = Device::new(device, false)?;
-        let mut w = Weights::open(root, &d)?;
+        let mut w = Weights::open(model_dir, &d)?;
         let mut frontend = Vec::new();
         let mut input = 1;
         for (i, (kernel, stride)) in [(10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2)]
@@ -315,6 +298,7 @@ impl PhoneModel {
             blank,
         })
     }
+
     /// Full utterance recognition. Explicit30s bound caps quadratic attention memory.
     pub fn logits(&self, audio: &[f32]) -> Result<(Vec<f32>, usize)> {
         ensure!(

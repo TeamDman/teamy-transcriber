@@ -10,15 +10,19 @@ use crate::capture::AudioInputDevice;
 use crate::capture::list_audio_input_devices;
 use crate::domain::AssetKind;
 use crate::domain::ClipId;
+use crate::domain::ClipStatus;
 use crate::domain::Recording;
 use crate::domain::RecordingId;
 use crate::domain::RecordingStatus;
 use crate::media::AudioProfile;
 use crate::media::read_waveform_peaks;
+use crate::native_whisper::cuda::CudaWhisperOptions;
 use crate::native_whisper::model::inspect_model_dir;
 use crate::native_whisper::prepare::prepare_safetensors_model;
+use crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS;
 use crate::paths::AppHome;
-use crate::paths::ModelHome;
+use crate::paths::CacheHome;
+use crate::paths::WhisperModelDir;
 use crate::storage::RecordingStore;
 use crate::transcription::NativeWhisperBackend;
 use crate::transcription::NativeWhisperConfig;
@@ -47,6 +51,9 @@ use crate::workflow::record_microphone;
 use crate::workflow::split_clip_at;
 use arboard::Clipboard;
 use ash::Entry;
+use ash::khr::surface::Instance as SurfaceLoader;
+use ash::khr::swapchain::Device as SwapchainLoader;
+use ash::khr::swapchain::NAME as SWAPCHAIN_EXTENSION;
 use ash::vk;
 use eyre::Context;
 use eyre::Result;
@@ -59,18 +66,19 @@ use rfd::MessageButtons;
 use rfd::MessageDialog;
 use rfd::MessageDialogResult;
 use rfd::MessageLevel;
+use std::f32::consts::TAU;
 use std::ffi::CString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::SendError;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 use std::time::Instant;
+use teamy_cancellation::CancellationToken;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::dpi::PhysicalSize;
@@ -111,10 +119,11 @@ const INACTIVE: Rgba = Rgba::new(0x81, 0xa9, 0x91, 0xff);
 ///
 /// Returns an error when the event loop, Vulkan loader, window surface, or
 /// presentation device cannot be initialized.
-pub fn run() -> Result<()> {
+pub fn run(app_home: &AppHome, cache_home: &CacheHome, cuda: CudaWhisperOptions) -> Result<()> {
     let event_loop = EventLoop::new().wrap_err("failed to create GUI event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut application = GuiApplication::new(event_loop.create_proxy())?;
+    let mut application =
+        GuiApplication::new(app_home, cache_home, cuda, event_loop.create_proxy())?;
     event_loop
         .run_app(&mut application)
         .wrap_err("GUI event loop failed")
@@ -131,8 +140,9 @@ struct GuiApplication {
     preferences: GuiPreferences,
     message_tx: GuiMessageSender,
     message_rx: Receiver<GuiMessage>,
-    stop_recording: Option<Arc<AtomicBool>>,
-    operation_cancel: Option<Arc<AtomicBool>>,
+    stop_recording: Option<CancellationToken>,
+    operation_cancel: Option<CancellationToken>,
+    cuda: CudaWhisperOptions,
     transcription_session: Arc<Mutex<TranscriptionSession>>,
     close_requested: bool,
     redraw_pending: bool,
@@ -142,31 +152,38 @@ struct GuiApplication {
 }
 
 impl GuiApplication {
-    fn new(wake: EventLoopProxy<()>) -> Result<Self> {
-        let app_home = resolve_gui_app_home()?;
-        Self::from_home(app_home, true, wake)
+    fn new(
+        app_home: &AppHome,
+        cache_home: &CacheHome,
+        cuda: CudaWhisperOptions,
+        wake: EventLoopProxy<()>,
+    ) -> Result<Self> {
+        let app_home = resolve_gui_app_home(app_home)?;
+        Self::from_home(app_home, cache_home, cuda, true, wake)
     }
 
     fn from_home(
         app_home: AppHome,
+        cache_home: &CacheHome,
+        cuda: CudaWhisperOptions,
         desktop_integration: bool,
         wake: EventLoopProxy<()>,
     ) -> Result<Self> {
-        let store = RecordingStore::new(app_home.0.clone());
+        let store = RecordingStore::new(app_home.as_ref());
         let preferences = load_preferences(&app_home);
         let model_dir = preferences
             .model_dir
             .as_deref()
             .map_or_else(
                 || {
-                ModelHome::resolve().map_or_else(
+                WhisperModelDir::resolve(&app_home, cache_home).map_or_else(
                     |error| {
-                        eprintln!(
+                        tracing::error!(
                             "default model home could not be resolved; using the GUI app home: {error:#}"
                         );
-                        app_home.0.join("models")
+                        app_home.join("models")
                     },
-                    |model_home| model_home.0,
+                    PathBuf::from,
                 )
                 },
                 PathBuf::from,
@@ -221,6 +238,7 @@ impl GuiApplication {
             message_rx,
             stop_recording: None,
             operation_cancel: None,
+            cuda,
             transcription_session: Arc::default(),
             close_requested: false,
             redraw_pending: false,
@@ -250,8 +268,9 @@ impl GuiApplication {
 
     fn inspect_model(&mut self) {
         let backend = NativeWhisperBackend::new(NativeWhisperConfig {
+            cuda: self.cuda,
             model_dir: self.state.model_dir.clone(),
-            max_decode_tokens: crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
+            max_decode_tokens: DEFAULT_MAX_DECODE_TOKENS,
         });
         let readiness = backend.readiness();
         self.state.model_readiness = readiness.clone();
@@ -817,9 +836,7 @@ impl GuiApplication {
                     recording
                         .clips
                         .iter()
-                        .find(|clip| {
-                            clip.id == clip_id && clip.status != crate::domain::ClipStatus::Deleted
-                        })
+                        .find(|clip| clip.id == clip_id && clip.status != ClipStatus::Deleted)
                         .map(|clip| {
                             clip.source_range.start_us
                                 + (clip.source_range.end_us - clip.source_range.start_us) / 2
@@ -926,8 +943,8 @@ impl GuiApplication {
             self.state.status_line = "Finish the current operation first".to_string();
             return;
         }
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop_requested);
+        let stop_requested = CancellationToken::new();
+        let worker_stop = stop_requested.clone();
         let sender = self.message_tx.clone();
         let store = self.store.clone();
         let endpoint_id = self.state.selected_microphone.clone();
@@ -951,7 +968,7 @@ impl GuiApplication {
 
     fn request_recording_stop(&mut self) {
         if let Some(stop_requested) = &self.stop_recording {
-            stop_requested.store(true, Ordering::Relaxed);
+            stop_requested.request_cancel("Requested from the desktop window");
             self.state.operation = GuiOperation::Stopping;
             self.state.status_line = "Stopping microphone and saving recording...".to_string();
         }
@@ -961,7 +978,7 @@ impl GuiApplication {
         if matches!(self.state.operation, GuiOperation::Recording) {
             self.request_recording_stop();
         } else if let Some(stop_requested) = &self.operation_cancel {
-            stop_requested.store(true, Ordering::Relaxed);
+            stop_requested.request_cancel("Requested from the desktop window");
             self.state.status_line =
                 "Cancellation requested; finishing the current clip...".to_string();
         } else if !matches!(self.state.operation, GuiOperation::Idle) {
@@ -1027,13 +1044,14 @@ impl GuiApplication {
         let store = self.store.clone();
         let model_dir = self.state.model_dir.clone();
         let session = Arc::clone(&self.transcription_session);
+        let cuda = self.cuda;
         let chunk_duration_us = self
             .state
             .chunk_duration_ms
             .map(|duration_ms| duration_ms.saturating_mul(1_000));
         let audio_profile = self.state.audio_profile;
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop_requested);
+        let stop_requested = CancellationToken::new();
+        let worker_stop = stop_requested.clone();
         self.operation_cancel = Some(stop_requested);
         self.state.operation = GuiOperation::Transcribing;
         self.state.status_line =
@@ -1051,19 +1069,21 @@ impl GuiApplication {
                 .lock()
                 .map_err(|error| eyre::eyre!("transcription session worker failed: {error}"))
                 .and_then(|mut session| {
-                    session.transcribe(
-                        &store,
-                        recording_id,
-                        TranscriptionOptions {
-                            model_dir,
-                            max_decode_tokens:
-                                crate::native_whisper::whisper::DEFAULT_MAX_DECODE_TOKENS,
-                            chunk_duration_us,
-                            profile: audio_profile,
-                        },
-                        Some(worker_stop.as_ref()),
-                        Some(&mut progress),
-                    )
+                    worker_stop.with_scope(|cancellation| {
+                        session.transcribe(
+                            &store,
+                            recording_id,
+                            TranscriptionOptions {
+                                cuda,
+                                model_dir,
+                                max_decode_tokens: DEFAULT_MAX_DECODE_TOKENS,
+                                chunk_duration_us,
+                                profile: audio_profile,
+                            },
+                            Some(&cancellation),
+                            Some(&mut progress),
+                        )
+                    })
                 })
                 .map_or_else(
                     |error| GuiMessage::Failure {
@@ -1484,7 +1504,7 @@ impl ApplicationHandler for GuiApplication {
                 self.request_redraw();
             }
             Err(error) => {
-                eprintln!("failed to initialize Teamy-Transcriber GUI: {error:#}");
+                tracing::error!("failed to initialize Teamy-Transcriber GUI: {error:#}");
                 event_loop.exit();
             }
         }
@@ -1516,7 +1536,7 @@ impl ApplicationHandler for GuiApplication {
                     (self.window.as_ref(), self.renderer.as_mut())
                     && let Err(error) = renderer.recreate_swapchain(window)
                 {
-                    eprintln!("failed to resize Teamy-Transcriber GUI: {error:#}");
+                    tracing::error!("failed to resize Teamy-Transcriber GUI: {error:#}");
                     event_loop.exit();
                 }
             }
@@ -1637,7 +1657,7 @@ impl GuiApplication {
         match renderer.draw(&self.state) {
             Ok(true) => {
                 if let Err(error) = renderer.recreate_swapchain(window) {
-                    eprintln!("failed to recreate GUI swapchain: {error:#}");
+                    tracing::error!("failed to recreate GUI swapchain: {error:#}");
                     event_loop.exit();
                 } else {
                     // An out-of-date acquisition may not have presented a
@@ -1647,7 +1667,7 @@ impl GuiApplication {
             }
             Ok(false) => {}
             Err(error) => {
-                eprintln!("failed to draw Teamy-Transcriber GUI: {error:#}");
+                tracing::error!("failed to draw Teamy-Transcriber GUI: {error:#}");
                 event_loop.exit();
             }
         }
@@ -1663,10 +1683,7 @@ pub(crate) struct GuiMessageSender {
 }
 
 impl GuiMessageSender {
-    fn send(
-        &self,
-        message: GuiMessage,
-    ) -> std::result::Result<(), std::sync::mpsc::SendError<GuiMessage>> {
+    fn send(&self, message: GuiMessage) -> std::result::Result<(), SendError<GuiMessage>> {
         self.sender.send(message)?;
         let _ = self.wake.send_event(());
         Ok(())
@@ -2014,13 +2031,13 @@ impl GuiState {
         self.clip_ids = recording
             .clips
             .iter()
-            .find(|clip| clip.status != crate::domain::ClipStatus::Deleted)
+            .find(|clip| clip.status != ClipStatus::Deleted)
             .into_iter()
             .chain(
                 recording
                     .clips
                     .iter()
-                    .filter(|clip| clip.status != crate::domain::ClipStatus::Deleted)
+                    .filter(|clip| clip.status != ClipStatus::Deleted)
                     .skip(1),
             )
             .map(|clip| clip.id)
@@ -2333,7 +2350,7 @@ fn is_supported_media_path(path: &Path) -> bool {
 
 fn default_save_dir(app_home: &AppHome) -> PathBuf {
     std::env::var_os("USERPROFILE").map_or_else(
-        || app_home.0.join("exports"),
+        || app_home.join("exports"),
         |path| PathBuf::from(path).join("Downloads"),
     )
 }
@@ -2345,21 +2362,14 @@ fn display_path(path: &Path) -> String {
     )
 }
 
-fn resolve_gui_app_home() -> Result<AppHome> {
-    match AppHome::resolve() {
-        Ok(app_home) if app_home.ensure_dir().is_ok() => return Ok(app_home),
-        Ok(app_home) => {
-            eprintln!(
-                "platform GUI app home could not be created; trying a writable fallback: {}",
-                app_home.0.display()
-            );
-        }
-        Err(error) => {
-            eprintln!(
-                "platform GUI app home could not be resolved; trying a writable fallback: {error:#}"
-            );
-        }
+fn resolve_gui_app_home(app_home: &AppHome) -> Result<AppHome> {
+    if app_home.ensure_dir().is_ok() {
+        return Ok(app_home.clone());
     }
+    tracing::error!(
+        "platform GUI app home could not be created; trying a writable fallback: {}",
+        app_home.display()
+    );
 
     let mut candidates = Vec::new();
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
@@ -2648,7 +2658,7 @@ impl Canvas {
         let steps = 96;
         let mut previous = Point::new(center.x + radius, center.y);
         for step in 1..=steps {
-            let angle = std::f32::consts::TAU * step as f32 / steps as f32;
+            let angle = TAU * step as f32 / steps as f32;
             let current = Point::new(
                 center.x + radius * angle.cos(),
                 center.y + radius * angle.sin(),
@@ -3249,12 +3259,12 @@ fn glyph(character: char) -> [u8; 7] {
 struct VulkanRenderer {
     _entry: Entry,
     instance: ash::Instance,
-    surface_loader: ash::khr::surface::Instance,
+    surface_loader: SurfaceLoader,
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
     device: ash::Device,
     queue: vk::Queue,
-    swapchain_loader: ash::khr::swapchain::Device,
+    swapchain_loader: SwapchainLoader,
     swapchain: vk::SwapchainKHR,
     format: vk::Format,
     extent: vk::Extent2D,
@@ -3311,14 +3321,14 @@ impl VulkanRenderer {
             ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
                 .wrap_err("failed to create Vulkan window surface")?
         };
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+        let surface_loader = SurfaceLoader::new(&entry, &instance);
         let (physical_device, queue_family_index) =
             pick_physical_device(&instance, &surface_loader, surface)?;
         let queue_priorities = [1.0_f32];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
             .queue_priorities(&queue_priorities)];
-        let device_extensions = [ash::khr::swapchain::NAME.as_ptr()];
+        let device_extensions = [SWAPCHAIN_EXTENSION.as_ptr()];
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_info)
             .enabled_extension_names(&device_extensions);
@@ -3331,7 +3341,7 @@ impl VulkanRenderer {
         };
         // SAFETY: Queue zero exists in the selected queue family created above.
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-        let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
+        let swapchain_loader = SwapchainLoader::new(&instance, &device);
         let (swapchain, format, extent, images) = create_swapchain(
             window,
             &surface_loader,
@@ -3698,7 +3708,7 @@ impl Drop for VulkanRenderer {
 
 fn pick_physical_device(
     instance: &ash::Instance,
-    surface_loader: &ash::khr::surface::Instance,
+    surface_loader: &SurfaceLoader,
     surface: vk::SurfaceKHR,
 ) -> Result<(vk::PhysicalDevice, u32)> {
     // SAFETY: The Vulkan instance is live for the duration of this query.
@@ -3729,9 +3739,9 @@ fn pick_physical_device(
 
 fn create_swapchain(
     window: &Window,
-    surface_loader: &ash::khr::surface::Instance,
+    surface_loader: &SurfaceLoader,
     surface: vk::SurfaceKHR,
-    swapchain_loader: &ash::khr::swapchain::Device,
+    swapchain_loader: &SwapchainLoader,
     physical_device: vk::PhysicalDevice,
     old_swapchain: vk::SwapchainKHR,
 ) -> Result<(vk::SwapchainKHR, vk::Format, vk::Extent2D, Vec<vk::Image>)> {
@@ -3864,17 +3874,16 @@ mod tests {
     use super::model_status_text;
     use super::next_gui_step;
     use ash::vk;
+    use std::path::Path;
     use winit::dpi::PhysicalPosition;
     use winit::dpi::PhysicalSize;
 
     #[test]
     fn dropped_media_filter_accepts_audio_video_and_rejects_other_files() {
-        assert!(is_supported_media_path(std::path::Path::new("sample.WAV")));
-        assert!(is_supported_media_path(std::path::Path::new("sample.Mp4")));
-        assert!(!is_supported_media_path(std::path::Path::new("notes.txt")));
-        assert!(!is_supported_media_path(std::path::Path::new(
-            "no-extension"
-        )));
+        assert!(is_supported_media_path(Path::new("sample.WAV")));
+        assert!(is_supported_media_path(Path::new("sample.Mp4")));
+        assert!(!is_supported_media_path(Path::new("notes.txt")));
+        assert!(!is_supported_media_path(Path::new("no-extension")));
     }
 
     #[test]

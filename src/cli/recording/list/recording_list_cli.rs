@@ -11,6 +11,7 @@ use eyre::Result;
 use facet::Facet;
 use facet_pretty::ColorMode;
 use facet_pretty::PrettyPrinter;
+use std::time::Duration;
 
 #[derive(Facet, Debug)]
 struct RecordingListEntry {
@@ -64,8 +65,8 @@ impl RecordingListArgs {
         clippy::unused_async,
         reason = "command invoke methods share the async CLI dispatch shape"
     )]
-    pub async fn invoke(self) -> Result<CliOutput> {
-        let store = RecordingStore::new(AppHome::resolve()?.0);
+    pub async fn invoke(self, app_home: &AppHome) -> Result<CliOutput> {
+        let store = RecordingStore::new(app_home.as_ref());
         let recordings = store
             .list_recordings()
             .wrap_err("failed to list saved recordings")?;
@@ -81,6 +82,9 @@ impl RecordingListArgs {
                 transcript_count: recording.transcripts.len(),
             })
             .collect();
-        Ok(CliOutput::custom(RecordingListOutput { entries }))
+        Ok(CliOutput::custom(
+            RecordingListOutput { entries },
+            Some(Duration::from_secs(5)),
+        ))
     }
 }

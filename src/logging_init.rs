@@ -2,6 +2,7 @@ use crate::cli::global_args::GlobalArgs;
 use chrono::Local;
 use eyre::bail;
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use teamy_cancellation::CancellationToken;
@@ -85,12 +86,12 @@ pub fn init_logging(
 
     let json_log_path = match global_args.log_file.as_ref() {
         None => None,
-        Some(path) if std::path::PathBuf::from(path).is_dir() => {
+        Some(path) if PathBuf::from(path).is_dir() => {
             let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
             let filename = format!("log_{timestamp}.ndjson");
-            Some(std::path::PathBuf::from(path).join(filename))
+            Some(PathBuf::from(path).join(filename))
         }
-        Some(path) => Some(std::path::PathBuf::from(path)),
+        Some(path) => Some(PathBuf::from(path)),
     };
     let json_layer = if let Some(ref json_log_path) = json_log_path {
         if let Some(parent) = json_log_path.parent() {
@@ -123,9 +124,9 @@ pub fn init_logging(
         subscriber.with(tracing_tracy::TracyLayer::default().with_filter(tracy_log_filter()?));
 
     if let Err(error) = subscriber.try_init() {
-        eprintln!(
+        report_subscriber_error(format_args!(
             "Failed to initialize tracing subscriber - are you running `cargo test`? If so, multiple test entrypoints may be running from the same process. https://github.com/tokio-rs/console/issues/505 : {error}"
-        );
+        ));
         return Ok(());
     }
 
@@ -140,6 +141,14 @@ pub fn init_logging(
         "Tracing initialized"
     );
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_macros,
+    reason = "Report subscriber initialization failures before tracing is available"
+)]
+fn report_subscriber_error(message: std::fmt::Arguments<'_>) {
+    eprintln!("{message}");
 }
 
 #[cfg(test)]

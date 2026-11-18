@@ -112,7 +112,7 @@ While the Windows GUI is running, `Ctrl+Shift+Space` starts or stops microphone 
 
 ## PowerShell example
 
-Add this function to `$PROFILE`, then open a new PowerShell window and run `td`. It displays and saves a timestamped transcript in Downloads. Lines starting with `1|` contain words, and lines starting with `2|` contain IPA phonemes. Press `Ctrl+C` to stop recording and finish processing queued audio.
+Add this function to `$PROFILE`, then open a new PowerShell window and run `td`. It displays and saves a timestamped transcript in Downloads. Each audio window emits IPA phonemes on `1|` first, then words on `2|`. After a chunk finishes, 10 seconds with no further transcription output triggers one `...` line. Add `--inactivity-ms 5000` in any mode for a five-second gap. Words-only and phonemes-only modes show the marker when you supply this option. Press `Ctrl+C` to stop recording and finish processing queued audio.
 
 ~~~powershell
 function td {
@@ -138,16 +138,16 @@ Transcription saving to "C:\Users\Teamy\Downloads\transcription_20261117_193549.
 Transcribing at speech pauses (320 ms quiet), with a 5000 ms maximum window.
 Completed microphone recordings are removed after output; failed or unfinished recordings are retained for recovery.
 Recording microphone. Ctrl+C stops capture and drains transcription.
-1| Check one, two.
-2| tʰʃɛkwəntʰu
-1| Hello there.
-2| hloʊðɛɹ
-1| I like that snippet that we have in my PowerShell profile. I think we should rewrite the read me from the ground up
-2| aɪlaɪkðætsnɪpɪtðætwihævənmaɪpʰaʊɜ˞ʃɛl̴pʰɹoʊfaɪl̴aɪθɪ̃ŋkwiʃʊdɹiɹaɪtðəɹɛdmifɹəmðəkɹaʊ̃ndəptʰu
-2| vi
-1| bare minimum installation instructions plus
-2| ðəpɛɹmɪ̃nəməmɪ̃nstəleɪʃənɪ̃nstɹʌkʃənzpʰlʌs
-1| this PowerShell snippet as an example.
-2| ðɪspʰaʊɜ˞ʃɛl̴snɪpɪtæzæ̃nɪɡzæ̃mpəl̴
+1| tʰʃɛkwəntʰu
+2| Check one, two.
+1| hloʊðɛɹ
+2| Hello there.
+1| aɪlaɪkðætsnɪpɪtðætwihævənmaɪpʰaʊɜ˞ʃɛl̴pʰɹoʊfaɪl̴aɪθɪ̃ŋkwiʃʊdɹiɹaɪtðəɹɛdmifɹəmðəkɹaʊ̃ndəptʰu
+1| vi
+2| I like that snippet that we have in my PowerShell profile. I think we should rewrite the read me from the ground up
+1| ðəpɛɹmɪ̃nəməmɪ̃nstəleɪʃənɪ̃nstɹʌkʃənzpʰlʌs
+2| bare minimum installation instructions plus
+1| ðɪspʰaʊɜ˞ʃɛl̴snɪpɪtæzæ̃nɪɡzæ̃mpəl̴
+2| this PowerShell snippet as an example.
 ~~~
 

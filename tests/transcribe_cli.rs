@@ -190,11 +190,21 @@ fn live_microphone_rejects_invalid_options_before_capture() {
     for (args, expected) in [
         (
             vec!["microphone", "transcribe", "--duration-ms", "0"],
-            "greater than zero",
+            "--duration-ms 0",
         ),
         (
             vec!["microphone", "transcribe", "--chunk-duration-ms", "499"],
-            "between 500 and 30000",
+            "--chunk-duration-ms 499",
+        ),
+        (
+            vec![
+                "microphone",
+                "transcribe",
+                "words-and-phonemes",
+                "--inactivity-ms",
+                "0",
+            ],
+            "--inactivity-ms 0",
         ),
         (
             vec!["--output-format", "json", "microphone", "transcribe"],
@@ -211,6 +221,79 @@ fn live_microphone_rejects_invalid_options_before_capture() {
 }
 
 #[test]
+fn inactivity_option_is_accepted_by_single_stream_modes() {
+    let root = std::env::temp_dir().join(format!("microphone-cli-{}", uuid::Uuid::new_v4()));
+    for (mode, expected) in [
+        ("words", "model"),
+        ("phonemes", "reading PhoneticXeus config"),
+    ] {
+        let model = root.join("missing-model");
+        let path = model.to_str().unwrap();
+        let mut args = vec![
+            "microphone",
+            "transcribe",
+            mode,
+            "--inactivity-ms",
+            "5000",
+            "--model-dir",
+            path,
+            "--device-id",
+            "missing microphone",
+        ];
+        if mode == "phonemes" {
+            args.extend(["--phone-model-dir", path]);
+        }
+        let output = run(&root, &args);
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("--inactivity-ms"), "{error}");
+    }
+    assert!(!root.exists());
+}
+
+#[test]
+fn rejects_invalid_recording_and_decode_inputs_during_parsing() {
+    let root = std::env::temp_dir().join(format!("recording-cli-{}", uuid::Uuid::new_v4()));
+    let id = "00000000-0000-0000-0000-000000000000";
+    for (args, expected) in [
+        (
+            vec!["recording", "show", "bad-uuid"],
+            "recording show bad-uuid",
+        ),
+        (
+            vec![
+                "recording",
+                "transcribe",
+                id,
+                "--chunk-duration-ms",
+                "30001",
+            ],
+            "--chunk-duration-ms 30001",
+        ),
+        (
+            vec!["recording", "transcribe", id, "--max-decode-tokens", "0"],
+            "--max-decode-tokens 0",
+        ),
+        (
+            vec!["microphone", "record", "--duration-ms", "0"],
+            "--duration-ms 0",
+        ),
+    ] {
+        let output = run(&root, &args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("<cli>") && error.contains(expected),
+            "{error}"
+        );
+    }
+    assert!(!root.exists());
+}
+
+#[test]
 fn phone_model_option_requires_phone_mode_without_opening_microphone() {
     let root = std::env::temp_dir().join(format!("phone-options-{}", uuid::Uuid::new_v4()));
     let output = run(
@@ -218,7 +301,9 @@ fn phone_model_option_requires_phone_mode_without_opening_microphone() {
         &["microphone", "transcribe", "--phone-model-dir", "missing"],
     );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires --phones"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires phonemes or words-and-phonemes")
+    );
     assert!(output.stdout.is_empty());
     assert!(!root.exists());
 }
