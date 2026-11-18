@@ -30,4 +30,41 @@ if ([string]::IsNullOrWhiteSpace($Root)) {
         Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo'
     }
 }
-& (Join-Path $PSScriptRoot 'tools/install-cuda-native.ps1') -Root $Root -CudaRoot $CudaRoot
+$savedPath = $env:PATH
+try {
+    # The cc crate supplies MSVC to the CUDA build, but its nvcc -E probe
+    # also needs to find cl.exe on PATH before that configuration is applied.
+    if (-not (Get-Command cl.exe -CommandType Application -ErrorAction SilentlyContinue)) {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+        if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw 'Visual Studio Installer was not found. Install the Visual Studio C++ build tools.'
+        }
+
+        $compiler = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe' |
+            Select-Object -First 1
+        if ($LASTEXITCODE -ne 0 -or -not $compiler) {
+            throw 'The x64 MSVC compiler was not found. Install the Visual Studio C++ build tools.'
+        }
+
+        $compilerDirectory = Split-Path -Path $compiler -Parent
+        $env:PATH = "$compilerDirectory;$savedPath"
+    }
+
+    # cc already gets the compiler family from MSVC for actual CUDA builds.
+    # Suppress only the redundant NVCC family probe warnings, including cached ones.
+    & (Join-Path $PSScriptRoot 'tools/install-cuda-native.ps1') -Root $Root -CudaRoot $CudaRoot 2>&1 |
+        ForEach-Object {
+            $message = $_.ToString()
+            if ($message -match '^warning: teamy-whisper-native@[^:]+: Compiler family detection failed (?:since it does not define|due to error: (?:ToolFamilyMacroNotFound:|ToolExecError:.*"nvcc" "-E" .*detect_compiler_family\.c))') {
+                return
+            }
+
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                [Console]::Error.WriteLine($message)
+            } else {
+                $_
+            }
+        }
+} finally {
+    $env:PATH = $savedPath
+}
